@@ -14,6 +14,9 @@ use super::instant_forecast_queue::instant_due;
 use super::instant_forecast_queue::instant_study_candidates;
 use super::instant_forecast_queue::InstantCandidate;
 use super::instant_forecast_queue::InstantReviewPolicy;
+use super::instant_forecast_sampling::day_deviations;
+use super::instant_forecast_sampling::AnswerStratum;
+use super::instant_forecast_sampling::PREVIEW_LIMIT;
 use super::workload_comparison::paired_grade;
 use super::workload_forecast::summarize_forecast;
 use super::workload_forecast::ForecastPath;
@@ -45,6 +48,7 @@ const DECODED_PATH_BUDGET_BYTES: usize = 16 * 1024 * 1024;
 struct InstantPathParameters {
     seed: u32,
     recall_offset: f32,
+    stratum: Option<usize>,
 }
 
 struct InstantPathProgress<'a> {
@@ -424,6 +428,17 @@ impl RwkvInference {
                 "scenario sigma requires three paths and must be between 0 and 1",
             ));
         }
+        if config.stratified_answers
+            && (config.paths != 3
+                || config.scenario_sigma.is_some()
+                || !config.stratified_scale.is_finite()
+                || config.stratified_scale < 0.0)
+        {
+            return Err(io::Error::new(
+                io::ErrorKind::InvalidInput,
+                "stratified answers require three paths, no scenario sigma, and a nonnegative finite scale",
+            ));
+        }
         if config.decks.is_empty()
             || config.now_millis as i64 >= DAY_MILLIS
             || config.timing_patterns.is_empty()
@@ -492,7 +507,9 @@ impl RwkvInference {
                                 }
                                 // Show the central scenario first when memory
                                 // limits the forecast to sequential paths.
-                                let path = if config.scenario_sigma.is_some() {
+                                let path = if config.scenario_sigma.is_some()
+                                    || config.stratified_answers
+                                {
                                     [1, 0, 2][slot as usize]
                                 } else {
                                     slot
@@ -537,7 +554,9 @@ impl RwkvInference {
                                     group_ids,
                                     config,
                                     InstantPathParameters {
-                                        seed: if config.scenario_sigma.is_some() {
+                                        seed: if config.scenario_sigma.is_some()
+                                            || config.stratified_answers
+                                        {
                                             config.seed
                                         } else {
                                             config.seed.wrapping_add(path)
@@ -545,6 +564,7 @@ impl RwkvInference {
                                         recall_offset: config
                                             .scenario_sigma
                                             .map_or(0.0, |sigma| (path as f32 - 1.0) * sigma),
+                                        stratum: config.stratified_answers.then_some(path as usize),
                                     },
                                     InstantPathProgress {
                                         check_cancel: &mut check_cancel,
@@ -583,7 +603,7 @@ impl RwkvInference {
             .map(|path| path.expect("every forecast path completed"))
             .collect::<Vec<_>>();
         let mut output = summarize_forecast(&group_ids, &paths, config.days, estimated);
-        if config.scenario_sigma.is_some() {
+        if config.scenario_sigma.is_some() || config.stratified_answers {
             output.scenarios = Some(
                 paths
                     .iter()
@@ -618,6 +638,7 @@ impl RwkvInference {
         let InstantPathParameters {
             seed,
             recall_offset,
+            stratum,
         } = parameters;
         let InstantPathProgress {
             check_cancel,
@@ -660,6 +681,31 @@ impl RwkvInference {
             cards.push(card);
         }
         let days = config.days as usize;
+        // Estimate each day's answer count from its sampled real session and
+        // the study deck limit. This weights the strata, not the actual queue.
+        let deviations = stratum.map(|stratum| {
+            let answer_limit = u64::from(study_preset.inner.reviews_per_day)
+                .saturating_add(if config.new_cards_ignore_review_limit {
+                    u64::from(study_preset.inner.new_per_day)
+                } else {
+                    0
+                })
+                .max(1) as usize;
+            let counts = (0..days)
+                .map(|day| {
+                    let index = (simulation_unit_hash(i64::from(seed), day as i64, 0)
+                        * config.timing_patterns.len() as f64)
+                        as usize;
+                    config.timing_patterns[index.min(config.timing_patterns.len() - 1)]
+                        .len()
+                        .min(answer_limit)
+                })
+                .collect::<Vec<_>>();
+            day_deviations(&counts, seed, stratum)
+                .into_iter()
+                .map(|z| z * f64::from(config.stratified_scale))
+                .collect::<Vec<_>>()
+        });
         let mut output = ForecastPath {
             due: vec![0; days],
             done: vec![0; days],
@@ -711,6 +757,7 @@ impl RwkvInference {
             let mut answers_today = 0u32;
             let mut new_answered = 0usize;
             let mut main_answered = 0usize;
+            let mut answer_stratum = None;
             // Except when gathering by retrievability, new-card ordering only
             // depends on the day, seed and immutable card metadata. Answering
             // a new card removes it from this order; it never becomes new again.
@@ -996,6 +1043,33 @@ impl RwkvInference {
                     });
                     queue = learning;
                 }
+                if answer_stratum.is_none() {
+                    if let Some(deviations) = &deviations {
+                        let preview = precomputed
+                            .into_iter()
+                            .chain(
+                                queue
+                                    .iter()
+                                    .copied()
+                                    .filter(|index| Some(*index) != precomputed),
+                            )
+                            .take(PREVIEW_LIMIT)
+                            .map(|index| cards[index].query(day as i64, millis))
+                            .collect::<Vec<_>>();
+                        if !preview.is_empty() {
+                            let recalls = self.instant_scores(&preview, &states)?;
+                            let expected_answers = queue.len()
+                                + usize::from(
+                                    precomputed.is_some_and(|index| !queue.contains(&index)),
+                                );
+                            answer_stratum = Some(AnswerStratum::new(
+                                deviations[day],
+                                expected_answers,
+                                &recalls,
+                            ));
+                        }
+                    }
+                }
                 if let Some(index) = precomputed.take().or_else(|| queue.first().copied()) {
                     if config.precompute_next_card {
                         precomputed = queue.iter().copied().find(|&candidate| candidate != index);
@@ -1020,13 +1094,19 @@ impl RwkvInference {
                         .instant_scores(&[card.query(day as i64, millis)], &states)?[0]
                         + recall_offset)
                         .clamp(0.0, 1.0);
+                    let answer_recall = answer_stratum.as_ref().map_or(recall, |stratum| {
+                        stratum.probability(recall, queue.len().max(1))
+                    });
                     let ease = paired_grade(
                         &day_review_model,
-                        recall,
+                        answer_recall,
                         card.input.input.review_input.card_id,
                         card.reps,
                         seed,
                     );
+                    if let Some(stratum) = &mut answer_stratum {
+                        stratum.observe(recall, ease != 1);
+                    }
                     let duration = pattern[sample % pattern.len()].1;
                     let mut answer = card.query(day as i64, millis);
                     answer.is_query = false;
@@ -1135,6 +1215,9 @@ impl RwkvInference {
                 };
                 millis += i64::from(gap.max(1));
                 sample += 1;
+            }
+            if let (Some(answer_stratum), Some(path)) = (&answer_stratum, stratum) {
+                answer_stratum.log_summary(path, day);
             }
             report_day(
                 day as u32,

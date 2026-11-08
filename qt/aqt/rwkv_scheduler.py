@@ -15193,30 +15193,54 @@ def _rwkv_forecast_review_history(
     )
 
 
-def _rwkv_forecast_history_sigma(
+class _RwkvForecastCalibration(NamedTuple):
+    scale: float
+    days: int
+    observed_sigma: float
+    modeled_sigma: float
+
+
+def _rwkv_forecast_history_calibration(
     targets: Mapping[int, tuple[int, int]],
     review_ids: Sequence[int],
     predictions: Sequence[tuple[int, float]],
-) -> tuple[float, int] | None:
-    """Sample SD of daily actual-minus-predicted recall, with >=2 answers/day."""
+) -> _RwkvForecastCalibration | None:
+    """Compare daily residual variance with the answer randomness already modeled."""
     by_day: dict[int, list[float]] = {}
     for index, prediction in predictions:
-        if not 0 <= index < len(review_ids) or not math.isfinite(prediction):
+        if not 0 <= index < len(review_ids) or not 0.0 <= prediction <= 1.0:
             continue
         target = targets.get(review_ids[index])
         if target is not None:
             day, actual = target
-            values = by_day.setdefault(day, [0.0, 0.0])
+            values = by_day.setdefault(day, [0.0, 0.0, 0.0])
             values[0] += actual - prediction
             values[1] += 1
-    residuals = [total / count for total, count in by_day.values() if count >= 2]
-    if len(residuals) < 2:
+            values[2] += prediction * (1.0 - prediction)
+    daily = [
+        (total / count, variance / count**2)
+        for total, count, variance in by_day.values()
+        if count >= 2
+    ]
+    if len(daily) < 2:
         return None
-    average = sum(residuals) / len(residuals)
-    sigma = math.sqrt(
-        sum((value - average) ** 2 for value in residuals) / (len(residuals) - 1)
+    mean = sum(residual for residual, _ in daily) / len(daily)
+    observed_variance = sum((residual - mean) ** 2 for residual, _ in daily) / (
+        len(daily) - 1
     )
-    return min(sigma, 1.0), len(residuals)
+    modeled_variance = sum(variance for _, variance in daily) / len(daily)
+    if modeled_variance <= 1e-12:
+        return None
+    # A small model-based prior avoids an extreme correction from a few days.
+    prior_days = 20
+    degrees = len(daily) - 1
+    scale = math.sqrt(
+        (degrees * observed_variance + prior_days * modeled_variance)
+        / ((degrees + prior_days) * modeled_variance)
+    )
+    return _RwkvForecastCalibration(
+        scale, len(daily), math.sqrt(observed_variance), math.sqrt(modeled_variance)
+    )
 
 
 def _rwkv_forecast_calibration(
@@ -15224,7 +15248,7 @@ def _rwkv_forecast_calibration(
     history: _RwkvInstantForecastHistory,
     report_progress: RwkvWorkloadProgressCallback,
     paths: int,
-) -> tuple[float, int] | None:
+) -> _RwkvForecastCalibration | None:
     replay = getattr(backend, "forecast_history_predictions", None)
     if not history.calibration_reviews or not callable(replay):
         return None
@@ -15233,7 +15257,7 @@ def _rwkv_forecast_calibration(
         reviews=history.calibration_reviews,
         progress=lambda _current, _total: report_progress(0, paths),
     )
-    return _rwkv_forecast_history_sigma(
+    return _rwkv_forecast_history_calibration(
         history.calibration_targets, history.calibration_review_ids, predictions
     )
 
@@ -15469,8 +15493,7 @@ def forecast_rwkv_workload(
     review_model = None if instant_used else _rwkv_simulator_review_model(reviewer)
     start = time.monotonic()
     output: object = (paths, [], [], 0)
-    calibration: tuple[float, int] | None = None
-    calibration_insufficient = False
+    calibration: _RwkvForecastCalibration | None = None
     if cards:
         restore_cache_snapshot = getattr(backend, "restore_cache_snapshot", None)
         with _temporary_reviewer_backend_operation(
@@ -15519,7 +15542,6 @@ def forecast_rwkv_workload(
                     min_intervening = int(
                         scope.study_config.rwkv_review_min_intervening_reviews
                     )
-                    history_started = time.monotonic()
                     history = _rwkv_forecast_review_history(
                         reviewer,
                         deck_ids={card.group for card in cards},
@@ -15527,17 +15549,18 @@ def forecast_rwkv_workload(
                         include_calibration=paths == 3,
                     )
                     if paths == 3:
+                        calibration_started = time.monotonic()
                         calibration = _rwkv_forecast_calibration(
                             backend, history, report_progress, paths
                         )
-                        calibration_insufficient = calibration is None
                         logger.debug(
-                            "RWKV Instant forecast calibration: reviews=%s history_days=%s "
-                            "sigma=%s elapsed_ms=%.1f",
-                            len(history.calibration_reviews),
-                            calibration[1] if calibration else 0,
-                            calibration[0] if calibration else None,
-                            (time.monotonic() - history_started) * 1000,
+                            "RWKV Instant forecast answer calibration: days=%s "
+                            "observed_sigma=%s modeled_sigma=%s scale=%s elapsed_ms=%.1f",
+                            calibration.days if calibration else 0,
+                            calibration.observed_sigma if calibration else None,
+                            calibration.modeled_sigma if calibration else None,
+                            calibration.scale if calibration else None,
+                            (time.monotonic() - calibration_started) * 1000,
                         )
                         history = history._replace(
                             calibration_targets={},
@@ -15587,13 +15610,14 @@ def forecast_rwkv_workload(
                         "cards": len(cards),
                         "model": "instant",
                     }
-                    if calibration is not None:
-                        partial_metadata["scenario_sigma"] = calibration[0]
-                        partial_metadata["scenario_history_days"] = calibration[1]
-                    elif calibration_insufficient:
-                        partial_metadata["scenario_calibration"] = (
-                            "insufficient_history"
-                        )
+                    if paths == 3:
+                        partial_metadata["scenario_kind"] = "stratified"
+                        if calibration:
+                            partial_metadata["scenario_history_days"] = calibration.days
+                        else:
+                            partial_metadata["scenario_calibration"] = (
+                                "insufficient_history"
+                            )
 
                     def report_day(
                         path: int, day: int, values: Sequence[float]
@@ -15647,7 +15671,16 @@ def forecast_rwkv_workload(
                         review_order=order,
                         review_model=history.review_model,
                         progress=report_progress,
-                        **({"scenario_sigma": calibration[0]} if calibration else {}),
+                        **(
+                            {
+                                "stratified_answers": True,
+                                "stratified_scale": calibration.scale
+                                if calibration
+                                else 1.0,
+                            }
+                            if paths == 3
+                            else {}
+                        ),
                         **({"day_progress": report_day} if partial_progress else {}),
                     )
                 else:
@@ -15674,11 +15707,12 @@ def forecast_rwkv_workload(
                 ) from exc
             operation.require_current()
     result = _rwkv_forecast_result(output, cards, days=days, seed=seed)
-    if calibration is not None:
-        result["scenario_sigma"] = calibration[0]
-        result["scenario_history_days"] = calibration[1]
-    elif calibration_insufficient:
-        result["scenario_calibration"] = "insufficient_history"
+    if instant_used and paths == 3:
+        result["scenario_kind"] = "stratified"
+        if calibration:
+            result["scenario_history_days"] = calibration.days
+        else:
+            result["scenario_calibration"] = "insufficient_history"
     result["elapsed_ms"] = (time.monotonic() - start) * 1000
     result["state_update_interval"] = (
         1 if instant_used else max(1, int(state_update_interval))
@@ -15915,7 +15949,10 @@ class _RwkvForecastPartial:
 
 def _rwkv_partial_forecast_result(partial: _RwkvForecastPartial) -> dict[str, object]:
     """Summarize the days reported so far without inventing missing scenarios."""
-    is_scenario = "scenario_sigma" in partial.metadata
+    is_scenario = (
+        "scenario_sigma" in partial.metadata
+        or partial.metadata.get("scenario_kind") == "stratified"
+    )
     daily: list[dict[str, object]] = []
     scenario_daily: list[dict[str, object]] = []
 

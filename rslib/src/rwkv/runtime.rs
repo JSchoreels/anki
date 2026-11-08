@@ -1634,6 +1634,8 @@ mod tests {
                     days: 1,
                     paths: 1,
                     scenario_sigma: None,
+                    stratified_answers: false,
+                    stratified_scale: 1.0,
                     report_days: false,
                     seed: 0,
                     decks: vec![deck],

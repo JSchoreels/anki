@@ -39,6 +39,8 @@ mod bulk;
 use architecture::*;
 #[path = "instant_forecast_queue.rs"]
 mod instant_forecast_queue;
+#[path = "instant_forecast_sampling.rs"]
+mod instant_forecast_sampling;
 #[path = "instant_workload_forecast.rs"]
 mod instant_workload_forecast;
 #[cfg(test)]

@@ -1589,28 +1589,40 @@ Instant bands also include the sampled historical day and its answer timings
 and successful-answer mix. Its `done` metric counts review-queue answers;
 `new` counts introductions.
 
-With exactly three Instant paths, the API instead runs matched `R − σ`, `R` and
-`R + σ` scenarios, using the same seed and sampled historical sessions in each.
-For complete days from the last 365 days, it replays the full review history in
-an independent model state and compares pre-answer predictions with actual
-review outcomes in the selected decks. `σ` is the sample standard deviation of
-the daily mean residuals (actual success minus predicted recall), using days
-with at least two review answers. Queue eligibility and ordering use the
-unmodified model prediction; the offset only shifts the simulated answer
-probability, clamped to the probability range. Configured refreshes and limits
-are unchanged. This empirical day-to-day spread includes answer randomness,
-which is also simulated in each path, and is illustrative, not a model confidence
-interval. Estimating it requires at least two eligible historical days; if
-there are fewer, the API returns three ordinary sampled paths instead.
+With exactly three Instant paths, the API samples lower, central and higher
+aggregate answer outcomes using the same historical sessions and the model's
+unmodified recall probabilities. It uses a normal approximation to select
+different daily outcome quantiles whose weighted aggregate corresponds roughly
+to one standard deviation below, at, or above the expected number of successful
+answers. The daily weights estimate answer volume from each sampled session and
+the study deck's limits; they do not alter the actual limits. At the first
+non-empty queue of each day, a preview of up to 512 eligible cards estimates
+the variance in answer outcomes. For every simulated answer, its current model
+prediction and the residual observed so far inform an approximate conditional
+draw toward that day's target. The adjustment is updated as answers arrive,
+instead of adding the same offset to every recall prediction. Review, new and
+learning answers contribute, and the queue and its refreshes continue to use
+the unconditioned model predictions. The estimate of remaining answers is
+necessarily approximate because future queues and learning steps can change.
 
-For these scenarios the result adds `scenario_sigma`,
-`scenario_history_days`, and `scenario_daily`; each day's metric is an array in
-`[R − σ, R, R + σ]` order. `daily` and `groups` retain their existing
-summary format for compatibility; consumers should use the middle scenario for
-the central line rather than assume it is the median. When history is
-insufficient, `scenario_calibration` is `"insufficient_history"` and the
-scenario fields are omitted. Other Instant path counts and all Curve forecasts
-continue to return stochastic path summaries.
+For eligible review days in the last year, a separate replay compares actual
+answers with pre-answer model predictions. The variance of daily mean residuals
+is compared with the expected Bernoulli variance of those same answers. Their
+ratio scales the simulated outcome deviations; the residual variance is not
+added on top of answer randomness a second time. The variance estimate blends
+in 20 model-based prior days to reduce unstable corrections from little history.
+At least two days with two eligible reviews and nonzero predicted variance are
+required; otherwise the scale defaults to one. This estimates variation, not
+persistent mean bias. It is an approximation to answer-outcome variability,
+not a calibrated probability interval for workload. In particular, the recurrent
+model and changing queues can make workload paths cross or produce a large spread.
+The API adds `scenario_kind: "stratified"`, `scenario_history_days` when
+calibration succeeds, and `scenario_daily`; each metric's array is in
+`[lower, central, higher]` answer-outcome order. `daily` and `groups` retain
+their existing summary format; consumers should use the middle scenario for
+the central line rather than assume it is the median. If calibration is not
+available, `scenario_calibration` is `"insufficient_history"`. Other Instant
+path counts and all Curve forecasts continue to return stochastic path summaries.
 
 **Curve speed.** Cost is proportional to paths x simulated answers per path; each
 answer runs several RWKV steps (recall query, interval curves, state update),
