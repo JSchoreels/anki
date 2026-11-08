@@ -1172,6 +1172,34 @@ impl RwkvInference {
         bulk::warm_up_reviews_bulk(self, reviews, record_predictions)
     }
 
+    /// Recompute pre-answer predictions in an independent worker, without
+    /// changing the resident state used by the reviewer.
+    pub fn forecast_history_predictions(
+        &self,
+        reviews: Vec<ReviewInput>,
+        progress: &mut dyn FnMut(u32, u32) -> io::Result<()>,
+    ) -> io::Result<Vec<(usize, f32)>> {
+        const CHUNK: usize = 8192;
+        let total = reviews.len();
+        let mut worker = self.workload_worker(FeatureState::default(), HashMap::new());
+        let mut predictions = Vec::with_capacity(total);
+        progress(0, total.min(u32::MAX as usize) as u32)?;
+        for (chunk_index, chunk) in reviews.chunks(CHUNK).enumerate() {
+            let start = chunk_index * CHUNK;
+            predictions.extend(
+                worker
+                    .warm_up_reviews(chunk.to_vec(), true)?
+                    .into_iter()
+                    .map(|(index, value)| (start + index, value)),
+            );
+            progress(
+                (start + chunk.len()).min(u32::MAX as usize) as u32,
+                total.min(u32::MAX as usize) as u32,
+            )?;
+        }
+        Ok(predictions)
+    }
+
     /// Advance answer history and predict recall immediately after each answer.
     /// Query rows do not advance state; elapsed days and seconds are set to
     /// zero.

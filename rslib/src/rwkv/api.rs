@@ -337,6 +337,10 @@ pub fn decode_instant_forecast_decks(
 pub struct RwkvInstantForecastConfig {
     pub days: u32,
     pub paths: u32,
+    /// When present, run three matched paths with recall offsets -sigma, 0,
+    /// +sigma.
+    pub scenario_sigma: Option<f32>,
+    pub report_days: bool,
     pub seed: u32,
     pub decks: Vec<Deck>,
     pub deck_configs: Vec<DeckConfig>,
@@ -401,4 +405,7 @@ pub struct RwkvWorkloadForecastOutput {
     pub days: Vec<RwkvForecastDay>,
     pub groups: Vec<RwkvForecastGroupDays>,
     pub estimated_fsrs_states: u32,
+    /// Scenario order is R-sigma, R, R+sigma; each day contains due, done,
+    /// new, lapses and seconds. Ordinary stochastic forecasts leave this empty.
+    pub scenarios: Option<Vec<Vec<[f32; 5]>>>,
 }

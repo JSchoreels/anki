@@ -2551,6 +2551,13 @@ class RwkvStatefulReviewerBackend:
             raise ValueError("RWKV backend does not support Instant forecasts")
         return forecast(**kwargs)
 
+    def forecast_history_predictions(self, **kwargs: Any) -> list[tuple[int, float]]:
+        """Replay calibration history without changing the resident state."""
+        replay = getattr(self._runtime, "forecast_history_predictions", None)
+        if not self._runtime_owns_warm_up_state() or not callable(replay):
+            raise ValueError("RWKV backend does not support forecast calibration")
+        return cast(list[tuple[int, float]], replay(**kwargs))
+
     def compare_workloads(
         self,
         *,
@@ -15053,6 +15060,9 @@ class _RwkvInstantForecastHistory(NamedTuple):
     success_shares_by_day: dict[int, tuple[float, float, float]]
     recent_card_ids: list[int]
     latest_answers_today: dict[int, tuple[int, int]]
+    calibration_targets: dict[int, tuple[int, int]]
+    calibration_reviews: list[RwkvReviewInput]
+    calibration_review_ids: list[int]
 
 
 def _rwkv_forecast_review_history(
@@ -15060,11 +15070,12 @@ def _rwkv_forecast_review_history(
     *,
     deck_ids: set[int],
     recent_count: int,
+    include_calibration: bool = False,
 ) -> _RwkvInstantForecastHistory:
     """Use Anki's canonical history API to capture real review timing."""
 
     from aqt.rwkv_forecast_timing import review_timing_patterns
-    from aqt.rwkv_history import history_fingerprint_request
+    from aqt.rwkv_history import history_fingerprint_request, review_input_from_row
 
     timing = _timing_today(reviewer)
     today = getattr(timing, "days_elapsed", None)
@@ -15148,8 +15159,82 @@ def _rwkv_forecast_review_history(
         for row in rows
         if row.day_offset == today
     }
+    calibration_targets = (
+        {
+            int(row.review_id): (int(row.day_offset), int(row.ease > 1))
+            for row in rows
+            if today - 365 <= row.day_offset < today and row.review_kind == 1
+        }
+        if include_calibration
+        else {}
+    )
+    calibration_counts_by_day: dict[int, int] = {}
+    for day, _ in calibration_targets.values():
+        calibration_counts_by_day[day] = calibration_counts_by_day.get(day, 0) + 1
+    calibratable = (
+        include_calibration
+        and sum(count >= 2 for count in calibration_counts_by_day.values()) >= 2
+    )
+    calibration_reviews = (
+        [review_input_from_row(row) for row in history.reviews] if calibratable else []
+    )
+    calibration_review_ids = (
+        [int(row.review_id) for row in history.reviews] if calibratable else []
+    )
     return _RwkvInstantForecastHistory(
-        patterns, review_model, success_shares_by_day, recent, latest_today
+        patterns,
+        review_model,
+        success_shares_by_day,
+        recent,
+        latest_today,
+        calibration_targets,
+        calibration_reviews,
+        calibration_review_ids,
+    )
+
+
+def _rwkv_forecast_history_sigma(
+    targets: Mapping[int, tuple[int, int]],
+    review_ids: Sequence[int],
+    predictions: Sequence[tuple[int, float]],
+) -> tuple[float, int] | None:
+    """Sample SD of daily actual-minus-predicted recall, with >=2 answers/day."""
+    by_day: dict[int, list[float]] = {}
+    for index, prediction in predictions:
+        if not 0 <= index < len(review_ids) or not math.isfinite(prediction):
+            continue
+        target = targets.get(review_ids[index])
+        if target is not None:
+            day, actual = target
+            values = by_day.setdefault(day, [0.0, 0.0])
+            values[0] += actual - prediction
+            values[1] += 1
+    residuals = [total / count for total, count in by_day.values() if count >= 2]
+    if len(residuals) < 2:
+        return None
+    average = sum(residuals) / len(residuals)
+    sigma = math.sqrt(
+        sum((value - average) ** 2 for value in residuals) / (len(residuals) - 1)
+    )
+    return min(sigma, 1.0), len(residuals)
+
+
+def _rwkv_forecast_calibration(
+    backend: object,
+    history: _RwkvInstantForecastHistory,
+    report_progress: RwkvWorkloadProgressCallback,
+    paths: int,
+) -> tuple[float, int] | None:
+    replay = getattr(backend, "forecast_history_predictions", None)
+    if not history.calibration_reviews or not callable(replay):
+        return None
+    report_progress(0, paths)
+    predictions = replay(
+        reviews=history.calibration_reviews,
+        progress=lambda _current, _total: report_progress(0, paths),
+    )
+    return _rwkv_forecast_history_sigma(
+        history.calibration_targets, history.calibration_review_ids, predictions
     )
 
 
@@ -15293,6 +15378,8 @@ def forecast_rwkv_workload(
     fast: bool = False,
     max_interval: int = 36500,
     progress: RwkvWorkloadProgressCallback | None = None,
+    partial_progress: Callable[[dict[str, object], int, int, Sequence[float]], None]
+    | None = None,
     cancel_event: threading.Event | None = None,
 ) -> dict[str, object]:
     """Forecast the daily workload of the cards matched by `search`.
@@ -15382,6 +15469,8 @@ def forecast_rwkv_workload(
     review_model = None if instant_used else _rwkv_simulator_review_model(reviewer)
     start = time.monotonic()
     output: object = (paths, [], [], 0)
+    calibration: tuple[float, int] | None = None
+    calibration_insufficient = False
     if cards:
         restore_cache_snapshot = getattr(backend, "restore_cache_snapshot", None)
         with _temporary_reviewer_backend_operation(
@@ -15430,11 +15519,31 @@ def forecast_rwkv_workload(
                     min_intervening = int(
                         scope.study_config.rwkv_review_min_intervening_reviews
                     )
+                    history_started = time.monotonic()
                     history = _rwkv_forecast_review_history(
                         reviewer,
                         deck_ids={card.group for card in cards},
                         recent_count=min_intervening,
+                        include_calibration=paths == 3,
                     )
+                    if paths == 3:
+                        calibration = _rwkv_forecast_calibration(
+                            backend, history, report_progress, paths
+                        )
+                        calibration_insufficient = calibration is None
+                        logger.debug(
+                            "RWKV Instant forecast calibration: reviews=%s history_days=%s "
+                            "sigma=%s elapsed_ms=%.1f",
+                            len(history.calibration_reviews),
+                            calibration[1] if calibration else 0,
+                            calibration[0] if calibration else None,
+                            (time.monotonic() - history_started) * 1000,
+                        )
+                        history = history._replace(
+                            calibration_targets={},
+                            calibration_reviews=[],
+                            calibration_review_ids=[],
+                        )
                     intervening: dict[int, int] = {}
                     for count, card_id in enumerate(history.recent_card_ids):
                         intervening.setdefault(card_id, count)
@@ -15470,6 +15579,30 @@ def forecast_rwkv_workload(
                     learn_ahead = _rwkv_forecast_col_config(col, "learnAheadSecs", 1200)
                     if not isinstance(learn_ahead, int):
                         learn_ahead = 1200
+                    partial_metadata: dict[str, object] = {
+                        "version": 1,
+                        "days": days,
+                        "paths": paths,
+                        "seed": int(seed),
+                        "cards": len(cards),
+                        "model": "instant",
+                    }
+                    if calibration is not None:
+                        partial_metadata["scenario_sigma"] = calibration[0]
+                        partial_metadata["scenario_history_days"] = calibration[1]
+                    elif calibration_insufficient:
+                        partial_metadata["scenario_calibration"] = (
+                            "insufficient_history"
+                        )
+
+                    def report_day(
+                        path: int, day: int, values: Sequence[float]
+                    ) -> None:
+                        _check_rwkv_workload_cancel(cancel_event)
+                        operation.require_current()
+                        if partial_progress is not None:
+                            partial_progress(partial_metadata, path, day, values)
+
                     output = instant_forecast(
                         cards=cards,
                         decks=scope.decks,
@@ -15514,6 +15647,8 @@ def forecast_rwkv_workload(
                         review_order=order,
                         review_model=history.review_model,
                         progress=report_progress,
+                        **({"scenario_sigma": calibration[0]} if calibration else {}),
+                        **({"day_progress": report_day} if partial_progress else {}),
                     )
                 else:
                     output = forecast(
@@ -15539,6 +15674,11 @@ def forecast_rwkv_workload(
                 ) from exc
             operation.require_current()
     result = _rwkv_forecast_result(output, cards, days=days, seed=seed)
+    if calibration is not None:
+        result["scenario_sigma"] = calibration[0]
+        result["scenario_history_days"] = calibration[1]
+    elif calibration_insufficient:
+        result["scenario_calibration"] = "insufficient_history"
     result["elapsed_ms"] = (time.monotonic() - start) * 1000
     result["state_update_interval"] = (
         1 if instant_used else max(1, int(state_update_interval))
@@ -15694,14 +15834,15 @@ def _rwkv_forecast_result(
     days: int,
     seed: int,
 ) -> dict[str, object]:
+    rows = cast(tuple[Any, ...], output)
     path_count, day_rows, group_rows, estimated = cast(
-        tuple[int, list[tuple[Any, ...]], list[tuple[Any, ...]], int], output
+        tuple[int, list[tuple[Any, ...]], list[tuple[Any, ...]], int], rows[:4]
     )
     schedulers: dict[str, int] = {}
     for card in cards:
         name = _RWKV_FORECAST_SCHEDULER_NAMES[card.scheduler]
         schedulers[name] = schedulers.get(name, 0) + 1
-    return {
+    result: dict[str, object] = {
         "version": 1,
         "days": int(days),
         "paths": int(path_count),
@@ -15729,6 +15870,19 @@ def _rwkv_forecast_result(
             for group, due, done, new in group_rows
         ],
     }
+    if len(rows) == 5:
+        scenario_paths = cast(Sequence[Sequence[Sequence[float]]], rows[4])
+        result["scenario_daily"] = [
+            {
+                "day": day,
+                **{
+                    metric: [float(path[day][index]) for path in scenario_paths]
+                    for index, metric in enumerate(_RWKV_FORECAST_METRICS)
+                },
+            }
+            for day in range(days)
+        ]
+    return result
 
 
 def rwkv_workload_forecast_available(mw: object | None = None) -> bool:
@@ -15752,14 +15906,79 @@ def rwkv_workload_forecast_available(mw: object | None = None) -> bool:
 
 
 @dataclass
+class _RwkvForecastPartial:
+    metadata: dict[str, object]
+    # Day -> path -> due, done, new, lapses, seconds.
+    rows: dict[int, dict[int, tuple[float, ...]]] = field(default_factory=dict)
+    completed: int = 0
+
+
+def _rwkv_partial_forecast_result(partial: _RwkvForecastPartial) -> dict[str, object]:
+    """Summarize the days reported so far without inventing missing scenarios."""
+    is_scenario = "scenario_sigma" in partial.metadata
+    daily: list[dict[str, object]] = []
+    scenario_daily: list[dict[str, object]] = []
+
+    def band(values: list[float]) -> dict[str, float]:
+        values.sort()
+
+        def quantile(q: float) -> float:
+            position = (len(values) - 1) * q
+            lower = math.floor(position)
+            upper = math.ceil(position)
+            return values[lower] + (values[upper] - values[lower]) * (position - lower)
+
+        return {
+            "mean": sum(values) / len(values),
+            "p1": quantile(0.01),
+            "p5": quantile(0.05),
+            "p50": quantile(0.5),
+            "p95": quantile(0.95),
+            "p99": quantile(0.99),
+        }
+
+    for day, samples in sorted(partial.rows.items()):
+        if not samples or (is_scenario and 1 not in samples):
+            continue
+        daily.append(
+            {
+                "day": day,
+                **{
+                    metric: band([row[index] for row in samples.values()])
+                    for index, metric in enumerate(_RWKV_FORECAST_METRICS)
+                },
+            }
+        )
+        if is_scenario:
+            scenario_daily.append(
+                {
+                    "day": day,
+                    **{
+                        metric: [
+                            samples[path][index] if path in samples else None
+                            for path in range(3)
+                        ]
+                        for index, metric in enumerate(_RWKV_FORECAST_METRICS)
+                    },
+                }
+            )
+    result: dict[str, object] = {**partial.metadata, "partial": True, "daily": daily}
+    if is_scenario:
+        result["scenario_daily"] = scenario_daily
+    return result
+
+
+@dataclass
 class _RwkvWorkloadForecastJob:
     job_id: int
     cancel: threading.Event
     current: int = 0
     total: int = 0
+    unit: str = "paths"
     done: bool = False
     error: str | None = None
     result: dict[str, object] | None = None
+    partial: _RwkvForecastPartial | None = None
 
 
 _rwkv_workload_forecast_jobs_lock = threading.Lock()
@@ -15791,19 +16010,46 @@ def start_rwkv_workload_forecast(
         _rwkv_workload_forecast_jobs[job.job_id] = job
 
     def report(current: int, total: int) -> None:
-        job.current, job.total = current, total
+        with _rwkv_workload_forecast_jobs_lock:
+            if job.unit == "paths":
+                job.current, job.total = current, total
+
+    def report_day(
+        metadata: dict[str, object], path: int, day: int, values: Sequence[float]
+    ) -> None:
+        with _rwkv_workload_forecast_jobs_lock:
+            if job.partial is None:
+                job.partial = _RwkvForecastPartial(metadata=metadata)
+            rows = job.partial.rows.setdefault(day, {})
+            if path not in rows:
+                job.partial.completed += 1
+            rows[path] = tuple(values)
+            job.current = job.partial.completed
+            job.total = cast(int, metadata["paths"]) * cast(int, metadata["days"])
+            job.unit = "days"
 
     def run() -> None:
         try:
-            job.result = forecast_rwkv_workload(
-                mw=mw, progress=report, cancel_event=job.cancel, **kwargs
+            result = forecast_rwkv_workload(
+                mw=mw,
+                progress=report,
+                partial_progress=report_day,
+                cancel_event=job.cancel,
+                **kwargs,
             )
+            with _rwkv_workload_forecast_jobs_lock:
+                job.result = result
         except Exception as exc:
-            job.error = (
-                "cancelled" if job.cancel.is_set() else str(exc) or type(exc).__name__
-            )
+            with _rwkv_workload_forecast_jobs_lock:
+                job.error = (
+                    "cancelled"
+                    if job.cancel.is_set()
+                    else str(exc) or type(exc).__name__
+                )
         finally:
-            job.done = True
+            with _rwkv_workload_forecast_jobs_lock:
+                job.partial = None
+                job.done = True
 
     threading.Thread(target=run, name="rwkv-workload-forecast", daemon=True).start()
     return rwkv_workload_forecast_progress(job.job_id)
@@ -15814,19 +16060,42 @@ def rwkv_workload_forecast_progress(job_id: int) -> dict[str, object]:
 
     with _rwkv_workload_forecast_jobs_lock:
         job = _rwkv_workload_forecast_jobs.get(int(job_id))
-    if job is None:
-        return {"job_id": job_id, "phase": "missing", "done": True, "error": None}
-    phase = (
-        "running" if not job.done else "failed" if job.error is not None else "complete"
-    )
+        if job is None:
+            return {"job_id": job_id, "phase": "missing", "done": True, "error": None}
+        phase = (
+            "running"
+            if not job.done
+            else "failed"
+            if job.error is not None
+            else "complete"
+        )
+        partial = (
+            _RwkvForecastPartial(
+                metadata=dict(job.partial.metadata),
+                rows={day: dict(rows) for day, rows in job.partial.rows.items()},
+                completed=job.partial.completed,
+            )
+            if phase == "running" and job.partial is not None
+            else None
+        )
+        current, total, unit, done, error, result = (
+            job.current,
+            job.total,
+            job.unit,
+            job.done,
+            job.error,
+            job.result,
+        )
     return {
         "job_id": job.job_id,
         "phase": phase,
-        "current": job.current,
-        "total": job.total,
-        "done": job.done,
-        "error": job.error,
-        "result": job.result if phase == "complete" else None,
+        "current": current,
+        "total": total,
+        "unit": unit,
+        "done": done,
+        "error": error,
+        "result": result if phase == "complete" else None,
+        "partial_result": _rwkv_partial_forecast_result(partial) if partial else None,
     }
 
 

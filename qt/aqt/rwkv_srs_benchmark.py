@@ -1283,6 +1283,20 @@ class _RustRwkvRuntime:
                 progress,
             )
 
+    def forecast_history_predictions(
+        self,
+        reviews: Sequence[RwkvReviewInput],
+        progress: Callable[[int, int], None] | None = None,
+    ) -> list[tuple[int, float]]:
+        replay = getattr(self._process, "forecast_history_predictions_packed", None)
+        if not callable(replay):
+            raise ValueError("RWKV runtime does not support forecast calibration")
+        with self._locked_process():
+            return cast(
+                list[tuple[int, float]],
+                replay(_packed_warm_up_reviews(reviews), progress),
+            )
+
     def forecast_instant_workload(  # noqa: PLR0913
         self,
         *,
@@ -1316,6 +1330,8 @@ class _RustRwkvRuntime:
         review_order: int,
         review_model: object,
         progress: Callable[[int, int], None] | None = None,
+        scenario_sigma: float | None = None,
+        day_progress: Callable[[int, int, Sequence[float]], None] | None = None,
     ) -> object:
         forecast = getattr(
             self._process, "forecast_instant_workload_from_warm_up", None
@@ -1347,7 +1363,7 @@ class _RustRwkvRuntime:
             for card in cards
         ]
         with self._locked_process():
-            return forecast(
+            args = (
                 rows,
                 list(decks),
                 list(deck_configs),
@@ -1374,6 +1390,13 @@ class _RustRwkvRuntime:
                 tuple(getattr(review_model, "grade_seconds")),
                 _workload_bucket_probabilities(review_model),
                 progress,
+            )
+            if day_progress is not None:
+                return forecast(*args, scenario_sigma, day_progress)
+            return (
+                forecast(*args, scenario_sigma)
+                if scenario_sigma is not None
+                else forecast(*args)
             )
 
     def snapshot(self, review_input: RwkvReviewInput) -> object:

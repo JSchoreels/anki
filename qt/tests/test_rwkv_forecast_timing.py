@@ -1,6 +1,8 @@
 # Copyright: Ankitects Pty Ltd and contributors
 # License: GNU AGPL, version 3 or later; http://www.gnu.org/licenses/agpl.html
 
+import threading
+import time
 from contextlib import contextmanager
 from dataclasses import replace
 from pathlib import Path
@@ -52,6 +54,105 @@ def test_review_timing_patterns_preserve_subsecond_review_intervals() -> None:
     ) == [(99, [(10_210, 300), (10_820, 400)])]
 
 
+def test_forecast_sigma_is_daily_prediction_residual_variability() -> None:
+    # Two days with residuals +0.3 and -0.3, and one single-answer day
+    # which cannot contribute to a daily estimate.
+    targets = {1: (98, 1), 2: (98, 1), 3: (99, 0), 4: (99, 0), 5: (97, 1)}
+    predictions = [(0, 0.7), (1, 0.7), (2, 0.3), (3, 0.3), (4, 0.0)]
+    sigma, days = rwkv_scheduler._rwkv_forecast_history_sigma(
+        targets, [1, 2, 3, 4, 5], predictions
+    ) or (None, None)
+    assert days == 2
+    assert sigma == pytest.approx(0.3 * 2**0.5)
+    assert rwkv_scheduler._rwkv_forecast_history_sigma(targets, [1], [(0, 0.5)]) is None
+
+
+def test_forecast_sigma_can_be_zero_when_daily_residuals_match() -> None:
+    targets = {1: (98, 1), 2: (98, 0), 3: (99, 1), 4: (99, 0)}
+    assert rwkv_scheduler._rwkv_forecast_history_sigma(
+        targets, [1, 2, 3, 4], [(i, 0.5) for i in range(4)]
+    ) == (0.0, 2)
+
+
+def test_forecast_scenario_result_preserves_path_identities() -> None:
+    band = (10.0, 8.0, 9.0, 10.0, 11.0, 12.0)
+    output = (
+        3,
+        [(0, band, band, band, band, band)],
+        [],
+        0,
+        [[[1, 2, 3, 4, 5]], [[9, 8, 7, 6, 5]], [[4, 3, 2, 1, 0]]],
+    )
+    result = rwkv_scheduler._rwkv_forecast_result(output, [], days=1, seed=0)
+    assert result["scenario_daily"] == [
+        {
+            "day": 0,
+            "due": [1.0, 9.0, 4.0],
+            "done": [2.0, 8.0, 3.0],
+            "new": [3.0, 7.0, 2.0],
+            "lapses": [4.0, 6.0, 1.0],
+            "seconds": [5.0, 5.0, 0.0],
+        }
+    ]
+    assert "scenario_daily" not in rwkv_scheduler._rwkv_forecast_result(
+        output[:4], [], days=1, seed=0
+    )
+
+
+def test_partial_forecast_waits_for_center_and_keeps_missing_bounds() -> None:
+    partial = rwkv_scheduler._RwkvForecastPartial(
+        metadata={"days": 3, "paths": 3, "cards": 5, "scenario_sigma": 0.04},
+        rows={0: {0: (5, 4, 3, 2, 1)}},
+    )
+    assert rwkv_scheduler._rwkv_partial_forecast_result(partial)["daily"] == []
+    partial.rows[0][1] = (9, 8, 7, 6, 5)
+    partial.rows[1] = {1: (11, 10, 9, 8, 7)}
+    result = rwkv_scheduler._rwkv_partial_forecast_result(partial)
+    assert result["partial"] is True
+    assert [entry["day"] for entry in result["daily"]] == [0, 1]
+    assert result["scenario_daily"][0]["due"] == [5, 9, None]
+    assert result["scenario_daily"][1]["due"] == [None, 11, None]
+
+
+def test_partial_forecast_job_reports_days_while_still_running(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    reported = threading.Event()
+    release = threading.Event()
+
+    def forecast(**kwargs: Any) -> dict[str, object]:
+        callback = kwargs["partial_progress"]
+        callback(
+            {"days": 2, "paths": 3, "cards": 1, "scenario_sigma": 0.04},
+            1,
+            0,
+            [9, 8, 7, 6, 5],
+        )
+        reported.set()
+        assert release.wait(timeout=5)
+        return {"version": 1, "daily": []}
+
+    monkeypatch.setattr(rwkv_scheduler, "forecast_rwkv_workload", forecast)
+    job_id = rwkv_scheduler.start_rwkv_workload_forecast(SimpleNamespace())["job_id"]
+    try:
+        assert reported.wait(timeout=5)
+        state = rwkv_scheduler.rwkv_workload_forecast_progress(job_id)
+        assert state["phase"] == "running"
+        assert (state["current"], state["total"], state["unit"]) == (1, 6, "days")
+        assert state["partial_result"]["scenario_daily"][0]["due"] == [None, 9.0, None]
+    finally:
+        release.set()
+    deadline = time.monotonic() + 5
+    while time.monotonic() < deadline:
+        state = rwkv_scheduler.rwkv_workload_forecast_progress(job_id)
+        if state["done"]:
+            break
+        time.sleep(0.01)
+    assert state["phase"] == "complete"
+    assert state["partial_result"] is None
+    assert state["unit"] == "days"
+
+
 def test_forecast_uses_canonical_history_timing(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
@@ -63,6 +164,7 @@ def test_forecast_uses_canonical_history_timing(
             deck_id=1,
             card_id=10,
             ease=3,
+            review_kind=1,
             duration_millis=1_234,
         ),
         scheduler_pb2.RwkvHistoricalReviewInputsResponse.Review(
@@ -71,6 +173,7 @@ def test_forecast_uses_canonical_history_timing(
             deck_id=1,
             card_id=11,
             ease=2,
+            review_kind=1,
             duration_millis=2_345,
         ),
         scheduler_pb2.RwkvHistoricalReviewInputsResponse.Review(
@@ -110,6 +213,29 @@ def test_forecast_uses_canonical_history_timing(
     assert history.review_model.bucket_probabilities[10] == (0.0, 0.5, 0.5, 0.0)
     assert history.success_shares_by_day[99] == (0.5, 0.5, 0.0)
     assert history.recent_card_ids == [11, 10]
+    assert history.calibration_reviews == []
+
+    rows.extend(
+        scheduler_pb2.RwkvHistoricalReviewInputsResponse.Review(
+            review_id=(today_start - 2 * 86_400 + second) * 1000,
+            day_offset=98,
+            deck_id=deck_id,
+            card_id=card,
+            ease=3,
+            review_kind=1,
+            duration_millis=1_000,
+        )
+        for second, deck_id, card in [(100, 1, 20), (130, 1, 21), (160, 2, 22)]
+    )
+    calibrated = rwkv_scheduler._rwkv_forecast_review_history(
+        object(), deck_ids={1}, recent_count=2, include_calibration=True
+    )
+    assert len(calibrated.calibration_targets) == 4
+    assert len(calibrated.calibration_reviews) == len(rows)
+    assert len(calibrated.calibration_review_ids) == len(rows)
+    assert rows[-1].review_id not in calibrated.calibration_targets
+    # The other deck is still replayed because it affects shared model state.
+    assert calibrated.calibration_reviews[-1].identity.deck_id == 2
 
 
 def test_forecast_reports_missing_real_timing_history(
@@ -457,6 +583,67 @@ def test_instant_native_bridge_simulates_without_mutating_warm_state() -> None:
     output = runtime.forecast_instant_workload(**args)
     assert output[1][0][2][0] == 1.0
     assert runtime.forecast_instant_workload(**args) == output
+
+    single = runtime.forecast_instant_workload(**{**args, "paths": 1})
+    scenarios = runtime.forecast_instant_workload(
+        **{**args, "paths": 3}, scenario_sigma=0.0
+    )
+    assert len(scenarios) == 5
+    assert scenarios[4][0] == scenarios[4][1] == scenarios[4][2]
+    assert scenarios[4][1][0] == pytest.approx(
+        [single[1][0][i][0] for i in range(1, 6)]
+    )
+    day_events: list[tuple[int, int, list[float]]] = []
+    shifted = runtime.forecast_instant_workload(
+        **{**args, "paths": 3},
+        scenario_sigma=0.3,
+        day_progress=lambda path, day, values: day_events.append((path, day, values)),
+    )
+    assert shifted[4][1] == scenarios[4][1]
+    assert sorted(path for path, _day, _values in day_events) == [0, 1, 2]
+    for path, day, values in day_events:
+        assert values == pytest.approx(shifted[4][path][day])
+
+    def cancel_day(_path: int, _day: int, _values: list[float]) -> None:
+        raise InterruptedError("day stream cancelled for test")
+
+    with pytest.raises(Exception, match="day stream cancelled for test"):
+        runtime.forecast_instant_workload(
+            **{**args, "paths": 3}, scenario_sigma=0.3, day_progress=cancel_day
+        )
+    assert runtime.warm_up_state(query) == initial_state
+    assert runtime.cache_state() == initial_cache
+    no_minimum = deck_config_pb2.DeckConfig()
+    no_minimum.CopyFrom(preset)
+    no_minimum.config.rwkv_review_minimum_reviews_per_day = 0
+    extreme = runtime.forecast_instant_workload(
+        **{
+            **args,
+            "paths": 3,
+            "cards": [replace(card, desired_retention=0.5)],
+            "deck_configs": [no_minimum.SerializeToString()],
+        },
+        scenario_sigma=1.0,
+    )
+    # With no minimum forcing a review, 0 is due and 1 is above the target.
+    assert extreme[4][0][0][0] == 1
+    assert extreme[4][2][0][0] == 0
+    with pytest.raises(Exception, match="scenario sigma"):
+        runtime.forecast_instant_workload(**args, scenario_sigma=0.3)
+
+    predictions = runtime.forecast_history_predictions([answer])
+    assert len(predictions) == 1
+    assert 0 <= predictions[0][1] <= 1
+    assert runtime.warm_up_state(query) == initial_state
+    assert runtime.cache_state() == initial_cache
+
+    def cancel_replay(_current: int, _total: int) -> None:
+        raise InterruptedError("calibration cancelled for test")
+
+    with pytest.raises(Exception, match="calibration cancelled for test"):
+        runtime.forecast_history_predictions([answer], progress=cancel_replay)
+    assert runtime.warm_up_state(query) == initial_state
+    assert runtime.cache_state() == initial_cache
 
     progress_calls = 0
 
