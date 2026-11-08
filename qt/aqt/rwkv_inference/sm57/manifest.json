@@ -1,10 +1,10 @@
 {
- "label": "sm57-inst-dec1ep32k",
- "created": "2026-11-07 10:45:01",
+ "label": "sm57s4-inst-dec1ep32k-e30",
+ "created": "2026-11-08 12:20:34",
  "checkpoint": {
-  "path": "<workspace>/wt/sm57/artifacts/small-model/sm57-inst-e26-dec-1ep32k-muon/run/E89-F65e-F77a/master.pth",
+  "path": "<workspace>/wt/sm57/artifacts/small-model/sm57s4-inst-e30-dec-1ep32k-muon/run/E89-F65e-F77a/master.pth",
   "bytes": 1489805,
-  "sha256": "09331f227ea4ae44475786211bf7aa2168d0bfc8359a9f77138103836c8273be"
+  "sha256": "c77231569e6054d69f76dd32706ca8d4a99058fecc4c2841dfb3ae69e31be078"
  },
  "parameters": 331511,
  "architecture": {
@@ -266,12 +266,12 @@
    "cuda_matmul_allow_tf32": false,
    "rss_sampling": "process tree at user transitions; sampled maximum, not continuous peak",
    "provenance": {
-    "captured_utc": "2026-11-06T04:37:25.727383+00:00",
-    "git_commit": "6a49c1c8e970292e466188d7aae9a8bb20290f0f",
+    "captured_utc": "2026-11-08T00:55:00.489990+00:00",
+    "git_commit": "1a2c550489d722060ea592a3e978d49292bcddf4",
     "git_dirty": true,
-    "git_status_porcelain_z": " M artifacts/small-model/sm57/gpu/check.out\u0000",
-    "source_tree_sha256": "670385975f6d7944e50af7efabe9adc6e899a8654b46df1123e180d3c1868318",
-    "source_archive": "artifacts/sources/experiment-sources/670385975f6d7944e50af7efabe9adc6e899a8654b46df1123e180d3c1868318/source.zip",
+    "git_status_porcelain_z": " M artifacts/small-model/sm57/gpu/check-stage4.out\u0000",
+    "source_tree_sha256": "9322e692cd915d17d5f3d633f9fb905bad3f8a5cc348b8bcb3dec59e2e8c8de7",
+    "source_archive": "artifacts/sources/experiment-sources/9322e692cd915d17d5f3d633f9fb905bad3f8a5cc348b8bcb3dec59e2e8c8de7/source.zip",
     "source_paths": [
      "rwkv",
      "rwkv-small",
@@ -286,7 +286,7 @@
    "status": "complete",
    "smoke_only": false,
    "implementation_sha256": "34a4af357daedad7cda4ffb62589a5a7675c8053adbf47b9b0dbcf051092ac97",
-   "started_utc": "2026-11-06T04:37:26.676740+00:00",
+   "started_utc": "2026-11-08T00:55:01.672088+00:00",
    "training_users": 8000,
    "evaluation_users": 0,
    "progress_users": 8000,
@@ -295,10 +295,10 @@
    "training_curve_labels": 505739554,
    "training_instant_labels": 505739554,
    "hierarchical_padded_positions": 7706198061,
-   "peak_process_tree_rss_mib": 7237.87109375,
-   "gpu_copy_milliseconds": 59457.7119140625,
-   "gpu_copy_overlap_training_milliseconds": 501.217041015625,
-   "initial_parameter_sha256": "b2c3e9f0aa931ea5b942faaceb71218f1209bd7eab93eed2eaf2222a9f844a1a",
+   "peak_process_tree_rss_mib": 6713.3125,
+   "gpu_copy_milliseconds": 57960.59375,
+   "gpu_copy_overlap_training_milliseconds": 507.478759765625,
+   "initial_parameter_sha256": "c30ddbcf68aedf04dbfcf42b992680bb0f89169596240d46ca0383f128c9ad6c",
    "curve_loss_weight": 0.0,
    "catch_up": {
     "keys": [
@@ -343,19 +343,19 @@
      }
     }
    },
-   "discarded_primer_seconds": 2.2996051001828164,
-   "model_setup_seconds": 3.1221627998165786,
+   "discarded_primer_seconds": 2.502384199993685,
+   "model_setup_seconds": 3.8060506999026984,
    "warmup_job_workers": 1,
    "prestarted_worker_pids": [
-    28516,
-    33308,
-    37076,
-    40208,
-    67500
+    12776,
+    22624,
+    38440,
+    77088,
+    78092
    ],
    "prestarted_workers": 5,
-   "pool_ready_wait_seconds": 0.00024349987506866455,
-   "pool_prestart_seconds": 2.348507300019264,
+   "pool_ready_wait_seconds": 0.0003215998876839876,
+   "pool_prestart_seconds": 2.5552172001916915,
    "host_placement": {
     "mode": "physical",
     "main_process_cpus": [
@@ -386,7 +386,7 @@
     "mode": "above_normal_unthrottled",
     "processes": [
      {
-      "pid": 73404,
+      "pid": 46252,
       "role": "main",
       "previous_throttling": {
        "control_mask": 0,
@@ -396,7 +396,7 @@
       "priority_class": 32768
      },
      {
-      "pid": 28516,
+      "pid": 12776,
       "role": "worker",
       "previous_throttling": {
        "control_mask": 0,
@@ -406,7 +406,7 @@
       "priority_class": 32768
      },
      {
-      "pid": 33308,
+      "pid": 22624,
       "role": "worker",
       "previous_throttling": {
        "control_mask": 0,
@@ -416,7 +416,7 @@
       "priority_class": 32768
      },
      {
-      "pid": 37076,
+      "pid": 38440,
       "role": "worker",
       "previous_throttling": {
        "control_mask": 0,
@@ -426,7 +426,7 @@
       "priority_class": 32768
      },
      {
-      "pid": 40208,
+      "pid": 77088,
       "role": "worker",
       "previous_throttling": {
        "control_mask": 0,
@@ -436,7 +436,7 @@
       "priority_class": 32768
      },
      {
-      "pid": 67500,
+      "pid": 78092,
       "role": "worker",
       "previous_throttling": {
        "control_mask": 0,
@@ -452,7 +452,7 @@
      "current": 10000
     }
    },
-   "training_started_utc": "2026-11-06T04:37:31.063725+00:00",
+   "training_started_utc": "2026-11-08T00:55:06.693847+00:00",
    "nvrtc_max_timesteps": 131072,
    "deferred_read_depth": 2,
    "lean_step_reset": {
@@ -461,31 +461,31 @@
    },
    "bookkeeping_stride": 8,
    "rss_sampling_skipped_processes": 0,
-   "training_elapsed_seconds": 28598.952923399862,
+   "training_elapsed_seconds": 28632.94115840015,
    "latest_snapshot": {
     "reason": "periodic",
-    "utc": "2026-11-06T12:07:06.318976+00:00",
+    "utc": "2026-11-08T08:25:15.479161+00:00",
     "progress_users": 7600,
-    "folder": "<workspace>/wt/sm57/artifacts/small-model/sm57-inst-e26-dec-1ep32k-muon/run/E89-F65e-F77a/snapshots/users-07600"
+    "folder": "<workspace>/wt/sm57/artifacts/small-model/sm57s4-inst-e30-dec-1ep32k-muon/run/E89-F65e-F77a/snapshots/users-07600"
    },
-   "training_seconds": 28615.354825200047,
+   "training_seconds": 28649.32936520013,
    "training_gc": {
     "generation_0": {
-     "collections": 87354,
-     "seconds": 5.733781521907076
+     "collections": 87248,
+     "seconds": 5.831112613668665
     },
     "generation_1": {
-     "collections": 7941,
-     "seconds": 2.78699269448407
+     "collections": 7931,
+     "seconds": 2.834017219953239
     },
     "generation_2": {
-     "collections": 182,
-     "seconds": 16.21821269975044
+     "collections": 183,
+     "seconds": 16.92146450164728
     }
    },
-   "cold_training_seconds": 28615.354825200047,
-   "reviews_per_second": 20336.72926842457,
-   "cold_reviews_per_second": 20336.72926842457,
+   "cold_training_seconds": 28649.32936520013,
+   "reviews_per_second": 20312.612437863074,
+   "cold_reviews_per_second": 20312.612437863074,
    "coverage": "<8000 entries omitted>",
    "peak_allocated_mib": 7428.205078125,
    "peak_reserved_mib": 12840.0,
@@ -495,17 +495,17 @@
     "num_device_alloc": 894,
     "num_device_free": 357
    },
-   "trained_parameter_sha256": "c32229b54bd2d03fef6f3e29f847fdae1821ee711b154f1333c9592cf3267949",
-   "update_offset_end": 596106,
-   "case_elapsed_seconds": 28621.03180160001
+   "trained_parameter_sha256": "0afcb09a7629fa7ef9dd1b17cf432e65a3817d69aea345cce7ce77fa16c948fb",
+   "update_offset_end": 684418,
+   "case_elapsed_seconds": 28655.877823000075
   },
-  "decay_dir": "<workspace>/wt/sm57/artifacts/small-model/sm57-inst-e26-dec-1ep32k-muon",
+  "decay_dir": "<workspace>/wt/sm57/artifacts/small-model/sm57s4-inst-e30-dec-1ep32k-muon",
   "decay": {
-   "created_utc": "2026-11-06T04:36:42.068265+00:00",
+   "created_utc": "2026-11-08T00:54:20.216241+00:00",
    "source_run": "<workspace>/wt/sm72s/artifacts/accuracy/experiments/scale-w64kd-final-sc-lanes-leakfree/run",
    "source_epoch": 25,
-   "source_case": "<workspace>/wt/sm57/artifacts/small-model/sm57-inst-e26/run/E89-F65e-F77a",
-   "source_update_offset_end": 574028,
+   "source_case": "<workspace>/wt/sm57/artifacts/small-model/sm57s4-inst-e30/run/E89-F65e-F77a",
+   "source_update_offset_end": 662340,
    "model": "rwkv-small",
    "track": "E89-F65e-F77a",
    "options": {
@@ -573,10 +573,10 @@
    "evaluation_set": "none",
    "evaluation_users": 0,
    "control": "epoch-25 scores of the same users in <workspace>/wt/sm72s/artifacts/accuracy/experiments/scale-w64kd-final-sc-lanes-leakfree/run/epoch-25/run/E89-F65e-F77a/result.json",
-   "start": "<workspace>/wt/sm57/artifacts/small-model/sm57-inst-e26",
-   "start_master_sha256": "82c929b5ebe38b44042f55b502ce675dfcd97c485192fd0ae851b5e8bfb3b98b",
+   "start": "<workspace>/wt/sm57/artifacts/small-model/sm57s4-inst-e30",
+   "start_master_sha256": "585c50b6a5459b5a0cb13258240775cc29c4063df82a995ad8c54dcb0273b0dd",
    "architecture": "w64",
-   "sm77": "users / order / schedule from run epoch 25; start weights <workspace>/wt/sm57/artifacts/small-model/sm57-inst-e26/run/E89-F65e-F77a",
+   "sm77": "users / order / schedule from run epoch 25; start weights <workspace>/wt/sm57/artifacts/small-model/sm57s4-inst-e30/run/E89-F65e-F77a",
    "trimmed_unlabelled_tails": [
     {
      "user_id": 5599,
@@ -590,8 +590,8 @@
   "decay_protocol_full_run": {
    "epoch": 25,
    "evaluate": false,
-   "init_master": "<workspace>/wt/sm57/artifacts/small-model/sm57-inst-e26/run/E89-F65e-F77a/master.pth",
-   "update_offset": 574028,
+   "init_master": "<workspace>/wt/sm57/artifacts/small-model/sm57s4-inst-e30/run/E89-F65e-F77a/master.pth",
+   "update_offset": 662340,
    "lr_schedule": {
     "decay_start": 0.0,
     "decay_end": 1.0,
@@ -601,94 +601,66 @@
    "benchmark_db": "<workspace>/wt/sm72s/artifacts/accuracy/experiments/scale-w64kd-final-sc-lanes-leakfree/run/label-db",
    "evaluation_set": "none",
    "snapshot_users": 400,
-   "control_dir": "<workspace>/wt/sm57/artifacts/small-model/sm57-inst-e26-dec-1ep32k-muon/control",
+   "control_dir": "<workspace>/wt/sm57/artifacts/small-model/sm57s4-inst-e30-dec-1ep32k-muon/control",
    "optimizer_state": "fresh"
   }
  },
  "evaluation": {
-  "scoring": "leak-free inputs (deleted cards: neighbour), normal inputs, int8 per-channel weights + int8 card/note state (w8+s8), review-weighted LogLoss, paired user bootstrap 2,000 resamples seed 0, 95% intervals",
+  "scoring": "leak-free inputs (deleted cards: neighbour), NORMAL inputs (answer-to-answer intervals), int8 per-channel weights + int8 card/note state (w8+s8), review-weighted LogLoss, paired user bootstrap 2,000 resamples seed 0, 95% intervals",
+  "inputs_note": "stage 4 was judged on normal inputs only; a show-time-input scoring of stage 1 and stage 4 is queued in anki-rwkv (artifacts/small-model/showtime/)",
   "reference": "the released small model (leak-free, cool-down from epoch 25, package sm72e25)",
-  "verdict": "go",
-  "why": "instant -0.164 [-0.179, -0.152]: CI below zero and at least 0.05",
+  "stage": "stage 4 = stage 1's instant-only epoch 26 + instant-only epochs 27-30 + the release's one-epoch 32k Muon cool-down",
   "validation_1500": {
-   "unit": "% of the release's LogLoss on the same users (1% of it = 1.003 points of the big model (1 leak-free epoch) on the 722 users)",
+   "unit": "% of the release's LogLoss on the same users",
    "users": 1487,
    "candidate_minus_release": {
-    "curve": {
-     "new": 0.351334,
-     "ref": 0.302968,
-     "delta": 0.048366,
-     "delta_ci": [
-      0.045738,
-      0.050966
-     ],
-     "points": 15.964,
-     "points_ci": [
-      14.936,
-      17.057
-     ],
-     "users_better": 19,
-     "users_worse": 1468
-    },
     "instant": {
-     "new": 0.279079,
+     "new": 0.278891,
      "ref": 0.279538,
-     "delta": -0.000459,
+     "delta": -0.000647,
      "delta_ci": [
-      -0.0005,
-      -0.000423
+      -0.00069,
+      -0.000607
      ],
-     "points": -0.164,
+     "points": -0.231,
      "points_ci": [
-      -0.179,
-      -0.152
+      -0.246,
+      -0.218
      ],
-     "users_better": 1349,
-     "users_worse": 137
+     "users_better": 1358,
+     "users_worse": 128
+    }
+   },
+   "candidate_minus_stage1": {
+    "instant": {
+     "new": 0.278891,
+     "ref": 0.279079,
+     "delta": -0.000187,
+     "delta_ci": [
+      -0.000205,
+      -0.000169
+     ],
+     "points": -0.067,
+     "points_ci": [
+      -0.073,
+      -0.061
+     ],
+     "users_better": 1150,
+     "users_worse": 334
     }
    }
   },
   "rule_pool_722": {
-   "unit": "points = % of the big model (1 leak-free epoch) normal-input LogLoss",
-   "candidate_minus_release": {
-    "curve": {
-     "new": 0.349112,
-     "ref": 0.30003,
-     "delta": 0.049082,
-     "delta_ci": [
-      0.04546,
-      0.052991
-     ],
-     "points": 16.417,
-     "points_ci": [
-      14.959,
-      18.091
-     ],
-     "users_better": 10,
-     "users_worse": 712
-    },
-    "instant": {
-     "new": 0.276093,
-     "ref": 0.276539,
-     "delta": -0.000446,
-     "delta_ci": [
-      -0.000482,
-      -0.000408
-     ],
-     "points": -0.162,
-     "points_ci": [
-      -0.176,
-      -0.148
-     ],
-     "users_better": 646,
-     "users_worse": 75
-    }
-   }
+   "unit": "points = % of the big model (1 leak-free epoch) normal-input LogLoss, 722 users of the 732 set",
+   "verdict": "go",
+   "stage4_minus_stage1": "-0.071 [-0.079, -0.064]",
+   "stage4_minus_release": "-0.233",
+   "stage4_minus_big_model": "+0.051"
   },
   "curve_head": "untrained (every curve loss term at weight 0): never use p_curve, intervals or S90 from this model"
  },
  "parity": {
-  "checkpoint": "<workspace>/wt/sm57/artifacts/small-model/sm57-inst-e26-dec-1ep32k-muon/run/E89-F65e-F77a/master.pth",
+  "checkpoint": "<workspace>/wt/sm57/artifacts/small-model/sm57s4-inst-e30-dec-1ep32k-muon/run/E89-F65e-F77a/master.pth",
   "users": [
    4676,
    1745,
@@ -699,97 +671,97 @@
    "fp32": {
     "max_abs_dp_labelled": {
      "p_curve": 3.5762786865234375e-07,
-     "p_imm": 1.9073486328125e-06,
-     "p_rating": 2.2649765014648438e-06
+     "p_imm": 9.5367431640625e-07,
+     "p_rating": 1.1324882507324219e-06
     },
     "per_user": [
      {
       "user": 4676,
       "reviews": 3716,
       "labelled": 5676,
-      "torch_seconds": 3.62,
-      "numpy_seconds": 2.73,
-      "p_curve": 3.5762786865234375e-07,
-      "p_curve_all_positions": 3.5762786865234375e-07,
+      "torch_seconds": 3.16,
+      "numpy_seconds": 1.91,
+      "p_curve": 2.384185791015625e-07,
+      "p_curve_all_positions": 2.384185791015625e-07,
       "p_imm": 4.76837158203125e-07,
       "p_imm_all_positions": 4.76837158203125e-07,
-      "p_rating": 1.043081283569336e-06,
-      "p_rating_all_positions": 1.043081283569336e-06
+      "p_rating": 7.152557373046875e-07,
+      "p_rating_all_positions": 7.152557373046875e-07
      },
      {
       "user": 1745,
       "reviews": 4144,
       "labelled": 7410,
-      "torch_seconds": 4.46,
-      "numpy_seconds": 2.84,
+      "torch_seconds": 3.78,
+      "numpy_seconds": 1.9,
       "p_curve": 3.5762786865234375e-07,
       "p_curve_all_positions": 3.5762786865234375e-07,
-      "p_imm": 1.6093254089355469e-06,
-      "p_imm_all_positions": 1.6093254089355469e-06,
-      "p_rating": 2.2649765014648438e-06,
-      "p_rating_all_positions": 2.2649765014648438e-06
+      "p_imm": 9.5367431640625e-07,
+      "p_imm_all_positions": 9.5367431640625e-07,
+      "p_rating": 9.5367431640625e-07,
+      "p_rating_all_positions": 1.519918441772461e-06
      },
      {
       "user": 516,
       "reviews": 4601,
       "labelled": 6498,
-      "torch_seconds": 3.53,
-      "numpy_seconds": 2.41,
-      "p_curve": 3.5762786865234375e-07,
-      "p_curve_all_positions": 3.5762786865234375e-07,
-      "p_imm": 1.9073486328125e-06,
-      "p_imm_all_positions": 1.9073486328125e-06,
-      "p_rating": 1.8477439880371094e-06,
-      "p_rating_all_positions": 1.8477439880371094e-06
+      "torch_seconds": 2.87,
+      "numpy_seconds": 1.86,
+      "p_curve": 2.980232238769531e-07,
+      "p_curve_all_positions": 2.980232238769531e-07,
+      "p_imm": 9.5367431640625e-07,
+      "p_imm_all_positions": 9.5367431640625e-07,
+      "p_rating": 1.1324882507324219e-06,
+      "p_rating_all_positions": 1.1324882507324219e-06
      }
     ],
     "pass_1e-5": true
    },
    "w8": {
     "max_abs_dp_labelled": {
-     "p_curve": 4.172325134277344e-07,
-     "p_imm": 1.5497207641601562e-06,
-     "p_rating": 2.086162567138672e-06
+     "p_curve": 2.980232238769531e-07,
+     "p_imm": 1.0132789611816406e-06,
+     "p_rating": 1.2814998626708984e-06
     },
     "per_user": [
      {
       "user": 4676,
       "reviews": 3716,
       "labelled": 5676,
-      "torch_seconds": 3.59,
-      "numpy_seconds": 2.36,
-      "p_curve": 3.5762786865234375e-07,
-      "p_curve_all_positions": 3.5762786865234375e-07,
-      "p_imm": 4.172325134277344e-07,
-      "p_imm_all_positions": 4.172325134277344e-07,
-      "p_rating": 9.834766387939453e-07,
-      "p_rating_all_positions": 9.834766387939453e-07
+      "torch_seconds": 2.72,
+      "numpy_seconds": 1.56,
+      "p_curve": 2.980232238769531e-07,
+      "p_curve_all_positions": 2.980232238769531e-07,
+      "p_imm": 4.76837158203125e-07,
+      "p_imm_all_positions": 4.76837158203125e-07,
+      "p_rating": 7.152557373046875e-07,
+      "p_rating_all_positions": 7.152557373046875e-07
      },
      {
       "user": 1745,
       "reviews": 4144,
       "labelled": 7410,
-      "torch_seconds": 4.32,
-      "numpy_seconds": 2.47,
-      "p_curve": 4.172325134277344e-07,
-      "p_curve_all_positions": 4.172325134277344e-07,
-      "p_imm": 1.5497207641601562e-06,
-      "p_imm_all_positions": 1.5497207641601562e-06,
-      "p_rating": 2.086162567138672e-06,
-      "p_rating_all_positions": 2.086162567138672e-06
+      "torch_seconds": 3.33,
+      "numpy_seconds": 1.7,
+      "p_curve": 2.980232238769531e-07,
+      "p_curve_all_positions": 2.980232238769531e-07,
+      "p_imm": 1.0132789611816406e-06,
+      "p_imm_all_positions": 1.0132789611816406e-06,
+      "p_rating": 1.1324882507324219e-06,
+      "p_rating_all_positions": 1.1324882507324219e-06
      },
      {
       "user": 516,
       "reviews": 4601,
       "labelled": 6498,
-      "torch_seconds": 3.69,
-      "numpy_seconds": 2.46,
-      "p_curve": 3.5762786865234375e-07,
+      "torch_seconds": 2.6,
+      "numpy_seconds": 1.65,
+      "p_curve": 2.980232238769531e-07,
       "p_curve_all_positions": 3.5762786865234375e-07,
-      "p_imm": 7.152557373046875e-07,
-      "p_imm_all_positions": 8.344650268554688e-07,
-      "p_rating": 1.1026859283447266e-06,
-      "p_rating_all_positions": 1.1324882507324219e-06
+      "p_imm": 6.556510925292969e-07,
+      "p_imm_all_positions": 7.152557373046875e-07,
+      "p_rating": 1.2814998626708984e-06,
+      "p_rating_all_positions": 1.2814998626708984e-06
      }
     ],
     "pass_1e-5": true
@@ -803,28 +775,28 @@
   },
   "master.pth": {
    "bytes": 1489805,
-   "sha256": "09331f227ea4ae44475786211bf7aa2168d0bfc8359a9f77138103836c8273be"
+   "sha256": "c77231569e6054d69f76dd32706ca8d4a99058fecc4c2841dfb3ae69e31be078"
   },
   "parity.json": {
-   "bytes": 3165,
-   "sha256": "1b29446a182c04d45438f9978c84c102ed47be331bc31bf0edf7b6c41bc6d1f9"
+   "bytes": 3148,
+   "sha256": "7b0d817c900f3410fe5ecc1ef4b04d026ad4a48cb4c4a449b0231aea6b7980c2"
   },
   "weights.f32.bin": {
    "bytes": 1351553,
-   "sha256": "08448a2c178ba1af2837d905f7c7d2717221934dd40ea94a3877d90694a150f8"
+   "sha256": "76312115bf6b840a635cf625c784108939aaf3d60b5ba4ad92b03f7969726698"
   },
   "weights.int8.bin": {
    "bytes": 436391,
-   "sha256": "3848d90d0fc251fa99e428411da0a4b34aaa1216f07593b717598ff98802389b"
+   "sha256": "d927a59aed7468619b93f81778050311fd1b607464281b0ef57d71e3c48c0d09"
   }
  },
  "provenance": {
-  "captured_utc": "2026-11-07T09:45:04.168841+00:00",
-  "git_commit": "00072cacf32672abd0aaa32d6cd6ab689fac89fd",
+  "captured_utc": "2026-11-08T11:20:35.824470+00:00",
+  "git_commit": "3ff037e44e7ab3deca8a5ba0c71c8c8535343c94",
   "git_dirty": false,
   "git_status_porcelain_z": "",
-  "source_tree_sha256": "04a6169fb5e06ba91e0008ae948384d3e9c2790c25fc470878be2a71613be407",
-  "source_archive": "artifacts/sources/experiment-sources/04a6169fb5e06ba91e0008ae948384d3e9c2790c25fc470878be2a71613be407/source.zip",
+  "source_tree_sha256": "985738d442028a42c4a3a767a15ec60f9b7dc48c3c441ff8ccfbf7ee44c54712",
+  "source_archive": "artifacts/sources/experiment-sources/985738d442028a42c4a3a767a15ec60f9b7dc48c3c441ff8ccfbf7ee44c54712/source.zip",
   "source_paths": [
    "rwkv",
    "rwkv-small",
@@ -841,7 +813,7 @@
    "instant",
    "rating"
   ],
-  "rule": "instant-only model: trained with curve_loss_weight 0.0 from the release's epoch 25 (epoch 26 + the release's one-epoch 32k Muon cool-down). Its instant / rating head (p_imm, p_rating) is the product; its curve head was never trained (curve LogLoss +16.0% of the release's on 1,487 validation users) and must not schedule. In the Anki fork it runs beside the release (sm72e25), which keeps the curve, intervals, S90 and the answer-time head."
+  "rule": "instant-only model: trained with curve_loss_weight 0.0 from the release's epoch 25 (epochs 26-30 + the release's one-epoch 32k Muon cool-down). Its instant / rating head (p_imm, p_rating) is the product; its curve head was never trained (untrained: curve LogLoss +48.5% of the release's on 1,487 validation users) and must not schedule. In the Anki fork it runs beside the release (sm72e25), which keeps the curve, intervals, S90 and the answer-time head."
  },
  "inputs": {
   "show_time_intervals": false,
