@@ -765,11 +765,10 @@ impl RwkvInference {
                         .iter()
                         .map(|&index| cards[index].query(day as i64, refresh_at))
                         .collect::<Vec<_>>();
-                    for (index, score) in indexes.into_iter().zip(self.instant_scores(
-                        &queries,
-                        &states,
-                        recall_offset,
-                    )?) {
+                    for (index, score) in indexes
+                        .into_iter()
+                        .zip(self.instant_scores(&queries, &states)?)
+                    {
                         cards[index].score = score;
                         cards[index].score_in_map = true;
                     }
@@ -1017,11 +1016,10 @@ impl RwkvInference {
                     // The queue can intentionally retain stale scores between
                     // refreshes. Recall at the actual answer time still uses
                     // the current recurrent state, not the stale queue score.
-                    let recall = self.instant_scores(
-                        &[card.query(day as i64, millis)],
-                        &states,
-                        recall_offset,
-                    )?[0];
+                    let recall = (self
+                        .instant_scores(&[card.query(day as i64, millis)], &states)?[0]
+                        + recall_offset)
+                        .clamp(0.0, 1.0);
                     let ease = paired_grade(
                         &day_review_model,
                         recall,
@@ -1105,7 +1103,7 @@ impl RwkvInference {
                         card.score_in_map = false;
                     } else {
                         let query = card.query(day as i64, millis);
-                        card.score = self.instant_scores(&[query], &states, recall_offset)?[0];
+                        card.score = self.instant_scores(&[query], &states)?[0];
                         card.score_in_map = true;
                     }
                     refresh = answers_today % config.refresh_interval.max(1) == 0;
@@ -1156,7 +1154,6 @@ impl RwkvInference {
         &mut self,
         inputs: &[ReviewInput],
         states: &SimulationStates<'_>,
-        recall_offset: f32,
     ) -> io::Result<Vec<f32>> {
         let work_items = inputs
             .iter()
@@ -1165,15 +1162,7 @@ impl RwkvInference {
                 state: states.state_ref(input),
             })
             .collect::<Vec<_>>();
-        let mut scores = self
-            .model
-            .review_retrievability_many_borrowed(&work_items)?;
-        if recall_offset != 0.0 {
-            scores.iter_mut().for_each(|score| {
-                *score = (*score + recall_offset).clamp(0.0, 1.0);
-            });
-        }
-        Ok(scores)
+        self.model.review_retrievability_many_borrowed(&work_items)
     }
 }
 

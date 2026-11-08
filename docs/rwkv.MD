@@ -1595,10 +1595,11 @@ For complete days from the last 365 days, it replays the full review history in
 an independent model state and compares pre-answer predictions with actual
 review outcomes in the selected decks. `σ` is the sample standard deviation of
 the daily mean residuals (actual success minus predicted recall), using days
-with at least two review answers. The offset is clamped to the probability
-range and applies both to queue scores and simulated answers; it does not
-change configured refreshes or limits. This empirical day-to-day spread
-includes answer randomness and is illustrative, not a model confidence
+with at least two review answers. Queue eligibility and ordering use the
+unmodified model prediction; the offset only shifts the simulated answer
+probability, clamped to the probability range. Configured refreshes and limits
+are unchanged. This empirical day-to-day spread includes answer randomness,
+which is also simulated in each path, and is illustrative, not a model confidence
 interval. Estimating it requires at least two eligible historical days; if
 there are fewer, the API returns three ordinary sampled paths instead.
 

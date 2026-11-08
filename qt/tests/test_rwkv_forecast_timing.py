@@ -616,6 +616,7 @@ def test_instant_native_bridge_simulates_without_mutating_warm_state() -> None:
     no_minimum = deck_config_pb2.DeckConfig()
     no_minimum.CopyFrom(preset)
     no_minimum.config.rwkv_review_minimum_reviews_per_day = 0
+    no_minimum.config.reviews_per_day = 0
     extreme = runtime.forecast_instant_workload(
         **{
             **args,
@@ -625,9 +626,18 @@ def test_instant_native_bridge_simulates_without_mutating_warm_state() -> None:
         },
         scenario_sigma=1.0,
     )
-    # With no minimum forcing a review, 0 is due and 1 is above the target.
-    assert extreme[4][0][0][0] == 1
-    assert extreme[4][2][0][0] == 0
+    # With no answers, changing outcome probability must not affect which
+    # cards the real R makes due.
+    assert extreme[4][0][0][0] == extreme[4][1][0][0] == extreme[4][2][0][0]
+    assert all(path[0][1] == 0 for path in extreme[4])
+
+    # When the configured minimum selects the card, the outcome varies while
+    # its initial queue eligibility continues to use the same predicted R.
+    answered = runtime.forecast_instant_workload(
+        **{**args, "paths": 3}, scenario_sigma=1.0
+    )
+    assert answered[4][0][0][3] == 1
+    assert answered[4][2][0][3] == 0
     with pytest.raises(Exception, match="scenario sigma"):
         runtime.forecast_instant_workload(**args, scenario_sigma=0.3)
 
