@@ -1334,6 +1334,10 @@ class _RustRwkvRuntime:
         day_progress: Callable[[int, int, Sequence[float]], None] | None = None,
         stratified_answers: bool = False,
         stratified_scale: float = 1.0,
+        review_time_model: tuple[
+            float, Sequence[tuple[float, float, float, float, float] | None]
+        ]
+        | None = None,
     ) -> object:
         forecast = getattr(
             self._process, "forecast_instant_workload_from_warm_up", None
@@ -1393,6 +1397,15 @@ class _RustRwkvRuntime:
                 _workload_bucket_probabilities(review_model),
                 progress,
             )
+            if review_time_model is not None:
+                return forecast(
+                    *args,
+                    scenario_sigma,
+                    day_progress,
+                    stratified_answers,
+                    stratified_scale,
+                    review_time_model,
+                )
             if stratified_answers:
                 return forecast(
                     *args, scenario_sigma, day_progress, True, stratified_scale

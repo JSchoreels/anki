@@ -73,6 +73,8 @@ type RwkvForecastOutputTuple = (
     Vec<RwkvForecastGroupTuple>,
     u32,
 );
+type RwkvInstantReviewTimeGradeTuple = (f32, f32, f32, f32, f32);
+type RwkvInstantReviewTimeModelTuple = (f32, Vec<Option<RwkvInstantReviewTimeGradeTuple>>);
 
 create_exception!(_rsbridge, BackendError, PyException);
 
@@ -1074,7 +1076,7 @@ impl RwkvInference {
         refresh_interval, candidate_refresh_enabled, candidate_refresh_limit,
         precompute_next_card, review_order, grade_seconds, bucket_probabilities,
         progress=None, scenario_sigma=None, day_progress=None, stratified_answers=false,
-        stratified_scale=1.0
+        stratified_scale=1.0, review_time_model=None
     ))]
     fn forecast_instant_workload_from_warm_up(
         &self,
@@ -1109,6 +1111,7 @@ impl RwkvInference {
         day_progress: Option<&Bound<'_, PyAny>>,
         stratified_answers: bool,
         stratified_scale: f32,
+        review_time_model: Option<RwkvInstantReviewTimeModelTuple>,
     ) -> PyResult<Py<PyAny>> {
         let mut parsed_inputs = Vec::new();
         for value in inputs.try_iter()? {
@@ -1139,6 +1142,34 @@ impl RwkvInference {
         }
         let (decks, deck_configs) = rwkv::decode_instant_forecast_decks(decks, deck_configs)
             .map_err(|error| PyException::new_err(error.to_string()))?;
+        let review_time_model = review_time_model
+            .map(|(reference_seconds, grades)| {
+                let grades: [Option<rwkv::RwkvInstantReviewTimeGrade>; 4] = grades
+                    .into_iter()
+                    .map(|grade| {
+                        grade.map(
+                            |(intercept, slope, min_recall, max_recall, fallback_seconds)| {
+                                rwkv::RwkvInstantReviewTimeGrade {
+                                    intercept,
+                                    slope,
+                                    min_recall,
+                                    max_recall,
+                                    fallback_seconds,
+                                }
+                            },
+                        )
+                    })
+                    .collect::<Vec<_>>()
+                    .try_into()
+                    .map_err(|_| {
+                        PyException::new_err("Instant review-time model must contain four grades")
+                    })?;
+                Ok::<_, PyErr>(rwkv::RwkvInstantReviewTimeModel {
+                    reference_seconds,
+                    grades,
+                })
+            })
+            .transpose()?;
         let config = rwkv::RwkvInstantForecastConfig {
             days,
             paths,
@@ -1160,6 +1191,7 @@ impl RwkvInference {
                 .into_iter()
                 .map(|(hard, good, easy)| [0.0, hard, good, easy])
                 .collect(),
+            review_time_model,
             now_millis,
             same_day_allowed,
             min_intervening_reviews,

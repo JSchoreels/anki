@@ -1431,7 +1431,7 @@ for add-ons such as Search Stats Extended; Anki itself shows no graph for it.
 RWKV-Instant, each path starts from the resident Instant model state and
 simulates the actual matched cards. Each simulated day samples one complete
 study day from the previous 365 scheduler days with at least two answers. Its
-answer timestamps and durations set the timing, and its Hard/Good/Easy shares
+answer timestamps set the session timing, and its Hard/Good/Easy shares
 set the successful-answer mix; the current Instant recall probability decides
 whether an answer is Again. If the recorded day has no successful answers, the
 overall historical successful-answer mix is used. If more answers are needed
@@ -1567,7 +1567,8 @@ Units and meaning, per day (`day` 0 = today, then tomorrow, ...):
 - `new`: new cards introduced that day.
 - `lapses`: review answers graded Again.
 - `seconds`: estimated answer time of all that day's answers. Instant includes
-  learning and relearning, using the sampled historical durations; Curve uses
+  learning and relearning, with R- and grade-adjusted historical durations for
+  review answers; Curve uses
   the per-grade time model for reviews and new cards.
 - `groups`: per deck (limit group), the mean over paths of due, done and new
   per day (no bands).
@@ -1588,6 +1589,23 @@ out (the same card set as the DR workload simulator).
 Instant bands also include the sampled historical day and its answer timings
 and successful-answer mix. Its `done` metric counts review-queue answers;
 `new` counts introductions.
+
+For Instant review answers, a separate regression per grade estimates answer
+seconds from the model's pre-answer R, using the same linear R model as the
+RWKV workload simulator. It fits eligible review answers from the selected
+decks in the last year, paired with replayed pre-answer Instant predictions;
+durations of zero or at least 10 minutes are excluded. Each grade needs at
+least five samples. Predictions are limited to the R range seen for that
+grade, and invalid predictions fall back to that grade's historical mean.
+The sampled duration is multiplied by the fitted prediction divided by the
+mean of the sampled days' mean durations, retaining session-to-session
+variation. New, learning and relearning answers retain their sampled duration.
+When a grade lacks enough data, or the replay is unavailable, its sampled
+duration is used unchanged. The sampled timestamps and gaps do not change,
+so adjusted durations are estimates rather than a rescheduled timeline. The
+`review_time_model` result is `"r_and_grade"` when at least one regression is
+available and `"historical"` otherwise; `review_time_samples` counts the
+eligible fitted answers when a model is present.
 
 With exactly three Instant paths, the API samples lower, central and higher
 aggregate answer outcomes using the same historical sessions and the model's

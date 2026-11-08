@@ -47,6 +47,8 @@ Changes since the last normal release, [build 110](https://github.com/JSchoreels
 
 #### Fixes
 
+- **Use recall to estimate Instant review time.** Forecasted review durations now account for each card's predicted recall and answer grade, using a regression fitted from your review history while retaining variation from sampled sessions.
+
 - **Keep Instant forecast queue scores faithful to RWKV.** The higher and lower answer scenarios now use the model's actual scores to decide which reviews are due, instead of shifting every queued card's score.
 
 - **Stratify Instant forecast outcomes.** The three-path forecast samples approximate variations in answer outcomes across historical study sessions rather than applying a fixed recall offset to every answer. It calibrates the variation from past answers without counting answer randomness twice. Its range is illustrative and may still be wide when small answer differences change the queue.

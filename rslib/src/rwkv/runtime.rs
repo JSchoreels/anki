@@ -1648,6 +1648,7 @@ mod tests {
                     learn_ahead_secs: 0,
                     timing_patterns: vec![vec![(10_000, 2_000), (15_000, 3_000)]],
                     timing_pattern_success_shares: vec![[0.0, 0.0, 1.0, 0.0]],
+                    review_time_model: None,
                     now_millis: 0,
                     same_day_allowed: false,
                     min_intervening_reviews: 0,
