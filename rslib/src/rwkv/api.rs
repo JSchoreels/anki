@@ -334,6 +334,62 @@ pub fn decode_instant_forecast_decks(
     Ok((decks, configs))
 }
 
+/// One answer grade's response-time regression against historical Instant R.
+#[derive(Clone, Copy)]
+pub struct RwkvInstantReviewTimeGrade {
+    pub intercept: f32,
+    pub slope: f32,
+    pub min_recall: f32,
+    pub max_recall: f32,
+    pub fallback_seconds: f32,
+}
+
+pub struct RwkvInstantReviewTimeModel {
+    /// Mean of per-day mean durations in the sampled historical pool.
+    pub reference_seconds: f32,
+    pub grades: [Option<RwkvInstantReviewTimeGrade>; 4],
+}
+
+impl RwkvInstantReviewTimeModel {
+    pub(crate) fn valid(&self) -> bool {
+        self.reference_seconds.is_finite()
+            && self.reference_seconds > 0.0
+            && self.grades.iter().flatten().all(|grade| {
+                grade.intercept.is_finite()
+                    && grade.slope.is_finite()
+                    && grade.min_recall.is_finite()
+                    && grade.max_recall.is_finite()
+                    && (0.0..=1.0).contains(&grade.min_recall)
+                    && (grade.min_recall..=1.0).contains(&grade.max_recall)
+                    && grade.fallback_seconds.is_finite()
+                    && grade.fallback_seconds > 0.0
+            })
+    }
+
+    pub(crate) fn duration_millis(&self, sampled: u32, recall: f32, ease: u8) -> u32 {
+        let Some(grade) = ease
+            .checked_sub(1)
+            .and_then(|index| self.grades.get(index as usize))
+            .and_then(|grade| *grade)
+        else {
+            return sampled;
+        };
+        if !recall.is_finite() {
+            return sampled;
+        }
+        let recall = recall.clamp(grade.min_recall, grade.max_recall);
+        let predicted = grade.intercept + grade.slope * (1.0 - recall);
+        let seconds = if predicted.is_finite() && predicted > 0.0 {
+            predicted
+        } else {
+            grade.fallback_seconds
+        };
+        (f64::from(sampled) * f64::from(seconds) / f64::from(self.reference_seconds))
+            .round()
+            .min(f64::from(u32::MAX)) as u32
+    }
+}
+
 pub struct RwkvInstantForecastConfig {
     pub days: u32,
     pub paths: u32,
@@ -357,6 +413,7 @@ pub struct RwkvInstantForecastConfig {
     /// Recorded answers as (milliseconds after scheduler rollover, answer ms).
     pub timing_patterns: Vec<Vec<(u32, u32)>>,
     pub timing_pattern_success_shares: Vec<[f32; 4]>,
+    pub review_time_model: Option<RwkvInstantReviewTimeModel>,
     pub now_millis: u32,
     pub same_day_allowed: bool,
     pub min_intervening_reviews: u32,

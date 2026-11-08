@@ -95,6 +95,30 @@ def test_forecast_calibration_compares_history_with_modeled_answer_noise() -> No
     assert matching_result.scale == pytest.approx(1.0)
 
 
+def test_forecast_review_time_fits_recall_and_grade() -> None:
+    recalls = [0.3, 0.4, 0.5, 0.6, 0.7, 0.8]
+    history: Any = SimpleNamespace(
+        patterns=[(99, [(1, 10_000), (2, 14_000)])],
+        calibration_targets={i: (99, 1) for i in range(6)},
+        calibration_review_ids=list(range(6)),
+        calibration_reviews=[
+            SimpleNamespace(ease=3, duration_millis=round((4 + 10 * (1 - r)) * 1000))
+            for r in recalls
+        ],
+    )
+    predictions = list(enumerate(recalls))
+    model = rwkv_scheduler._rwkv_forecast_review_time_model(history, predictions)
+    assert model is not None
+    assert model.reference_seconds == 12.0
+    assert model.samples == 6
+    assert (
+        model.grades[0] is None and model.grades[1] is None and model.grades[3] is None
+    )
+    grade = model.grades[2]
+    assert grade is not None
+    assert grade[:4] == pytest.approx((4.0, 10.0, 0.3, 0.8))
+
+
 def test_forecast_scenario_result_preserves_path_identities() -> None:
     band = (10.0, 8.0, 9.0, 10.0, 11.0, 12.0)
     output = (
@@ -639,6 +663,22 @@ def test_instant_native_bridge_simulates_without_mutating_warm_state() -> None:
     output = runtime.forecast_instant_workload(**args)
     assert output[1][0][2][0] == 1.0
     assert runtime.forecast_instant_workload(**args) == output
+    time_model = (1.0, [(10.0, 0.0, 0.0, 1.0, 10.0)] * 4)
+    timed = runtime.forecast_instant_workload(**args, review_time_model=time_model)
+    assert timed[1][0][2][0] == 1.0
+    assert timed[1][0][5][0] == pytest.approx(20.0)
+    r_model = (1.0, [(1.0, 10.0, 0.0, 1.0, 5.0)] * 4)
+    shifted_times = runtime.forecast_instant_workload(
+        **{**args, "paths": 3},
+        scenario_sigma=1.0,
+        review_time_model=r_model,
+    )
+    assert shifted_times[4][0][0][4] == pytest.approx(shifted_times[4][1][0][4])
+    assert shifted_times[4][2][0][4] == pytest.approx(shifted_times[4][1][0][4])
+    with pytest.raises(Exception, match="four grades"):
+        runtime.forecast_instant_workload(**args, review_time_model=(1.0, []))
+    with pytest.raises(Exception, match="review-time model"):
+        runtime.forecast_instant_workload(**args, review_time_model=(0.0, [None] * 4))
 
     single = runtime.forecast_instant_workload(**{**args, "paths": 1})
     scenarios = runtime.forecast_instant_workload(

@@ -439,6 +439,16 @@ impl RwkvInference {
                 "stratified answers require three paths, no scenario sigma, and a nonnegative finite scale",
             ));
         }
+        if config
+            .review_time_model
+            .as_ref()
+            .is_some_and(|model| !model.valid())
+        {
+            return Err(io::Error::new(
+                io::ErrorKind::InvalidInput,
+                "invalid Instant review-time model",
+            ));
+        }
         if config.decks.is_empty()
             || config.now_millis as i64 >= DAY_MILLIS
             || config.timing_patterns.is_empty()
@@ -1090,10 +1100,10 @@ impl RwkvInference {
                     // The queue can intentionally retain stale scores between
                     // refreshes. Recall at the actual answer time still uses
                     // the current recurrent state, not the stale queue score.
-                    let recall = (self
+                    let model_recall = self
                         .instant_scores(&[card.query(day as i64, millis)], &states)?[0]
-                        + recall_offset)
                         .clamp(0.0, 1.0);
+                    let recall = (model_recall + recall_offset).clamp(0.0, 1.0);
                     let answer_recall = answer_stratum.as_ref().map_or(recall, |stratum| {
                         stratum.probability(recall, queue.len().max(1))
                     });
@@ -1107,7 +1117,17 @@ impl RwkvInference {
                     if let Some(stratum) = &mut answer_stratum {
                         stratum.observe(recall, ease != 1);
                     }
-                    let duration = pattern[sample % pattern.len()].1;
+                    let sampled_duration = pattern[sample % pattern.len()].1;
+                    let duration = if queue_kind == 2 {
+                        config
+                            .review_time_model
+                            .as_ref()
+                            .map_or(sampled_duration, |model| {
+                                model.duration_millis(sampled_duration, model_recall, ease)
+                            })
+                    } else {
+                        sampled_duration
+                    };
                     let mut answer = card.query(day as i64, millis);
                     answer.is_query = false;
                     answer.ease = Some(ease);
@@ -1322,6 +1342,28 @@ fn increment_study_counts(
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn review_duration_uses_recall_and_grade_with_historical_variation() {
+        let good = RwkvInstantReviewTimeGrade {
+            intercept: 2.0,
+            slope: 20.0,
+            min_recall: 0.1,
+            max_recall: 0.9,
+            fallback_seconds: 12.0,
+        };
+        let model = RwkvInstantReviewTimeModel {
+            reference_seconds: 10.0,
+            grades: [None, None, Some(good), None],
+        };
+        assert!(model.valid());
+        assert_eq!(model.duration_millis(10_000, 0.9, 3), 4_000);
+        assert_eq!(model.duration_millis(10_000, 0.4, 3), 14_000);
+        assert_eq!(model.duration_millis(5_000, 0.4, 3), 7_000);
+        assert_eq!(model.duration_millis(10_000, 1.0, 3), 4_000);
+        assert_eq!(model.duration_millis(10_000, 0.4, 1), 10_000);
+        assert_eq!(model.duration_millis(10_000, f32::NAN, 3), 10_000);
+    }
 
     fn input(card_type: i64, queue: i32, fsrs_enabled: bool) -> RwkvInstantForecastCard {
         RwkvInstantForecastCard {

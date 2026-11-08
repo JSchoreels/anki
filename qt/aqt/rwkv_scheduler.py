@@ -15248,18 +15248,120 @@ def _rwkv_forecast_calibration(
     history: _RwkvInstantForecastHistory,
     report_progress: RwkvWorkloadProgressCallback,
     paths: int,
+    predictions: Sequence[tuple[int, float]] | None = None,
 ) -> _RwkvForecastCalibration | None:
     replay = getattr(backend, "forecast_history_predictions", None)
     if not history.calibration_reviews or not callable(replay):
         return None
     report_progress(0, paths)
-    predictions = replay(
-        reviews=history.calibration_reviews,
-        progress=lambda _current, _total: report_progress(0, paths),
-    )
+    if predictions is None:
+        predictions = replay(
+            reviews=history.calibration_reviews,
+            progress=lambda _current, _total: report_progress(0, paths),
+        )
     return _rwkv_forecast_history_calibration(
         history.calibration_targets, history.calibration_review_ids, predictions
     )
+
+
+class _RwkvForecastReviewTimeModel(NamedTuple):
+    reference_seconds: float
+    grades: tuple[tuple[float, float, float, float, float] | None, ...]
+    samples: int
+
+
+def _rwkv_forecast_review_time_model(
+    history: _RwkvInstantForecastHistory,
+    predictions: Sequence[tuple[int, float]] | None,
+) -> _RwkvForecastReviewTimeModel | None:
+    """Fit the simulator's per-grade R regressions without reading the live DB."""
+    if predictions is None or not history.patterns:
+        return None
+    samples: list[list[tuple[float, float]]] = [[], [], [], []]
+    for index, recall in predictions:
+        if (
+            not 0 <= index < len(history.calibration_review_ids)
+            or not 0.0 <= recall <= 1.0
+        ):
+            continue
+        if history.calibration_review_ids[index] not in history.calibration_targets:
+            continue
+        review = history.calibration_reviews[index]
+        grade, millis = review.ease, review.duration_millis
+        if (
+            grade in (1, 2, 3, 4)
+            and millis is not None
+            and 0 < millis < _RWKV_SIMULATOR_MAX_TAKEN_MILLIS
+        ):
+            samples[grade - 1].append((recall, millis / 1000.0))
+    reference = (
+        sum(
+            sum(duration for _, duration in events) / len(events)
+            for _, events in history.patterns
+        )
+        / len(history.patterns)
+        / 1000.0
+    )
+    if not math.isfinite(reference) or reference <= 0:
+        return None
+    grades: list[tuple[float, float, float, float, float] | None] = []
+    for grade_samples in samples:
+        if len(grade_samples) < 5:
+            grades.append(None)
+            continue
+        mean = sum(seconds for _, seconds in grade_samples) / len(grade_samples)
+        intercept, slope, *_ = _rwkv_simulator_review_time_coeffs(grade_samples, mean)
+        recalls = [recall for recall, _ in grade_samples]
+        grades.append((intercept, slope, min(recalls), max(recalls), mean))
+    if not any(grade is not None for grade in grades):
+        return None
+    return _RwkvForecastReviewTimeModel(
+        reference,
+        tuple(grades),
+        sum(
+            len(group)
+            for group, grade in zip(samples, grades, strict=True)
+            if grade is not None
+        ),
+    )
+
+
+def _rwkv_forecast_prepare_review_time(
+    backend: object,
+    history: _RwkvInstantForecastHistory,
+    report_progress: RwkvWorkloadProgressCallback,
+    paths: int,
+) -> tuple[_RwkvForecastReviewTimeModel | None, _RwkvForecastCalibration | None]:
+    predictions: Sequence[tuple[int, float]] | None = None
+    replay = getattr(backend, "forecast_history_predictions", None)
+    if history.calibration_reviews and callable(replay):
+        report_progress(0, paths)
+        predictions = replay(
+            reviews=history.calibration_reviews,
+            progress=lambda _current, _total: report_progress(0, paths),
+        )
+    model = _rwkv_forecast_review_time_model(history, predictions)
+    logger.debug(
+        "RWKV Instant forecast review-time model: samples=%s grades=%s",
+        model.samples if model else 0,
+        sum(grade is not None for grade in model.grades) if model else 0,
+    )
+    calibration = None
+    if paths == 3:
+        calibration_started = time.monotonic()
+        calibration = _rwkv_forecast_calibration(
+            backend, history, report_progress, paths, predictions
+        )
+        logger.debug(
+            "RWKV Instant forecast answer calibration: days=%s "
+            "observed_sigma=%s modeled_sigma=%s scale=%s elapsed_ms=%.1f",
+            calibration.days if calibration else 0,
+            calibration.observed_sigma if calibration else None,
+            calibration.modeled_sigma if calibration else None,
+            calibration.scale if calibration else None,
+            (time.monotonic() - calibration_started) * 1000,
+        )
+    return model, calibration
 
 
 class _RwkvInstantForecastScope(NamedTuple):
@@ -15494,6 +15596,7 @@ def forecast_rwkv_workload(
     start = time.monotonic()
     output: object = (paths, [], [], 0)
     calibration: _RwkvForecastCalibration | None = None
+    review_time_model: _RwkvForecastReviewTimeModel | None = None
     if cards:
         restore_cache_snapshot = getattr(backend, "restore_cache_snapshot", None)
         with _temporary_reviewer_backend_operation(
@@ -15546,27 +15649,16 @@ def forecast_rwkv_workload(
                         reviewer,
                         deck_ids={card.group for card in cards},
                         recent_count=min_intervening,
-                        include_calibration=paths == 3,
+                        include_calibration=True,
                     )
-                    if paths == 3:
-                        calibration_started = time.monotonic()
-                        calibration = _rwkv_forecast_calibration(
-                            backend, history, report_progress, paths
-                        )
-                        logger.debug(
-                            "RWKV Instant forecast answer calibration: days=%s "
-                            "observed_sigma=%s modeled_sigma=%s scale=%s elapsed_ms=%.1f",
-                            calibration.days if calibration else 0,
-                            calibration.observed_sigma if calibration else None,
-                            calibration.modeled_sigma if calibration else None,
-                            calibration.scale if calibration else None,
-                            (time.monotonic() - calibration_started) * 1000,
-                        )
-                        history = history._replace(
-                            calibration_targets={},
-                            calibration_reviews=[],
-                            calibration_review_ids=[],
-                        )
+                    review_time_model, calibration = _rwkv_forecast_prepare_review_time(
+                        backend, history, report_progress, paths
+                    )
+                    history = history._replace(
+                        calibration_targets={},
+                        calibration_reviews=[],
+                        calibration_review_ids=[],
+                    )
                     intervening: dict[int, int] = {}
                     for count, card_id in enumerate(history.recent_card_ids):
                         intervening.setdefault(card_id, count)
@@ -15673,6 +15765,16 @@ def forecast_rwkv_workload(
                         progress=report_progress,
                         **(
                             {
+                                "review_time_model": (
+                                    review_time_model.reference_seconds,
+                                    review_time_model.grades,
+                                )
+                            }
+                            if review_time_model
+                            else {}
+                        ),
+                        **(
+                            {
                                 "stratified_answers": True,
                                 "stratified_scale": calibration.scale
                                 if calibration
@@ -15707,6 +15809,12 @@ def forecast_rwkv_workload(
                 ) from exc
             operation.require_current()
     result = _rwkv_forecast_result(output, cards, days=days, seed=seed)
+    if instant_used:
+        result["review_time_model"] = (
+            "r_and_grade" if review_time_model else "historical"
+        )
+        if review_time_model:
+            result["review_time_samples"] = review_time_model.samples
     if instant_used and paths == 3:
         result["scenario_kind"] = "stratified"
         if calibration:
