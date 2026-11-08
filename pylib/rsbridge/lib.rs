@@ -565,6 +565,23 @@ impl RwkvInference {
         .map_err(|err| PyException::new_err(err.to_string()))
     }
 
+    fn forecast_history_predictions_packed(
+        &self,
+        py: Python<'_>,
+        reviews: &Bound<'_, PyBytes>,
+        progress: Option<&Bound<'_, PyAny>>,
+    ) -> PyResult<Vec<(usize, f32)>> {
+        let parsed_reviews = parse_packed_rwkv_review_inputs(reviews.as_bytes())?;
+        let progress = progress.map(|callback| callback.clone().unbind());
+        let mut progress_callback =
+            |current, total| report_rwkv_workload_progress(progress.as_ref(), current, total);
+        py.detach(|| {
+            self.inner
+                .forecast_history_predictions(parsed_reviews, &mut progress_callback)
+        })
+        .map_err(|err| PyException::new_err(err.to_string()))
+    }
+
     fn warm_up_reviews_post_packed(
         &mut self,
         py: Python<'_>,
@@ -1048,6 +1065,16 @@ impl RwkvInference {
     }
 
     #[allow(clippy::too_many_arguments)]
+    #[pyo3(signature = (
+        inputs, decks, deck_configs, study_deck_id, timing_patterns,
+        timing_pattern_success_shares, days, paths, seed, today,
+        new_cards_ignore_review_limit, fsrs_learning_queues_disabled,
+        fsrs_short_term_with_steps_enabled, learn_ahead_secs, now_millis,
+        same_day_allowed, min_intervening_reviews, min_elapsed_secs,
+        refresh_interval, candidate_refresh_enabled, candidate_refresh_limit,
+        precompute_next_card, review_order, grade_seconds, bucket_probabilities,
+        progress=None, scenario_sigma=None, day_progress=None
+    ))]
     fn forecast_instant_workload_from_warm_up(
         &self,
         py: Python<'_>,
@@ -1077,7 +1104,9 @@ impl RwkvInference {
         grade_seconds: &Bound<'_, PyAny>,
         bucket_probabilities: &Bound<'_, PyAny>,
         progress: Option<&Bound<'_, PyAny>>,
-    ) -> PyResult<RwkvForecastOutputTuple> {
+        scenario_sigma: Option<f32>,
+        day_progress: Option<&Bound<'_, PyAny>>,
+    ) -> PyResult<Py<PyAny>> {
         let mut parsed_inputs = Vec::new();
         for value in inputs.try_iter()? {
             let value = value?;
@@ -1110,6 +1139,8 @@ impl RwkvInference {
         let config = rwkv::RwkvInstantForecastConfig {
             days,
             paths,
+            scenario_sigma,
+            report_days: day_progress.is_some(),
             seed,
             decks,
             deck_configs,
@@ -1143,18 +1174,41 @@ impl RwkvInference {
             },
         };
         let progress = progress.map(|callback| callback.clone().unbind());
+        let day_progress = day_progress.map(|callback| callback.clone().unbind());
         let mut progress_callback = |current: u32, total: u32| {
             report_rwkv_workload_progress(progress.as_ref(), current, total)
         };
-        py.detach(|| {
-            self.inner.forecast_instant_workload_from_warm_up(
-                parsed_inputs,
-                config,
-                &mut progress_callback,
-            )
-        })
-        .map(rwkv_forecast_output)
-        .map_err(|err| PyException::new_err(err.to_string()))
+        let mut day_callback = |path: u32, day: u32, values: [f32; 5]| {
+            if let Some(callback) = &day_progress {
+                Python::attach(|py| callback.call1(py, (path, day, values))).map_err(|err| {
+                    std::io::Error::new(std::io::ErrorKind::Other, err.to_string())
+                })?;
+            }
+            Ok(())
+        };
+        let mut output = py
+            .detach(|| {
+                self.inner.forecast_instant_workload_from_warm_up(
+                    parsed_inputs,
+                    config,
+                    &mut progress_callback,
+                    &mut day_callback,
+                )
+            })
+            .map_err(|err| PyException::new_err(err.to_string()))?;
+        let scenarios = output.scenarios.take();
+        let (paths, days, groups, estimated) = rwkv_forecast_output(output);
+        if let Some(scenarios) = scenarios {
+            Ok((paths, days, groups, estimated, scenarios)
+                .into_pyobject(py)?
+                .into_any()
+                .unbind())
+        } else {
+            Ok((paths, days, groups, estimated)
+                .into_pyobject(py)?
+                .into_any()
+                .unbind())
+        }
     }
 
     fn reset_warm_up_state(&mut self) {

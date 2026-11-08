@@ -569,6 +569,19 @@ impl RwkvRuntime {
         })
     }
 
+    pub fn forecast_history_predictions(
+        &self,
+        reviews: Vec<ReviewInput>,
+        progress: &mut dyn FnMut(u32, u32) -> io::Result<()>,
+    ) -> io::Result<Vec<(usize, f32)>> {
+        dispatch!(
+            self,
+            engine,
+            engine.forecast_history_predictions(reviews, progress),
+            pair => pair.instant.forecast_history_predictions(reviews, progress)
+        )
+    }
+
     /// Replay answers and return each answer's immediate post-review
     /// prediction.
     pub fn warm_up_reviews_post(
@@ -883,12 +896,13 @@ impl RwkvRuntime {
         inputs: Vec<RwkvInstantForecastCard>,
         config: RwkvInstantForecastConfig,
         progress: &mut dyn FnMut(u32, u32) -> io::Result<()>,
+        day_progress: &mut dyn FnMut(u32, u32, [f32; 5]) -> io::Result<()>,
     ) -> io::Result<RwkvWorkloadForecastOutput> {
         dispatch!(
             self,
             engine,
-            engine.forecast_instant_workload_from_warm_up(inputs, config, progress),
-            pair => pair.instant.forecast_instant_workload_from_warm_up(inputs, config, progress)
+            engine.forecast_instant_workload_from_warm_up(inputs, config, progress, day_progress),
+            pair => pair.instant.forecast_instant_workload_from_warm_up(inputs, config, progress, day_progress)
         )
     }
 
@@ -1619,6 +1633,8 @@ mod tests {
                 RwkvInstantForecastConfig {
                     days: 1,
                     paths: 1,
+                    scenario_sigma: None,
+                    report_days: false,
                     seed: 0,
                     decks: vec![deck],
                     deck_configs: vec![preset],
@@ -1646,6 +1662,7 @@ mod tests {
                     },
                 },
                 &mut |_, _| Ok(()),
+                &mut |_, _, _| Ok(()),
             )
             .unwrap();
         assert_eq!(output.days[0].done.mean, 1.0);

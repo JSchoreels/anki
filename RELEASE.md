@@ -47,6 +47,10 @@ Changes since the last normal release, [build 110](https://github.com/JSchoreels
 
 #### Fixes
 
+- **Estimate Instant forecast scenarios from your history.** With three paths, the forecast now compares the normal RWKV prediction with higher and lower recall scenarios calibrated from past answers, instead of treating three random futures as a reliable distribution.
+
+- **Watch Instant forecasts develop.** The graph can display each simulated day as it finishes, including the scenario spread as its paths arrive, with progress in simulated days.
+
 - **Respect daily limits in RWKV-Instant forecasts.** A precomputed next card no longer accidentally exceeds the deck's remaining review or new-card limit when it applies.
 
 - **Faster RWKV-Instant forecasts.** Large forecasts reuse work between queue refreshes while keeping the configured refresh frequency, review limits, and simulated answers. In one two-day, one-path measurement across an entire 28,925-card collection, the forecast took 45.7 seconds instead of 66.5 seconds (31% less); larger forecasts may still take a long time.

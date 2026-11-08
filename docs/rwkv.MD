@@ -1533,7 +1533,11 @@ paths (linear interpolation between sorted values).
   a time; starting a new one cancels the old one), for web pages that poll.
   The progress dict is `{"job_id", "phase": "running" | "complete" | "failed" |
   "missing", "current", "total", "done", "error", "result"}`; `result` is the
-  forecast dict once `phase` is `"complete"`.
+  forecast dict once `phase` is `"complete"`. Instant jobs additionally publish
+  `partial_result` while running, updating one completed path-day at a time;
+  `unit` is `"days"` and `current` / `total` count path-days. Missing scenario
+  values are `null` until their paths reach that day. Curve jobs continue to
+  report completed paths and return their chart at completion.
 
 **Result** (`version` 1):
 
@@ -1584,6 +1588,28 @@ out (the same card set as the DR workload simulator).
 Instant bands also include the sampled historical day and its answer timings
 and successful-answer mix. Its `done` metric counts review-queue answers;
 `new` counts introductions.
+
+With exactly three Instant paths, the API instead runs matched `R − σ`, `R` and
+`R + σ` scenarios, using the same seed and sampled historical sessions in each.
+For complete days from the last 365 days, it replays the full review history in
+an independent model state and compares pre-answer predictions with actual
+review outcomes in the selected decks. `σ` is the sample standard deviation of
+the daily mean residuals (actual success minus predicted recall), using days
+with at least two review answers. The offset is clamped to the probability
+range and applies both to queue scores and simulated answers; it does not
+change configured refreshes or limits. This empirical day-to-day spread
+includes answer randomness and is illustrative, not a model confidence
+interval. Estimating it requires at least two eligible historical days; if
+there are fewer, the API returns three ordinary sampled paths instead.
+
+For these scenarios the result adds `scenario_sigma`,
+`scenario_history_days`, and `scenario_daily`; each day's metric is an array in
+`[R − σ, R, R + σ]` order. `daily` and `groups` retain their existing
+summary format for compatibility; consumers should use the middle scenario for
+the central line rather than assume it is the median. When history is
+insufficient, `scenario_calibration` is `"insufficient_history"` and the
+scenario fields are omitted. Other Instant path counts and all Curve forecasts
+continue to return stochastic path summaries.
 
 **Curve speed.** Cost is proportional to paths x simulated answers per path; each
 answer runs several RWKV steps (recall query, interval curves, state update),

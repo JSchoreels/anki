@@ -42,6 +42,16 @@ const SESSION_BREAK_MILLIS: u32 = 30 * 60 * 1000;
 const DECODED_BASE_BUDGET_BYTES: usize = 256 * 1024 * 1024;
 const DECODED_PATH_BUDGET_BYTES: usize = 16 * 1024 * 1024;
 
+struct InstantPathParameters {
+    seed: u32,
+    recall_offset: f32,
+}
+
+struct InstantPathProgress<'a> {
+    check_cancel: &'a mut dyn FnMut() -> io::Result<()>,
+    report_day: &'a mut dyn FnMut(u32, [f32; 5]) -> io::Result<()>,
+}
+
 struct InstantCard {
     input: RwkvInstantForecastCard,
     last_day: Option<i64>,
@@ -398,11 +408,20 @@ impl RwkvInference {
         inputs: Vec<RwkvInstantForecastCard>,
         config: RwkvInstantForecastConfig,
         progress: &mut dyn FnMut(u32, u32) -> io::Result<()>,
+        day_progress: &mut dyn FnMut(u32, u32, [f32; 5]) -> io::Result<()>,
     ) -> io::Result<RwkvWorkloadForecastOutput> {
         if !(1..=365).contains(&config.days) || !(1..=2000).contains(&config.paths) {
             return Err(io::Error::new(
                 io::ErrorKind::InvalidInput,
                 "invalid forecast size",
+            ));
+        }
+        if config.scenario_sigma.is_some_and(|sigma| {
+            config.paths != 3 || !sigma.is_finite() || !(0.0..=1.0).contains(&sigma)
+        }) {
+            return Err(io::Error::new(
+                io::ErrorKind::InvalidInput,
+                "scenario sigma requires three paths and must be between 0 and 1",
             ));
         }
         if config.decks.is_empty()
@@ -450,6 +469,7 @@ impl RwkvInference {
         .min(config.paths as usize);
         enum Message {
             Heartbeat,
+            Day(u32, u32, [f32; 5]),
             Finished(u32, io::Result<(ForecastPath, u32)>),
         }
         let next_path = AtomicUsize::new(0);
@@ -466,10 +486,17 @@ impl RwkvInference {
                         let sender = sender.clone();
                         workers.spawn(move |_| {
                             while !stopped.load(Ordering::Relaxed) {
-                                let path = next_path.fetch_add(1, Ordering::Relaxed) as u32;
-                                if path >= config.paths {
+                                let slot = next_path.fetch_add(1, Ordering::Relaxed) as u32;
+                                if slot >= config.paths {
                                     break;
                                 }
+                                // Show the central scenario first when memory
+                                // limits the forecast to sequential paths.
+                                let path = if config.scenario_sigma.is_some() {
+                                    [1, 0, 2][slot as usize]
+                                } else {
+                                    slot
+                                };
                                 let mut worker =
                                     self.workload_worker(self.features.clone(), HashMap::new());
                                 let mut check_cancel = || {
@@ -491,13 +518,38 @@ impl RwkvInference {
                                     decoded,
                                     decoded_path_budget,
                                 );
+                                let mut report_day = |day, values| {
+                                    if config.report_days {
+                                        sender.send(Message::Day(path, day, values)).map_err(
+                                            |_| {
+                                                io::Error::new(
+                                                    io::ErrorKind::Interrupted,
+                                                    "Instant forecast cancelled",
+                                                )
+                                            },
+                                        )?;
+                                    }
+                                    Ok(())
+                                };
                                 let result = worker.instant_forecast_path(
                                     inputs,
                                     states,
                                     group_ids,
                                     config,
-                                    config.seed.wrapping_add(path),
-                                    &mut check_cancel,
+                                    InstantPathParameters {
+                                        seed: if config.scenario_sigma.is_some() {
+                                            config.seed
+                                        } else {
+                                            config.seed.wrapping_add(path)
+                                        },
+                                        recall_offset: config
+                                            .scenario_sigma
+                                            .map_or(0.0, |sigma| (path as f32 - 1.0) * sigma),
+                                    },
+                                    InstantPathProgress {
+                                        check_cancel: &mut check_cancel,
+                                        report_day: &mut report_day,
+                                    },
                                 );
                                 if sender.send(Message::Finished(path, result)).is_err() {
                                     break;
@@ -511,6 +563,7 @@ impl RwkvInference {
             for message in receiver {
                 let step = match message {
                     Message::Heartbeat => progress(completed, config.paths),
+                    Message::Day(path, day, values) => day_progress(path, day, values),
                     Message::Finished(path, result) => result.and_then(|(record, count)| {
                         results[path as usize] = Some(record);
                         estimated = count;
@@ -529,12 +582,28 @@ impl RwkvInference {
             .into_iter()
             .map(|path| path.expect("every forecast path completed"))
             .collect::<Vec<_>>();
-        Ok(summarize_forecast(
-            &group_ids,
-            &paths,
-            config.days,
-            estimated,
-        ))
+        let mut output = summarize_forecast(&group_ids, &paths, config.days, estimated);
+        if config.scenario_sigma.is_some() {
+            output.scenarios = Some(
+                paths
+                    .iter()
+                    .map(|path| {
+                        (0..config.days as usize)
+                            .map(|day| {
+                                [
+                                    path.due[day] as f32,
+                                    path.done[day] as f32,
+                                    path.new[day] as f32,
+                                    path.lapses[day] as f32,
+                                    path.seconds[day],
+                                ]
+                            })
+                            .collect()
+                    })
+                    .collect(),
+            );
+        }
+        Ok(output)
     }
 
     fn instant_forecast_path(
@@ -543,9 +612,17 @@ impl RwkvInference {
         mut states: SimulationStates<'_>,
         group_ids: &[i64],
         config: &RwkvInstantForecastConfig,
-        seed: u32,
-        check_cancel: &mut dyn FnMut() -> io::Result<()>,
+        parameters: InstantPathParameters,
+        progress: InstantPathProgress<'_>,
     ) -> io::Result<(ForecastPath, u32)> {
+        let InstantPathParameters {
+            seed,
+            recall_offset,
+        } = parameters;
+        let InstantPathProgress {
+            check_cancel,
+            report_day,
+        } = progress;
         let mut decks = config.decks.clone();
         let deck_configs = config
             .deck_configs
@@ -688,10 +765,11 @@ impl RwkvInference {
                         .iter()
                         .map(|&index| cards[index].query(day as i64, refresh_at))
                         .collect::<Vec<_>>();
-                    for (index, score) in indexes
-                        .into_iter()
-                        .zip(self.instant_scores(&queries, &states)?)
-                    {
+                    for (index, score) in indexes.into_iter().zip(self.instant_scores(
+                        &queries,
+                        &states,
+                        recall_offset,
+                    )?) {
                         cards[index].score = score;
                         cards[index].score_in_map = true;
                     }
@@ -939,8 +1017,11 @@ impl RwkvInference {
                     // The queue can intentionally retain stale scores between
                     // refreshes. Recall at the actual answer time still uses
                     // the current recurrent state, not the stale queue score.
-                    let recall =
-                        self.instant_scores(&[card.query(day as i64, millis)], &states)?[0];
+                    let recall = self.instant_scores(
+                        &[card.query(day as i64, millis)],
+                        &states,
+                        recall_offset,
+                    )?[0];
                     let ease = paired_grade(
                         &day_review_model,
                         recall,
@@ -1024,7 +1105,7 @@ impl RwkvInference {
                         card.score_in_map = false;
                     } else {
                         let query = card.query(day as i64, millis);
-                        card.score = self.instant_scores(&[query], &states)?[0];
+                        card.score = self.instant_scores(&[query], &states, recall_offset)?[0];
                         card.score_in_map = true;
                     }
                     refresh = answers_today % config.refresh_interval.max(1) == 0;
@@ -1057,6 +1138,16 @@ impl RwkvInference {
                 millis += i64::from(gap.max(1));
                 sample += 1;
             }
+            report_day(
+                day as u32,
+                [
+                    output.due[day] as f32,
+                    output.done[day] as f32,
+                    output.new[day] as f32,
+                    output.lapses[day] as f32,
+                    output.seconds[day],
+                ],
+            )?;
         }
         Ok((output, estimated))
     }
@@ -1065,6 +1156,7 @@ impl RwkvInference {
         &mut self,
         inputs: &[ReviewInput],
         states: &SimulationStates<'_>,
+        recall_offset: f32,
     ) -> io::Result<Vec<f32>> {
         let work_items = inputs
             .iter()
@@ -1073,7 +1165,15 @@ impl RwkvInference {
                 state: states.state_ref(input),
             })
             .collect::<Vec<_>>();
-        self.model.review_retrievability_many_borrowed(&work_items)
+        let mut scores = self
+            .model
+            .review_retrievability_many_borrowed(&work_items)?;
+        if recall_offset != 0.0 {
+            scores.iter_mut().for_each(|score| {
+                *score = (*score + recall_offset).clamp(0.0, 1.0);
+            });
+        }
+        Ok(scores)
     }
 }
 

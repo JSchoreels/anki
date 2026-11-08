@@ -672,6 +672,7 @@ pub(super) fn summarize_forecast(
         days: days_out,
         groups,
         estimated_fsrs_states,
+        scenarios: None,
     }
 }
 
