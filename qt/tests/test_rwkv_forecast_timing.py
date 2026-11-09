@@ -3,6 +3,7 @@
 
 import threading
 import time
+from collections.abc import Callable
 from contextlib import contextmanager
 from dataclasses import replace
 from pathlib import Path
@@ -95,28 +96,47 @@ def test_forecast_calibration_compares_history_with_modeled_answer_noise() -> No
     assert matching_result.scale == pytest.approx(1.0)
 
 
-def test_forecast_review_time_fits_recall_and_grade() -> None:
-    recalls = [0.3, 0.4, 0.5, 0.6, 0.7, 0.8]
-    history: Any = SimpleNamespace(
-        patterns=[(99, [(1, 10_000), (2, 14_000)])],
-        calibration_targets={i: (99, 1) for i in range(6)},
-        calibration_review_ids=list(range(6)),
-        calibration_reviews=[
-            SimpleNamespace(ease=3, duration_millis=round((4 + 10 * (1 - r)) * 1000))
-            for r in recalls
-        ],
+def test_forecast_calibration_measures_systematic_bias_and_review_variance() -> None:
+    def calibrate(answers: int, successes: Callable[[int], int]) -> Any:
+        # 40 days, every prediction is 0.7 (model variance 0.21 per answer).
+        targets = {
+            day * answers + index: (day, int(index < successes(day)))
+            for day in range(40)
+            for index in range(answers)
+        }
+        total = 40 * answers
+        return rwkv_scheduler._rwkv_forecast_history_calibration(
+            targets, list(range(total)), [(i, 0.7) for i in range(total)]
+        )
+
+    # Alternating 6 and 8 successes out of 10 average 0.7: only sampling error.
+    unbiased = calibrate(10, lambda day: 6 + 2 * (day % 2))
+    assert unbiased is not None
+    assert unbiased.review_variance == pytest.approx(0.21)
+    assert unbiased.bias_sd < 0.02
+    # A constant +0.05 residual is part of the root-mean-square bias.
+    biased = calibrate(20, lambda _day: 15)
+    assert biased is not None
+    assert biased.bias_sd == pytest.approx(0.05)
+    # Bias and sampling error combine in quadrature.
+    noisy_bias = calibrate(20, lambda day: 14 + 2 * (day % 2))
+    assert noisy_bias is not None
+    assert noisy_bias.bias_sd > 0.05
+    # A single cluster cannot estimate a standard error.
+    assert rwkv_scheduler._rwkv_forecast_bias_sd({0: (0.4, 10.0)}) == 0.0
+    # Days are clusters when fewer than four weeks have data.
+    daily = rwkv_scheduler._rwkv_forecast_bias_sd(
+        {0: (1.0, 10.0), 1: (-1.0, 10.0), 2: (1.0, 10.0)}
     )
-    predictions = list(enumerate(recalls))
-    model = rwkv_scheduler._rwkv_forecast_review_time_model(history, predictions)
-    assert model is not None
-    assert model.reference_seconds == 12.0
-    assert model.samples == 6
-    assert (
-        model.grades[0] is None and model.grades[1] is None and model.grades[3] is None
-    )
-    grade = model.grades[2]
-    assert grade is not None
-    assert grade[:4] == pytest.approx((4.0, 10.0, 0.3, 0.8))
+    mean = 1.0 / 30
+    spread = sum((e - mean * 10) ** 2 for e in (1.0, -1.0, 1.0))
+    assert daily == pytest.approx((3 / 2 * spread / 30**2 + mean**2) ** 0.5)
+    # With four weeks the errors are clustered by week: a weekly-correlated
+    # error is not averaged away as if the days were independent.
+    weekly = {day: (0.5 if day // 7 % 2 else -0.5, 1.0) for day in range(56)}
+    independent = {day: (0.5 if day % 2 else -0.5, 1.0) for day in range(56)}
+    assert rwkv_scheduler._rwkv_forecast_bias_sd(weekly) > 0.15
+    assert rwkv_scheduler._rwkv_forecast_bias_sd(independent) < 0.05
 
 
 def test_forecast_scenario_result_preserves_path_identities() -> None:
@@ -259,11 +279,13 @@ def test_forecast_uses_canonical_history_timing(
     history = rwkv_scheduler._rwkv_forecast_review_history(
         object(), deck_ids={1}, recent_count=2
     )
-    assert history.patterns == [(99, [(120_000, 1_234), (180_000, 2_345)])]
+    # A two-answer day is pulled toward its mean duration (1789.5 ms) with a
+    # prior of 30 answers: round((2 * d + 30 * 1789.5) / 32).
+    assert history.patterns == [(99, [(120_000, 1_755), (180_000, 1_824)])]
     assert history.review_model.bucket_probabilities[10] == (0.0, 0.5, 0.5, 0.0)
     assert history.success_shares_by_day[99] == (0.5, 0.5, 0.0)
     assert history.recent_card_ids == [11, 10]
-    assert history.calibration_reviews == []
+    assert history.calibration_replay is None
 
     rows.extend(
         scheduler_pb2.RwkvHistoricalReviewInputsResponse.Review(
@@ -281,11 +303,160 @@ def test_forecast_uses_canonical_history_timing(
         object(), deck_ids={1}, recent_count=2, include_calibration=True
     )
     assert len(calibrated.calibration_targets) == 4
-    assert len(calibrated.calibration_reviews) == len(rows)
-    assert len(calibrated.calibration_review_ids) == len(rows)
+    assert calibrated.calibration_replay is not None
+    assert len(calibrated.calibration_replay.rows) == len(rows)
     assert rows[-1].review_id not in calibrated.calibration_targets
     # The other deck is still replayed because it affects shared model state.
-    assert calibrated.calibration_reviews[-1].identity.deck_id == 2
+    assert calibrated.calibration_replay.rows[-1].deck_id == 2
+
+
+def _history_from_days(
+    monkeypatch: pytest.MonkeyPatch, days: dict[int, list[tuple[int, int]]]
+) -> Any:
+    """Build forecast history from {day: [(ease, duration_millis), ...]}."""
+    today_start = 2_000_000_000
+    rows = [
+        scheduler_pb2.RwkvHistoricalReviewInputsResponse.Review(
+            review_id=(today_start - (100 - day) * 86_400 + 10 * index + 1) * 1_000,
+            day_offset=day,
+            deck_id=1,
+            card_id=day * 1_000 + index,
+            ease=ease,
+            review_kind=1,
+            duration_millis=duration,
+        )
+        for day, answers in days.items()
+        for index, (ease, duration) in enumerate(answers)
+    ]
+    backend = SimpleNamespace(
+        rwkv_historical_review_inputs=lambda request: SimpleNamespace(reviews=rows)
+    )
+    monkeypatch.setattr(
+        rwkv_scheduler,
+        "_timing_today",
+        lambda reviewer: SimpleNamespace(
+            days_elapsed=100, next_day_at=today_start + 86_400
+        ),
+    )
+    monkeypatch.setattr(
+        rwkv_scheduler,
+        "_collection",
+        lambda reviewer: SimpleNamespace(_backend=backend),
+    )
+    monkeypatch.setattr(
+        rwkv_history,
+        "history_fingerprint_request",
+        lambda reviewer, ignored: (
+            scheduler_pb2.RwkvHistoricalReviewFingerprintRequest()
+        ),
+    )
+    return rwkv_scheduler._rwkv_forecast_review_history(
+        object(), deck_ids={1}, recent_count=0
+    )
+
+
+def test_forecast_samples_days_with_enough_answers_when_available(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    long_day = [(3, 1_000)] * 10
+    short_day = [(3, 1_000)] * 3
+    days = {day: long_day for day in range(90, 97)} | {97: short_day}
+    history = _history_from_days(monkeypatch, days)
+    assert [day for day, _ in history.patterns] == list(range(90, 97))
+    assert sorted(history.success_shares_by_day) == list(range(90, 97))
+    # Fewer than seven long days: days with at least two answers are used.
+    days = {day: long_day for day in range(90, 96)} | {97: short_day, 98: [(3, 1_000)]}
+    history = _history_from_days(monkeypatch, days)
+    assert [day for day, _ in history.patterns] == [*range(90, 96), 97]
+
+
+def test_forecast_samples_recent_timing_days_with_fallback(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    window = rwkv_scheduler._RWKV_FORECAST_TIMING_DAYS
+    old_day = [(3, 20_000)] * 10
+    recent_day = [(3, 5_000)] * 10
+    # Seven qualifying recent days: older days are not sampled.
+    days = {day: old_day for day in range(1, 8)} | {
+        day: recent_day for day in range(100 - 7, 100)
+    }
+    history = _history_from_days(monkeypatch, days)
+    assert [day for day, _ in history.patterns] == list(range(93, 100))
+    assert history.timing_window_start == 93
+    # The window is measured back from today (day 100).
+    assert all(day >= 100 - window for day, _ in history.patterns)
+    # Too few recent days: the whole year's pool is kept.
+    days = {day: old_day for day in range(1, 8)} | {
+        day: recent_day for day in range(100 - 6, 100)
+    }
+    history = _history_from_days(monkeypatch, days)
+    assert [day for day, _ in history.patterns] == [*range(1, 8), *range(94, 100)]
+    assert history.timing_window_start == 1
+
+
+def test_forecast_review_time_model_uses_the_timing_window(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    rows = _replay_rows(days=5, per_day=8)
+    for row in rows:
+        row.duration_millis = 3_000
+    history = _replay_history(monkeypatch, rows)
+    source = history.calibration_replay
+    assert source is not None
+    backend = _ReplayBackend()
+    replayed = rwkv_scheduler._rwkv_forecast_replay_predictions(
+        backend, backend.forecast_history_predictions, source, lambda *_: None, 3
+    )
+    whole = rwkv_scheduler._rwkv_forecast_review_time_model(history, replayed)
+    assert whole is not None and whole.samples == 40
+    # A window of the last three days (97..99) keeps 6 answers per grade.
+    recent = rwkv_scheduler._rwkv_forecast_review_time_model(
+        history._replace(timing_window_start=97), replayed
+    )
+    assert recent is not None and recent.samples == 24
+    # Two days leave 4 per grade: no grade can be fitted, so sampled durations
+    # are used unchanged.
+    assert (
+        rwkv_scheduler._rwkv_forecast_review_time_model(
+            history._replace(timing_window_start=98), replayed
+        )
+        is None
+    )
+
+
+def test_forecast_shrinks_short_sampled_days_toward_the_pool(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    days = {day: [(3, 1_000)] * 30 for day in range(90, 93)} | {
+        93: [(4, 5_000), (4, 5_000)]
+    }
+    history = _history_from_days(monkeypatch, days)
+    patterns = dict(history.patterns)
+    # Days with 30 answers or more keep their own durations.
+    assert patterns[90] == [(second, 1_000) for second, _ in patterns[90]]
+    assert len(patterns[90]) == 30
+    # A tiny day is pulled toward the pooled mean duration; times are kept.
+    mean = (90 * 1_000 + 2 * 5_000) / 92
+    expected = round((2 * 5_000 + 30 * mean) / 32)
+    assert [duration for _, duration in patterns[93]] == [expected, expected]
+    assert 1_000 < expected < 5_000
+    # Its Easy-only shares are pulled toward the pooled shares (Good 90, Easy 2).
+    hard, good, easy = history.success_shares_by_day[93]
+    assert hard == 0.0
+    assert good == pytest.approx((20 * 90 / 92) / 22)
+    assert easy == pytest.approx((2 + 20 * 2 / 92) / 22)
+    assert hard + good + easy == pytest.approx(1.0)
+    assert history.success_shares_by_day[90] == pytest.approx(
+        (0.0, (30 + 20 * 90 / 92) / 50, (20 * 2 / 92) / 50)
+    )
+
+
+def test_forecast_shrunk_durations_are_at_least_one_millisecond(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    days = {day: [(3, 0)] * 30 for day in range(90, 93)} | {93: [(3, 0), (3, 0)]}
+    history = _history_from_days(monkeypatch, days)
+    assert [duration for _, duration in dict(history.patterns)[93]] == [1, 1]
 
 
 def test_forecast_reports_missing_real_timing_history(
@@ -549,13 +720,17 @@ def test_forecast_dispatches_instant_with_history_and_scheduler_settings(
     )
     assert calls[-1]["stratified_answers"] is True
     assert calls[-1]["stratified_scale"] == 1.0
+    assert calls[-1]["stratified_bias_sd"] == 0.0
+    assert calls[-1]["stratified_review_variance"] == 0.0
     assert "scenario_sigma" not in calls[-1]
     assert calls[-1]["refresh_interval"] == 5
     assert calls[-1]["candidate_refresh_enabled"] is True
     assert stratified["scenario_kind"] == "stratified"
     assert stratified["scenario_calibration"] == "insufficient_history"
     assert streamed[0]["scenario_kind"] == "stratified"
-    calibration = rwkv_scheduler._RwkvForecastCalibration(0.8, 40, 0.04, 0.05)
+    calibration = rwkv_scheduler._RwkvForecastCalibration(
+        0.8, 40, 0.04, 0.05, 0.03, 0.2
+    )
     monkeypatch.setattr(
         rwkv_scheduler, "_rwkv_forecast_calibration", lambda *_: calibration
     )
@@ -566,8 +741,327 @@ def test_forecast_dispatches_instant_with_history_and_scheduler_settings(
         partial_progress=lambda metadata, *_: streamed.append(metadata),
     )
     assert calls[-1]["stratified_scale"] == 0.8
+    assert calls[-1]["stratified_bias_sd"] == 0.03
+    assert calls[-1]["stratified_review_variance"] == 0.2
     assert stratified["scenario_history_days"] == 40
+    assert stratified["scenario_bias_sd"] == 0.03
     assert streamed[-1]["scenario_history_days"] == 40
+    assert streamed[-1]["scenario_bias_sd"] == 0.03
+
+
+@pytest.fixture(autouse=True)
+def _empty_forecast_replay_cache() -> Any:
+    rwkv_scheduler._clear_rwkv_forecast_replay_cache()
+    yield
+    rwkv_scheduler._clear_rwkv_forecast_replay_cache()
+
+
+_REPLAY_TODAY_START = 2_000_000_000
+
+
+def _replay_rows(days: int = 5, per_day: int = 4) -> list[Any]:
+    return [
+        scheduler_pb2.RwkvHistoricalReviewInputsResponse.Review(
+            review_id=(_REPLAY_TODAY_START - (100 - day) * 86_400 + 10 * index + 1)
+            * 1_000,
+            day_offset=day,
+            deck_id=1,
+            card_id=day * 1_000 + index,
+            ease=1 + (day + index) % 4,
+            review_kind=1,
+            duration_millis=1_000,
+        )
+        for day in range(95, 95 + days)
+        for index in range(per_day)
+    ]
+
+
+_replay_current_rows: list[list[Any]] = [[]]
+# One profile for the whole test: the collection's identity is part of the key.
+_REPLAY_COLLECTION = SimpleNamespace(
+    path="/profiles/a/collection.anki2",
+    _backend=SimpleNamespace(
+        rwkv_historical_review_inputs=lambda request: SimpleNamespace(
+            reviews=_replay_current_rows[0]
+        )
+    ),
+)
+
+
+class _ReplayBackend:
+    """Replays deterministic predictions and counts the whole-history replays."""
+
+    model_name = "sm57"
+    instant_model_name = None
+    state_precision = "f32"
+
+    def __init__(self) -> None:
+        self.calls = 0
+
+    def forecast_history_predictions(
+        self, reviews: Any, progress: Any = None
+    ) -> list[tuple[int, float]]:
+        self.calls += 1
+        if progress is not None:
+            progress(1, 1)
+        return [
+            (index, 0.3 + 0.1 * ((review.identity.card_id * 7 + index) % 6))
+            for index, review in enumerate(reviews)
+        ]
+
+
+def _replay_history(
+    monkeypatch: pytest.MonkeyPatch,
+    rows: list[Any],
+    *,
+    col: Any | None = None,
+    today: int = 100,
+) -> Any:
+    if col is None:
+        col = _REPLAY_COLLECTION
+        _replay_current_rows[:] = [rows]
+    monkeypatch.setattr(
+        rwkv_scheduler,
+        "_timing_today",
+        lambda reviewer: SimpleNamespace(
+            days_elapsed=today, next_day_at=_REPLAY_TODAY_START + 86_400
+        ),
+    )
+    monkeypatch.setattr(rwkv_scheduler, "_collection", lambda reviewer: col)
+    monkeypatch.setattr(
+        rwkv_history,
+        "history_fingerprint_request",
+        lambda reviewer, ignored: (
+            scheduler_pb2.RwkvHistoricalReviewFingerprintRequest()
+        ),
+    )
+    return rwkv_scheduler._rwkv_forecast_review_history(
+        object(), deck_ids={1}, recent_count=0, include_calibration=True
+    )
+
+
+def _calibrate(history: Any, backend: _ReplayBackend) -> Any:
+    return rwkv_scheduler._rwkv_forecast_calibration(
+        backend, history, lambda _current, _total: None, 3
+    )
+
+
+def _uncached_calibration(history: Any, backend: _ReplayBackend) -> Any:
+    """The calibration from the full, unfiltered replay of the whole history."""
+    source = history.calibration_replay
+    reviews = [rwkv_history.review_input_from_row(row) for row in source.rows]
+    return rwkv_scheduler._rwkv_forecast_history_calibration(
+        history.calibration_targets,
+        [row.review_id for row in source.rows],
+        backend.forecast_history_predictions(reviews),
+    )
+
+
+def test_forecast_calibration_replay_is_cached_and_identical(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    rows = _replay_rows()
+    backend = _ReplayBackend()
+    history = _replay_history(monkeypatch, rows)
+    expected = _uncached_calibration(history, backend)
+    assert expected is not None
+    backend.calls = 0
+
+    missed = _calibrate(history, backend)
+    assert backend.calls == 1
+    hit = _calibrate(_replay_history(monkeypatch, rows), backend)
+    assert backend.calls == 1
+    assert missed == hit == expected
+
+    # A search or horizon change builds the same history again: still a hit,
+    # and the next day (no new answers) only moves the 365-day window.
+    next_day = _replay_history(monkeypatch, rows, today=101)
+    assert _calibrate(next_day, backend) == _uncached_calibration(next_day, backend)
+    assert backend.calls == 2  # one extra call, from the uncached reference
+    # Going back in time needs predictions the cache dropped: it misses.
+    rwkv_scheduler._clear_rwkv_forecast_replay_cache()
+    _calibrate(_replay_history(monkeypatch, rows, today=101), backend)
+    backend.calls = 0
+    _calibrate(_replay_history(monkeypatch, rows, today=100), backend)
+    assert backend.calls == 1
+
+
+def test_forecast_review_time_reuses_replay_and_learns_grade_and_recall(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    rows = _replay_rows(days=5, per_day=8)
+    for index, row in enumerate(rows):
+        recall = 0.3 + 0.1 * ((row.card_id * 7 + index) % 6)
+        row.duration_millis = round((4.0 + 10.0 * (1.0 - recall)) * 1000)
+    backend = _ReplayBackend()
+    history = _replay_history(monkeypatch, rows)
+    source = history.calibration_replay
+    assert source is not None
+    replayed = rwkv_scheduler._rwkv_forecast_replay_predictions(
+        backend, backend.forecast_history_predictions, source, lambda *_: None, 3
+    )
+    model = rwkv_scheduler._rwkv_forecast_review_time_model(history, replayed)
+    assert model is not None
+    assert model.samples == 40
+    for grade in model.grades:
+        assert grade is not None
+        assert grade[0] == pytest.approx(4.0, abs=0.01)
+        assert grade[1] == pytest.approx(10.0, abs=0.01)
+        assert grade[2:4] == pytest.approx((0.3, 0.7))
+    assert (
+        rwkv_scheduler._rwkv_forecast_calibration(
+            backend, history, lambda *_: None, 3, replayed
+        )
+        is not None
+    )
+    assert backend.calls == 1
+
+
+def test_forecast_calibration_replay_cache_holds_two_entries(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    backend = _ReplayBackend()
+    for count in (5, 6, 7):
+        _calibrate(_replay_history(monkeypatch, _replay_rows(count)), backend)
+    assert backend.calls == 3
+    assert len(rwkv_scheduler._rwkv_forecast_replay_cache) == 2
+    _calibrate(_replay_history(monkeypatch, _replay_rows(7)), backend)
+    assert backend.calls == 3
+    _calibrate(_replay_history(monkeypatch, _replay_rows(5)), backend)
+    assert backend.calls == 4
+
+
+def test_forecast_calibration_replay_cache_misses_when_anything_changes(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    rows = _replay_rows()
+    backend = _ReplayBackend()
+    _calibrate(_replay_history(monkeypatch, rows), backend)
+    assert backend.calls == 1
+
+    # An extra review.
+    extra = _replay_rows()
+    extra.append(
+        scheduler_pb2.RwkvHistoricalReviewInputsResponse.Review(
+            review_id=(_REPLAY_TODAY_START + 5) * 1_000,
+            day_offset=100,
+            deck_id=1,
+            card_id=99,
+            ease=3,
+            review_kind=1,
+        )
+    )
+    _calibrate(_replay_history(monkeypatch, extra), backend)
+    assert backend.calls == 2
+
+    # Same ids and size, one changed ease.
+    changed = _replay_rows()
+    changed[3].ease = 1 if changed[3].ease != 1 else 2
+    _calibrate(_replay_history(monkeypatch, changed), backend)
+    assert backend.calls == 3
+
+    # A field only the replay reads (the preset) changed.
+    preset = _replay_rows()
+    preset[0].preset_id = 5
+    _calibrate(_replay_history(monkeypatch, preset), backend)
+    assert backend.calls == 4
+
+    # The cache only keeps two entries: the original history was evicted.
+    _calibrate(_replay_history(monkeypatch, rows), backend)
+    assert backend.calls == 5
+
+    # Another profile with the very same history.
+    other = SimpleNamespace(
+        path="/profiles/b/collection.anki2",
+        _backend=SimpleNamespace(
+            rwkv_historical_review_inputs=lambda request: SimpleNamespace(reviews=rows)
+        ),
+    )
+    _calibrate(_replay_history(monkeypatch, rows, col=other), backend)
+    assert backend.calls == 6
+
+    # The original history is still cached for the original profile.
+    _calibrate(_replay_history(monkeypatch, rows), backend)
+    assert backend.calls == 6
+
+    # A different model, precision or backend instance.
+    original = _replay_history(monkeypatch, rows)
+    for change in (
+        {"model_name": "sm40"},
+        {"instant_model_name": "sm57-ft"},
+        {"state_precision": "f16"},
+    ):
+        different = _ReplayBackend()
+        for name, value in change.items():
+            setattr(different, name, value)
+        _calibrate(original, different)
+        assert different.calls == 1
+    fresh = _ReplayBackend()
+    _calibrate(original, fresh)
+    assert fresh.calls == 1
+    assert backend.calls == 6
+
+
+def test_forecast_calibration_replay_cache_follows_resident_state_epoch(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    rows = _replay_rows()
+    backend = _ReplayBackend()
+    monkeypatch.setattr(rwkv_scheduler, "_reviewer_backend", backend)
+    col = SimpleNamespace(
+        path="/profiles/a/collection.anki2",
+        _backend=SimpleNamespace(
+            rwkv_historical_review_inputs=lambda request: SimpleNamespace(reviews=rows)
+        ),
+    )
+    key = (id(backend), id(col))
+    generations = dict(rwkv_scheduler._reviewer_backend_warmup_generations)
+    monkeypatch.setattr(
+        rwkv_scheduler, "_reviewer_backend_warmup_generations", generations
+    )
+    _calibrate(_replay_history(monkeypatch, rows, col=col), backend)
+    assert backend.calls == 1
+
+    # The state changed after the history was read: neither read nor stored.
+    stale = _replay_history(monkeypatch, rows, col=col)
+    generations[key] = 1
+    _calibrate(stale, backend)
+    assert backend.calls == 2
+    assert len(rwkv_scheduler._rwkv_forecast_replay_cache) == 1
+
+    # A history read in the new epoch is a miss, then cached.
+    _calibrate(_replay_history(monkeypatch, rows, col=col), backend)
+    assert backend.calls == 3
+    _calibrate(_replay_history(monkeypatch, rows, col=col), backend)
+    assert backend.calls == 3
+
+    # Invalidating the resident state drops the cached predictions.
+    rwkv_scheduler._invalidate_reviewer_backend_state(
+        SimpleNamespace(mw=SimpleNamespace(col=col)), reason="test"
+    )
+    assert not rwkv_scheduler._rwkv_forecast_replay_cache
+
+
+def test_forecast_calibration_without_a_runtime_identity_is_not_cached(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    backend = _ReplayBackend()
+    backend.state_precision = None  # type: ignore[assignment]
+    rows = _replay_rows()
+    _calibrate(_replay_history(monkeypatch, rows), backend)
+    _calibrate(_replay_history(monkeypatch, rows), backend)
+    assert backend.calls == 2
+    assert not rwkv_scheduler._rwkv_forecast_replay_cache
+
+
+def test_forecast_calibration_with_too_little_history_never_replays(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    backend = _ReplayBackend()
+    history = _replay_history(monkeypatch, _replay_rows(days=1))
+    assert history.calibration_replay is None
+    assert _calibrate(history, backend) is None
+    assert backend.calls == 0
 
 
 def test_instant_native_bridge_simulates_without_mutating_warm_state() -> None:
@@ -663,15 +1157,15 @@ def test_instant_native_bridge_simulates_without_mutating_warm_state() -> None:
     output = runtime.forecast_instant_workload(**args)
     assert output[1][0][2][0] == 1.0
     assert runtime.forecast_instant_workload(**args) == output
+    # A one-answer forecast preserves its queue but scales the sampled two
+    # seconds by the model's 10-second prediction / one-second reference.
     time_model = (1.0, [(10.0, 0.0, 0.0, 1.0, 10.0)] * 4)
     timed = runtime.forecast_instant_workload(**args, review_time_model=time_model)
     assert timed[1][0][2][0] == 1.0
     assert timed[1][0][5][0] == pytest.approx(20.0)
     r_model = (1.0, [(1.0, 10.0, 0.0, 1.0, 5.0)] * 4)
     shifted_times = runtime.forecast_instant_workload(
-        **{**args, "paths": 3},
-        scenario_sigma=1.0,
-        review_time_model=r_model,
+        **{**args, "paths": 3}, scenario_sigma=1.0, review_time_model=r_model
     )
     assert shifted_times[4][0][0][4] == pytest.approx(shifted_times[4][1][0][4])
     assert shifted_times[4][2][0][4] == pytest.approx(shifted_times[4][1][0][4])

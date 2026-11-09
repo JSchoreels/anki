@@ -1472,6 +1472,20 @@ with a full refresh after each answer. The forecast took 66.5 s before and
 45.7 s after the cache and queue changes (31% less), with identical complete
 output. This is one measurement, not an estimate for a 50-path forecast.
 
+Each path also logs per-phase wall time at debug level (`RWKV Instant forecast
+path phases`). On a synthetic 10,000-card benchmark (`cargo run -p anki --release
+--features bench --example instant_forecast_bench`), scoring the queue after
+every answer took about 98% of path time. Per-queue card indexes and skipping
+the answered card's score, when a full refresh rescores it before any read,
+leave the output byte-identical but remove only a small part of the remaining
+time. For faster approximate runs, the Rust-only `approximate_refresh_answers`
+setting refreshes queued scores every k answers. On that benchmark k = 8 was
+about 7x faster, with daily done and lapse counts within seed-to-seed
+variation; due counts drift with k (about 5-12% at k = 2-16 over 7 days). It is
+not exposed in Anki or the add-on API. The calibration replay that estimates
+the forecast's recall bias is cached per history digest, runtime and state
+generation, so repeated forecasts do not replay the whole history again.
+
 New, learning and relearning cards use Anki scheduling states and the preset's
 FSRS or SM-2 settings. Intraday learning does not consume a review limit;
 interday learning does. Future Dynamic DR targets are held at their initial
@@ -1587,13 +1601,28 @@ modeled, and cards that are in (re)learning right now or suspended are left
 out (the same card set as the DR workload simulator).
 
 Instant bands also include the sampled historical day and its answer timings
-and successful-answer mix. Its `done` metric counts review-queue answers;
-`new` counts introductions.
+and successful-answer mix. The sampled days are those with at least 10 answers
+(or at least 2 if fewer than 7 days qualify). Only those within the last 90
+scheduler days are used when at least 7 of them qualify; otherwise the whole
+year is kept. Answer times drift with study habits. On one user's backtest
+(2026-11-09, 14 cut dates), the whole year put the forecast's seconds per
+review 21% above the actual figure (+7% on the 7 cuts whose settings did not
+change afterwards). With 90 days it was 9% above (+5%). On a 100-path
+forecast of 10 days, the mean was 12.3 s per review before and 9.6 s after,
+against 9.6 s actual. Windows of 45-90 days, or recency weights with a
+half-life of 45-60 days, gave similar levels in an offline screen. A day's
+Hard/Good/Easy shares are
+shrunk toward the pooled shares with a prior of 20 successful answers, and the
+durations of a day with fewer than 30 answers are shrunk toward the pooled mean
+duration with a prior of 30 answers (the simulation cycles through a day's
+durations, so a tiny day would otherwise repeat a handful of values hundreds of
+times). `done` counts review-queue answers; `new` counts introductions.
 
 For Instant review answers, a separate regression per grade estimates answer
 seconds from the model's pre-answer R, using the same linear R model as the
 RWKV workload simulator. It fits eligible review answers from the selected
-decks in the last year, paired with replayed pre-answer Instant predictions;
+decks on the sampled days' window (the last 90 days, or the last year when the
+whole year is sampled), paired with replayed pre-answer Instant predictions;
 durations of zero or at least 10 minutes are excluded. Each grade needs at
 least five samples. Predictions are limited to the R range seen for that
 grade, and invalid predictions fall back to that grade's historical mean.
@@ -1607,21 +1636,28 @@ so adjusted durations are estimates rather than a rescheduled timeline. The
 available and `"historical"` otherwise; `review_time_samples` counts the
 eligible fitted answers when a model is present.
 
-With exactly three Instant paths, the API samples lower, central and higher
-aggregate answer outcomes using the same historical sessions and the model's
-unmodified recall probabilities. It uses a normal approximation to select
-different daily outcome quantiles whose weighted aggregate corresponds roughly
-to one standard deviation below, at, or above the expected number of successful
-answers. The daily weights estimate answer volume from each sampled session and
-the study deck's limits; they do not alter the actual limits. At the first
-non-empty queue of each day, a preview of up to 512 eligible cards estimates
-the variance in answer outcomes. For every simulated answer, its current model
-prediction and the residual observed so far inform an approximate conditional
-draw toward that day's target. The adjustment is updated as answers arrive,
-instead of adding the same offset to every recall prediction. Review, new and
-learning answers contribute, and the queue and its refreshes continue to use
-the unconditioned model predictions. The estimate of remaining answers is
-necessarily approximate because future queues and learning steps can change.
+With exactly three Instant paths, the API runs lower, central and higher
+paths with the same historical sessions and the model's unmodified recall
+probabilities, and a different target for each path's daily answer outcomes.
+All days have the same weight: a simulated day lasts until the queue is empty
+or the limits are hit, so the length of the sampled historical session does not
+predict that day's answer count. Each path shares one set of daily noise, which
+sums to zero, plus a shift that separates the paths by one standard deviation of
+the aggregate answer outcome. The shift is allocated with a cumulative
+envelope, `sqrt(scale^2 * t + kappa^2 * t^2 / days)` after `t` days, so the
+separation of the paths at any day equals the one-sigma spread of the
+cumulative residual up to that day. A linear allocation would make the bands
+too narrow early in the horizon. `scale` is the calibration scale below and
+`kappa` expresses the systematic recall error below in units of the model's
+aggregate sigma. At the first non-empty queue of each day, a preview of up to
+512 eligible cards estimates the variance in answer outcomes. For every
+simulated answer, its current model prediction and the residual observed so far
+inform an approximate conditional draw toward that day's target. The adjustment
+is updated as answers arrive, instead of adding the same offset to every recall
+prediction. Review, new and learning answers contribute, and the queue and its
+refreshes continue to use the unconditioned model predictions. The estimate of
+remaining answers is necessarily approximate because future queues and learning
+steps can change.
 
 For eligible review days in the last year, a separate replay compares actual
 answers with pre-answer model predictions. The variance of daily mean residuals
@@ -1630,17 +1666,32 @@ ratio scales the simulated outcome deviations; the residual variance is not
 added on top of answer randomness a second time. The variance estimate blends
 in 20 model-based prior days to reduce unstable corrections from little history.
 At least two days with two eligible reviews and nonzero predicted variance are
-required; otherwise the scale defaults to one. This estimates variation, not
-persistent mean bias. It is an approximation to answer-outcome variability,
-not a calibrated probability interval for workload. In particular, the recurrent
-model and changing queues can make workload paths cross or produce a large spread.
-The API adds `scenario_kind: "stratified"`, `scenario_history_days` when
-calibration succeeds, and `scenario_daily`; each metric's array is in
-`[lower, central, higher]` answer-outcome order. `daily` and `groups` retain
-their existing summary format; consumers should use the middle scenario for
-the central line rather than assume it is the median. If calibration is not
-available, `scenario_calibration` is `"insufficient_history"`. Other Instant
-path counts and all Curve forecasts continue to return stochastic path summaries.
+required; otherwise the scale defaults to one.
+
+The same replay measures a systematic recall error that is perfectly correlated
+across days and therefore grows linearly in cumulative terms. `bias_sd` is the
+root-mean-square of the standard error of the mean residual per answer
+(computed from clusters of weeks when at least four weeks have data, otherwise
+days) and the measured mean residual itself. It is deliberately symmetric: the
+central path is not corrected for the measured bias, and the lower and higher
+paths are separated by it. The paths' separation therefore corresponds to one
+true aggregate standard deviation when the calibration is right.
+
+What the spread covers: answer-outcome randomness and systematic recall error.
+It does not cover the per-day range of `done`, `new`, `lapses` and `seconds`
+that comes from the queue, the limits and the sampled days; three paths are not
+enough to estimate that, and at least 100 independent paths are needed. It is an
+approximation, not a calibrated probability interval for workload. In
+particular, the recurrent model and changing queues can make workload paths
+cross or produce a large spread.
+The API adds `scenario_kind: "stratified"`, `scenario_history_days` and
+`scenario_bias_sd` when calibration succeeds, and `scenario_daily`; each
+metric's array is in `[lower, central, higher]` answer-outcome order. `daily`
+and `groups` retain their existing summary format; consumers should use the
+middle scenario for the central line rather than assume it is the median. If
+calibration is not available, `scenario_calibration` is `"insufficient_history"`.
+Other Instant path counts and all Curve forecasts continue to return stochastic
+path summaries.
 
 **Curve speed.** Cost is proportional to paths x simulated answers per path; each
 answer runs several RWKV steps (recall query, interval curves, state update),

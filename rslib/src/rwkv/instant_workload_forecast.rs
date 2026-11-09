@@ -51,6 +51,47 @@ struct InstantPathParameters {
     stratum: Option<usize>,
 }
 
+/// Wall time spent in each phase of one path's answer loop, logged once at
+/// the end of the path to locate forecast cost.
+#[derive(Default)]
+struct InstantPhaseTimes {
+    refresh: std::time::Duration,
+    refreshes: u64,
+    refreshed_cards: u64,
+    candidates: std::time::Duration,
+    lists: std::time::Duration,
+    select: std::time::Duration,
+    preview: std::time::Duration,
+    answer_score: std::time::Duration,
+    apply: std::time::Duration,
+    post_score: std::time::Duration,
+    iterations: u64,
+}
+
+impl InstantPhaseTimes {
+    fn log(&self, seed: u32, stratum: Option<usize>, answers: u32, total: std::time::Duration) {
+        let ms = |duration: std::time::Duration| duration.as_secs_f64() * 1000.0;
+        tracing::debug!(
+            seed,
+            stratum,
+            answers,
+            iterations = self.iterations,
+            refreshes = self.refreshes,
+            refreshed_cards = self.refreshed_cards,
+            total_ms = ms(total),
+            refresh_ms = ms(self.refresh),
+            candidates_ms = ms(self.candidates),
+            lists_ms = ms(self.lists),
+            select_ms = ms(self.select),
+            preview_ms = ms(self.preview),
+            answer_score_ms = ms(self.answer_score),
+            apply_ms = ms(self.apply),
+            post_score_ms = ms(self.post_score),
+            "RWKV Instant forecast path phases"
+        );
+    }
+}
+
 struct InstantPathProgress<'a> {
     check_cancel: &'a mut dyn FnMut() -> io::Result<()>,
     report_day: &'a mut dyn FnMut(u32, [f32; 5]) -> io::Result<()>,
@@ -432,11 +473,15 @@ impl RwkvInference {
             && (config.paths != 3
                 || config.scenario_sigma.is_some()
                 || !config.stratified_scale.is_finite()
-                || config.stratified_scale < 0.0)
+                || config.stratified_scale < 0.0
+                || !config.stratified_bias_sd.is_finite()
+                || config.stratified_bias_sd < 0.0
+                || !config.stratified_review_variance.is_finite()
+                || config.stratified_review_variance < 0.0)
         {
             return Err(io::Error::new(
                 io::ErrorKind::InvalidInput,
-                "stratified answers require three paths, no scenario sigma, and a nonnegative finite scale",
+                "stratified answers require three paths, no scenario sigma, and nonnegative finite scale, bias and variance",
             ));
         }
         if config
@@ -682,6 +727,10 @@ impl RwkvInference {
             NewCardGatherPriority::AscendingRetrievability
                 | NewCardGatherPriority::DescendingRetrievability
         );
+        let refresh_interval = config
+            .refresh_interval
+            .max(1)
+            .max(config.approximate_refresh_answers);
         let mut models = HashMap::new();
         let mut cards = Vec::with_capacity(inputs.len());
         let mut estimated = 0;
@@ -691,8 +740,8 @@ impl RwkvInference {
             cards.push(card);
         }
         let days = config.days as usize;
-        // Estimate each day's answer count from its sampled real session and
-        // the study deck limit. This weights the strata, not the actual queue.
+        // Typical answers per day: the median sampled session, capped by the
+        // study deck limit. It only sizes the systematic recall error.
         let deviations = stratum.map(|stratum| {
             let answer_limit = u64::from(study_preset.inner.reviews_per_day)
                 .saturating_add(if config.new_cards_ignore_review_limit {
@@ -701,20 +750,27 @@ impl RwkvInference {
                     0
                 })
                 .max(1) as usize;
-            let counts = (0..days)
-                .map(|day| {
-                    let index = (simulation_unit_hash(i64::from(seed), day as i64, 0)
-                        * config.timing_patterns.len() as f64)
-                        as usize;
-                    config.timing_patterns[index.min(config.timing_patterns.len() - 1)]
-                        .len()
-                        .min(answer_limit)
-                })
+            let mut lengths = config
+                .timing_patterns
+                .iter()
+                .map(Vec::len)
                 .collect::<Vec<_>>();
-            day_deviations(&counts, seed, stratum)
-                .into_iter()
-                .map(|z| z * f64::from(config.stratified_scale))
-                .collect::<Vec<_>>()
+            lengths.sort_unstable();
+            let n_flat = lengths[lengths.len() / 2].min(answer_limit).max(1);
+            let bias_sd = f64::from(config.stratified_bias_sd);
+            let review_variance = f64::from(config.stratified_review_variance);
+            let kappa = if review_variance > 0.0 && bias_sd.is_finite() {
+                bias_sd * (n_flat as f64 * days as f64 / review_variance).sqrt()
+            } else {
+                0.0
+            };
+            day_deviations(
+                days,
+                seed,
+                stratum,
+                f64::from(config.stratified_scale),
+                kappa,
+            )
         });
         let mut output = ForecastPath {
             due: vec![0; days],
@@ -728,7 +784,19 @@ impl RwkvInference {
             total_cost: 0.0,
             review_count: 0,
         };
+        // Card indexes in ascending order for queues 0 (new), 1 (intraday
+        // learning), 2 (review) and 3 (interday learning). A card's queue only
+        // changes when it is answered, so these replace full scans of `cards`.
+        let mut queue_members: [Vec<usize>; 4] = Default::default();
+        for (index, card) in cards.iter().enumerate() {
+            if let Some(members) = queue_slot(card.input.queue).map(|q| &mut queue_members[q]) {
+                members.push(index);
+            }
+        }
+        let mut review_candidates = Vec::new();
         let mut answers = 0u32;
+        let path_started = std::time::Instant::now();
+        let mut times = InstantPhaseTimes::default();
         for day in 0..days {
             check_cancel()?;
             let pattern_index = (simulation_unit_hash(i64::from(seed), day as i64, 0)
@@ -776,8 +844,10 @@ impl RwkvInference {
                 if sample % 128 == 0 {
                     check_cancel()?;
                 }
+                times.iterations += 1;
                 let did_refresh = refresh;
                 if did_refresh {
+                    let started = std::time::Instant::now();
                     let mut indexes = if config.candidate_refresh_enabled && !force_full_refresh {
                         cards
                             .iter()
@@ -786,15 +856,17 @@ impl RwkvInference {
                             .map(|(index, _)| index)
                             .collect::<Vec<_>>()
                     } else {
-                        cards.iter_mut().for_each(|card| card.score_in_map = false);
-                        cards
-                            .iter()
-                            .enumerate()
-                            .filter(|(_, card)| {
-                                card.input.queue == 2 || (score_new && card.input.queue == 0)
-                            })
-                            .map(|(index, _)| index)
-                            .collect::<Vec<_>>()
+                        // Only the candidate window reads `score_in_map`.
+                        if config.candidate_refresh_enabled {
+                            cards.iter_mut().for_each(|card| card.score_in_map = false);
+                        }
+                        let mut indexes = queue_members[2].clone();
+                        if score_new {
+                            // Same ascending order as a scan of all cards.
+                            indexes.extend_from_slice(&queue_members[0]);
+                            indexes.sort_unstable();
+                        }
+                        indexes
                     };
                     if config.candidate_refresh_enabled && !force_full_refresh {
                         indexes.sort_by(|&a, &b| {
@@ -830,11 +902,17 @@ impl RwkvInference {
                         cards[index].score_in_map = true;
                     }
                     force_full_refresh = false;
+                    times.refreshes += 1;
+                    times.refreshed_cards += queries.len() as u64;
+                    times.refresh += started.elapsed();
                 }
-                let candidates = cards
-                    .iter()
-                    .map(|card| card.candidate(day as i64, millis, answers))
-                    .collect::<Vec<_>>();
+                let started = std::time::Instant::now();
+                // Candidates depend on the current time and answer count, so
+                // they are rebuilt for every answer, but only for the cards
+                // that are read: all reviews here, others on demand below.
+                let candidate = |index: usize| cards[index].candidate(day as i64, millis, answers);
+                review_candidates.clear();
+                review_candidates.extend(queue_members[2].iter().map(|&index| candidate(index)));
                 let policy = InstantReviewPolicy {
                     same_day_allowed: config.same_day_allowed,
                     min_intervening: config.min_intervening_reviews,
@@ -843,11 +921,8 @@ impl RwkvInference {
                     shuffle: i64::from(answers) ^ i64::from(seed),
                     day: day as i64,
                 };
-                for (index, candidate) in candidates.iter().enumerate() {
-                    if cards[index].input.queue == 2
-                        && instant_due(candidate, policy)
-                        && !due_seen[index]
-                    {
+                for (&index, candidate) in queue_members[2].iter().zip(&review_candidates) {
+                    if !due_seen[index] && instant_due(candidate, policy) {
                         due_seen[index] = true;
                         let group = group_ids
                             .binary_search(&candidate.deck_id)
@@ -856,13 +931,12 @@ impl RwkvInference {
                         output.group_days[group][0][day] += 1;
                     }
                 }
-                let mut day_learning = cards
+                times.candidates += started.elapsed();
+                let started = std::time::Instant::now();
+                let mut day_learning = queue_members[3]
                     .iter()
-                    .enumerate()
-                    .filter(|(_, card)| {
-                        card.input.queue == 3 && card.learning_due_millis <= day_start
-                    })
-                    .map(|(index, _)| index)
+                    .copied()
+                    .filter(|&index| cards[index].learning_due_millis <= day_start)
                     .collect::<Vec<_>>();
                 day_learning.sort_by_key(|&index| {
                     (
@@ -870,12 +944,7 @@ impl RwkvInference {
                         cards[index].input.input.review_input.card_id,
                     )
                 });
-                let reviews = cards
-                    .iter()
-                    .enumerate()
-                    .filter(|(_, card)| card.input.queue == 2)
-                    .map(|(index, _)| index)
-                    .collect::<Vec<_>>();
+                let reviews = &queue_members[2];
                 let mut new = if let Some(order) = &new_order {
                     order
                         .iter()
@@ -883,12 +952,7 @@ impl RwkvInference {
                         .filter(|&index| cards[index].input.queue == 0)
                         .collect::<Vec<_>>()
                 } else {
-                    cards
-                        .iter()
-                        .enumerate()
-                        .filter(|(_, card)| card.input.queue == 0)
-                        .map(|(index, _)| index)
-                        .collect::<Vec<_>>()
+                    queue_members[0].clone()
                 };
                 let gather = study_preset.inner.new_card_gather_priority();
                 if new_order.is_none() {
@@ -942,27 +1006,28 @@ impl RwkvInference {
                         new_order = Some(new.clone());
                     }
                 }
+                times.lists += started.elapsed();
+                let started = std::time::Instant::now();
                 let queues = instant_study_candidates(
-                    &reviews
-                        .iter()
-                        .map(|&index| candidates[index])
-                        .collect::<Vec<_>>(),
+                    &review_candidates,
                     &day_learning
                         .iter()
-                        .map(|&index| candidates[index])
+                        .map(|&index| candidate(index))
                         .collect::<Vec<_>>(),
                     &new.iter()
                         .map(|&index| cards[index].input.group)
                         .collect::<Vec<_>>(),
-                    precomputed.map(|index| (cards[index].input.queue, candidates[index])),
+                    precomputed.map(|index| (cards[index].input.queue, candidate(index))),
                     &decks,
                     &deck_configs,
                     config.today.saturating_add(day as u32),
                     config.new_cards_ignore_review_limit,
                     policy,
                 )?;
+                times.select += started.elapsed();
+                let started = std::time::Instant::now();
                 let eligible_learning = |index: usize, min_intervening| {
-                    let candidate = &candidates[index];
+                    let candidate = candidate(index);
                     rwkv_repeat_spacing_eligibility(
                         candidate.elapsed_seconds,
                         min_intervening,
@@ -1004,15 +1069,13 @@ impl RwkvInference {
                     main_answered,
                     new_answered,
                 );
-                let mut intraday = cards
+                let mut intraday = queue_members[1]
                     .iter()
-                    .enumerate()
-                    .filter(|(index, card)| {
-                        card.input.queue == 1
-                            && card.learning_due_millis <= millis
-                            && eligible_learning(*index, config.min_intervening_reviews)
+                    .copied()
+                    .filter(|&index| {
+                        cards[index].learning_due_millis <= millis
+                            && eligible_learning(index, config.min_intervening_reviews)
                     })
-                    .map(|(index, _)| index)
                     .collect::<Vec<_>>();
                 intraday.sort_by_key(|&index| {
                     (
@@ -1053,6 +1116,8 @@ impl RwkvInference {
                     });
                     queue = learning;
                 }
+                times.lists += started.elapsed();
+                let started = std::time::Instant::now();
                 if answer_stratum.is_none() {
                     if let Some(deviations) = &deviations {
                         let preview = precomputed
@@ -1080,12 +1145,14 @@ impl RwkvInference {
                         }
                     }
                 }
+                times.preview += started.elapsed();
                 if let Some(index) = precomputed.take().or_else(|| queue.first().copied()) {
                     if config.precompute_next_card {
                         precomputed = queue.iter().copied().find(|&candidate| candidate != index);
                     }
+                    let answered = candidate(index);
                     let group_index = group_ids
-                        .binary_search(&candidates[index].deck_id)
+                        .binary_search(&answered.deck_id)
                         .expect("group is listed");
                     let queue_kind = cards[index].input.queue;
                     if queue_kind == 2 && !due_seen[index] {
@@ -1094,16 +1161,19 @@ impl RwkvInference {
                         output.group_days[group_index][0][day] += 1;
                     }
                     let exempt = matches!(queue_kind, 2 | 3)
-                        && ignores_review_limit(&candidates[index], &decks, &deck_configs)?;
+                        && ignores_review_limit(&answered, &decks, &deck_configs)?;
                     let card = &mut cards[index];
                     let reviewed_today = card.last_day == Some(day as i64);
                     // The queue can intentionally retain stale scores between
                     // refreshes. Recall at the actual answer time still uses
                     // the current recurrent state, not the stale queue score.
+                    let started = std::time::Instant::now();
                     let model_recall = self
                         .instant_scores(&[card.query(day as i64, millis)], &states)?[0]
                         .clamp(0.0, 1.0);
                     let recall = (model_recall + recall_offset).clamp(0.0, 1.0);
+                    times.answer_score += started.elapsed();
+                    let started = std::time::Instant::now();
                     let answer_recall = answer_stratum.as_ref().map_or(recall, |stratum| {
                         stratum.probability(recall, queue.len().max(1))
                     });
@@ -1199,14 +1269,42 @@ impl RwkvInference {
                     card.last_millis = Some(millis);
                     card.last_answer_sequence = Some(answers);
                     card.reps += 1;
+                    if card.input.queue != queue_kind {
+                        if let Some(old) = queue_slot(queue_kind) {
+                            let members = &mut queue_members[old];
+                            if let Ok(at) = members.binary_search(&index) {
+                                members.remove(at);
+                            }
+                        }
+                        if let Some(new) = queue_slot(card.input.queue) {
+                            let members = &mut queue_members[new];
+                            if let Err(at) = members.binary_search(&index) {
+                                members.insert(at, index);
+                            }
+                        }
+                    }
+                    times.apply += started.elapsed();
+                    let started = std::time::Instant::now();
+                    refresh = answers_today % refresh_interval == 0;
                     if card.input.queue == -1 {
                         card.score_in_map = false;
                     } else {
-                        let query = card.query(day as i64, millis);
-                        card.score = self.instant_scores(&[query], &states)?[0];
+                        // Without a candidate window, scores are only read for
+                        // reviews (and new cards when gathering by
+                        // retrievability), and a full refresh rescores all of
+                        // them before the next selection reads any score. The
+                        // next day also starts with a full refresh.
+                        let scored_queue =
+                            card.input.queue == 2 || (score_new && card.input.queue == 0);
+                        let rescored_before_read =
+                            !config.candidate_refresh_enabled && (refresh || !scored_queue);
+                        if !rescored_before_read {
+                            let query = card.query(day as i64, millis);
+                            card.score = self.instant_scores(&[query], &states)?[0];
+                        }
                         card.score_in_map = true;
                     }
-                    refresh = answers_today % config.refresh_interval.max(1) == 0;
+                    times.post_score += started.elapsed();
                     if refresh {
                         refresh_at = millis;
                     }
@@ -1250,6 +1348,7 @@ impl RwkvInference {
                 ],
             )?;
         }
+        times.log(seed, stratum, answers, path_started.elapsed());
         Ok((output, estimated))
     }
 
@@ -1267,6 +1366,11 @@ impl RwkvInference {
             .collect::<Vec<_>>();
         self.model.review_retrievability_many_borrowed(&work_items)
     }
+}
+
+/// The `queue_members` slot of an Instant forecast queue, if it is tracked.
+fn queue_slot(queue: i32) -> Option<usize> {
+    usize::try_from(queue).ok().filter(|queue| *queue < 4)
 }
 
 fn mix_queues(
@@ -1360,6 +1464,7 @@ mod tests {
         assert_eq!(model.duration_millis(10_000, 0.9, 3), 4_000);
         assert_eq!(model.duration_millis(10_000, 0.4, 3), 14_000);
         assert_eq!(model.duration_millis(5_000, 0.4, 3), 7_000);
+        // Do not extrapolate outside the R values in the training history.
         assert_eq!(model.duration_millis(10_000, 1.0, 3), 4_000);
         assert_eq!(model.duration_millis(10_000, 0.4, 1), 10_000);
         assert_eq!(model.duration_millis(10_000, f32::NAN, 3), 10_000);

@@ -8,16 +8,33 @@ use super::simulation_unit_hash;
 pub(super) const PREVIEW_LIMIT: usize = 512;
 
 /// Draw shared day-to-day variation, conditioned approximately on a low,
-/// central, or high aggregate outcome over the whole forecast. The weights
-/// estimate each day's contribution to answer-count variability.
-pub(super) fn day_deviations(counts: &[usize], seed: u32, stratum: usize) -> Vec<f64> {
-    let weights = counts
-        .iter()
-        .map(|n| (*n).max(1) as f64)
-        .map(f64::sqrt)
-        .collect::<Vec<_>>();
-    let norms = weights.iter().map(|w| w * w).sum::<f64>();
-    let noise = (0..counts.len())
+/// central, or high aggregate outcome over the whole forecast, and return the
+/// final per-day z targets (already scaled by `noise_scale`).
+///
+/// Every day has the same weight. A simulated day lasts until the queue is
+/// empty or the limits are hit, so the length of the sampled historical
+/// session does not predict that day's answer count; weighting days by it
+/// (as an earlier version did) was therefore not justified. With equal
+/// weights the noise sums to exactly zero, and the aggregate shift is
+/// `(stratum - 1) * sqrt(noise_scale^2 + bias_kappa^2)` in units of the
+/// model's aggregate sigma, i.e. one true aggregate standard deviation when the
+/// calibration is right.
+///
+/// The shift is spread over days with a cumulative envelope
+/// `c_i = sqrt(noise_scale^2 * i + bias_kappa^2 * i^2 / days)`: the cumulative
+/// separation after `t` days equals the pointwise one-sigma spread of the
+/// cumulative residual. A linear allocation would make the bands too narrow
+/// early in the horizon by a factor of `sqrt(t / days)`. The `bias_kappa` term
+/// is a systematic (perfectly day-correlated) recall error, whose cumulative
+/// effect grows linearly in the number of days.
+pub(super) fn day_deviations(
+    days: usize,
+    seed: u32,
+    stratum: usize,
+    noise_scale: f64,
+    bias_kappa: f64,
+) -> Vec<f64> {
+    let z = (0..days)
         .map(|day| {
             let u1 =
                 simulation_unit_hash(i64::from(seed), day as i64, 0x1A63).max(f64::MIN_POSITIVE);
@@ -25,12 +42,16 @@ pub(super) fn day_deviations(counts: &[usize], seed: u32, stratum: usize) -> Vec
             (-2.0 * u1.ln()).sqrt() * (std::f64::consts::TAU * u2).cos()
         })
         .collect::<Vec<_>>();
-    let projection = weights.iter().zip(&noise).map(|(w, z)| w * z).sum::<f64>() / norms;
+    let mean = z.iter().sum::<f64>() / days.max(1) as f64;
+    let envelope = |i: usize| {
+        (noise_scale * noise_scale * i as f64
+            + bias_kappa * bias_kappa * (i * i) as f64 / days.max(1) as f64)
+            .sqrt()
+    };
     let desired = stratum as f64 - 1.0;
-    weights
-        .iter()
-        .zip(noise)
-        .map(|(w, z)| z - w * projection + desired * w / norms.sqrt())
+    z.into_iter()
+        .enumerate()
+        .map(|(day, z)| noise_scale * (z - mean) + desired * (envelope(day + 1) - envelope(day)))
         .collect()
 }
 
@@ -118,25 +139,69 @@ mod tests {
     use crate::rwkv::RwkvWorkloadReviewModel;
 
     #[test]
-    fn daily_deviations_have_the_requested_weighted_aggregate() {
-        let counts = [100, 80, 100, 40, 100, 70, 100];
-        let norm = (counts.iter().sum::<usize>() as f64).sqrt();
-        let paths = (0..3)
-            .map(|stratum| day_deviations(&counts, 42, stratum))
-            .collect::<Vec<_>>();
-        for (stratum, path) in paths.iter().enumerate() {
-            let aggregate = path
-                .iter()
-                .zip(counts)
-                .map(|(z, n)| z * (n as f64).sqrt())
-                .sum::<f64>()
-                / norm;
-            assert!((aggregate - (stratum as f64 - 1.0)).abs() < 1e-10);
+    fn daily_deviations_have_the_requested_aggregate() {
+        let days = 30;
+        for (noise_scale, kappa) in [(1.0, 0.0), (0.8, 0.0), (1.2, 0.5), (0.0, 0.7)] {
+            let paths = (0..3)
+                .map(|stratum| day_deviations(days, 42, stratum, noise_scale, kappa))
+                .collect::<Vec<_>>();
+            let sigma = (noise_scale * noise_scale + kappa * kappa).sqrt();
+            for (stratum, path) in paths.iter().enumerate() {
+                assert_eq!(path.len(), days);
+                let aggregate = path.iter().sum::<f64>() / (days as f64).sqrt();
+                assert!(
+                    (aggregate - (stratum as f64 - 1.0) * sigma).abs() < 1e-10,
+                    "{noise_scale} {kappa} {stratum} {aggregate}"
+                );
+            }
+            assert_eq!(paths[1], day_deviations(days, 42, 1, noise_scale, kappa));
+            if noise_scale > 0.0 {
+                assert_ne!(paths[1], day_deviations(days, 43, 1, noise_scale, kappa));
+            }
         }
-        assert_eq!(paths[1], day_deviations(&counts, 42, 1));
-        assert!(paths[1].iter().any(|z| *z < 0.0) && paths[1].iter().any(|z| *z > 0.0));
-        assert!(paths[0].iter().any(|z| *z > 0.0));
-        assert!(paths[2].iter().any(|z| *z < 0.0));
+        let central = day_deviations(days, 42, 1, 1.0, 0.0);
+        assert!(central.iter().any(|z| *z < 0.0) && central.iter().any(|z| *z > 0.0));
+    }
+
+    #[test]
+    fn strata_share_identical_noise() {
+        let days = 20;
+        let low = day_deviations(days, 7, 0, 1.1, 0.3);
+        let central = day_deviations(days, 7, 1, 1.1, 0.3);
+        let high = day_deviations(days, 7, 2, 1.1, 0.3);
+        let envelope =
+            |i: usize| (1.1_f64 * 1.1 * i as f64 + 0.3 * 0.3 * (i * i) as f64 / days as f64).sqrt();
+        for day in 0..days {
+            let shift = envelope(day + 1) - envelope(day);
+            assert!((central[day] - low[day] - shift).abs() < 1e-12);
+            assert!((high[day] - central[day] - shift).abs() < 1e-12);
+        }
+    }
+
+    #[test]
+    fn cumulative_shift_follows_the_pointwise_envelope() {
+        let days = 40;
+        let central = day_deviations(days, 9, 1, 0.9, 0.0);
+        let high = day_deviations(days, 9, 2, 0.9, 0.0);
+        let mut cumulative = 0.0;
+        for t in 1..=days {
+            cumulative += high[t - 1] - central[t - 1];
+            let expected = (0.9_f64 * 0.9 * t as f64).sqrt();
+            assert!((cumulative - expected).abs() < 1e-10, "{t}");
+        }
+        // The bias term makes the final cumulative separation larger.
+        let biased = day_deviations(days, 9, 2, 0.9, 0.5);
+        let biased_central = day_deviations(days, 9, 1, 0.9, 0.5);
+        let biased_total = biased
+            .iter()
+            .zip(&biased_central)
+            .map(|(a, b)| a - b)
+            .sum::<f64>();
+        assert!(biased_total > cumulative);
+        assert!(
+            (biased_total - (0.9_f64 * 0.9 * days as f64 + 0.25 * days as f64).sqrt()).abs()
+                < 1e-10
+        );
     }
 
     #[test]
