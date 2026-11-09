@@ -400,6 +400,10 @@ pub struct RwkvInstantForecastConfig {
     pub stratified_answers: bool,
     /// Historical adjustment to the modeled answer-outcome dispersion.
     pub stratified_scale: f32,
+    /// Root-mean-square systematic error of the daily recall rate.
+    pub stratified_bias_sd: f32,
+    /// Modeled answer variance per answer, used to size the bias in answers.
+    pub stratified_review_variance: f32,
     pub report_days: bool,
     pub seed: u32,
     pub decks: Vec<Deck>,
@@ -419,6 +423,10 @@ pub struct RwkvInstantForecastConfig {
     pub min_intervening_reviews: u32,
     pub min_elapsed_secs: u32,
     pub refresh_interval: u32,
+    /// Forecast-only speed/fidelity trade-off: when greater than
+    /// `refresh_interval`, queued scores are refreshed only every this many
+    /// answers instead. 0 keeps the configured refresh interval.
+    pub approximate_refresh_answers: u32,
     pub candidate_refresh_enabled: bool,
     pub candidate_refresh_limit: usize,
     pub precompute_next_card: bool,

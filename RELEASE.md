@@ -53,6 +53,12 @@ Changes since the last normal release, [build 110](https://github.com/JSchoreels
 
 - **Stratify Instant forecast outcomes.** The three-path forecast samples approximate variations in answer outcomes across historical study sessions rather than applying a fixed recall offset to every answer. It calibrates the variation from past answers without counting answer randomness twice. Its range is illustrative and may still be wide when small answer differences change the queue.
 
+- **Make Instant forecast scenarios less noisy.** The lower and higher paths now weight all days equally and separate gradually by one standard deviation of the cumulative answer outcome, include a measured systematic recall error, and sample days with at least 10 answers whose durations and Hard/Good/Easy mix are shrunk toward the overall history. The spread covers answer outcomes and systematic recall error, not the day-to-day range of reviews, new cards, lapses or time, which needs at least 100 paths.
+
+- **Speed up Instant forecast preparation.** The calibration replay is cached until the review history or model changes, per-phase timing is logged, and queue building does less work per answer with unchanged results. An experimental Rust-only option can refresh forecast scores less often for faster approximate runs.
+
+- **Base Instant forecast answer times on recent study.** The Instant forecast now samples its study sessions and fits its answer-time model from the last 90 days when at least 7 days qualify, instead of the whole year. In one user's backtest, a 10-day, 100-path forecast estimated 9.6 s per review against 9.6 s actual, where it had estimated 12.3 s before.
+
 - **Watch Instant forecasts develop.** The graph can display each simulated day as it finishes, including the scenario spread as its paths arrive, with progress in simulated days.
 
 - **Respect daily limits in RWKV-Instant forecasts.** A precomputed next card no longer accidentally exceeds the deck's remaining review or new-card limit when it applies.

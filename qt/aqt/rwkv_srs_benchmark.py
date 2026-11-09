@@ -1334,6 +1334,8 @@ class _RustRwkvRuntime:
         day_progress: Callable[[int, int, Sequence[float]], None] | None = None,
         stratified_answers: bool = False,
         stratified_scale: float = 1.0,
+        stratified_bias_sd: float = 0.0,
+        stratified_review_variance: float = 0.0,
         review_time_model: tuple[
             float, Sequence[tuple[float, float, float, float, float] | None]
         ]
@@ -1404,11 +1406,19 @@ class _RustRwkvRuntime:
                     day_progress,
                     stratified_answers,
                     stratified_scale,
+                    stratified_bias_sd,
+                    stratified_review_variance,
                     review_time_model,
                 )
             if stratified_answers:
                 return forecast(
-                    *args, scenario_sigma, day_progress, True, stratified_scale
+                    *args,
+                    scenario_sigma,
+                    day_progress,
+                    True,
+                    stratified_scale,
+                    stratified_bias_sd,
+                    stratified_review_variance,
                 )
             if day_progress is not None:
                 return forecast(*args, scenario_sigma, day_progress)

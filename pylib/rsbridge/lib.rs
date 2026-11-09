@@ -1076,7 +1076,8 @@ impl RwkvInference {
         refresh_interval, candidate_refresh_enabled, candidate_refresh_limit,
         precompute_next_card, review_order, grade_seconds, bucket_probabilities,
         progress=None, scenario_sigma=None, day_progress=None, stratified_answers=false,
-        stratified_scale=1.0, review_time_model=None
+        stratified_scale=1.0, stratified_bias_sd=0.0, stratified_review_variance=0.0,
+        review_time_model=None
     ))]
     fn forecast_instant_workload_from_warm_up(
         &self,
@@ -1111,6 +1112,8 @@ impl RwkvInference {
         day_progress: Option<&Bound<'_, PyAny>>,
         stratified_answers: bool,
         stratified_scale: f32,
+        stratified_bias_sd: f32,
+        stratified_review_variance: f32,
         review_time_model: Option<RwkvInstantReviewTimeModelTuple>,
     ) -> PyResult<Py<PyAny>> {
         let mut parsed_inputs = Vec::new();
@@ -1176,6 +1179,8 @@ impl RwkvInference {
             scenario_sigma,
             stratified_answers,
             stratified_scale,
+            stratified_bias_sd,
+            stratified_review_variance,
             report_days: day_progress.is_some(),
             seed,
             decks,
@@ -1197,6 +1202,7 @@ impl RwkvInference {
             min_intervening_reviews,
             min_elapsed_secs,
             refresh_interval,
+            approximate_refresh_answers: 0,
             candidate_refresh_enabled,
             candidate_refresh_limit,
             precompute_next_card,
