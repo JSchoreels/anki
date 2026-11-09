@@ -20906,7 +20906,7 @@ def _rwkv_model() -> str:
 
 
 def _rwkv_instant_model() -> str | None:
-    """The instant-only model running beside the main model, if any."""
+    """RWKV-Instant's model running beside the main model, if any."""
     return _rwkv_runtime_models().instant_model
 
 

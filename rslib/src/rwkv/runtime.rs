@@ -66,7 +66,8 @@ impl ModelKind {
     }
 }
 
-/// The release model and an instant-only model replaying the same history.
+/// The release model and a second small model for RWKV-Instant (the
+/// show-time retrain, or the instant-only model) replaying the same history.
 /// Both keep their own recurrent state; the release provides the curve,
 /// intervals, S90 and the answer-time head, the instant model provides
 /// instant recall and button probabilities. Every serialized state holds
@@ -275,8 +276,10 @@ impl RwkvRuntime {
         }
     }
 
-    /// Loads a release model with an instant-only model beside it. Both are
-    /// small models with the same inputs and state precision.
+    /// Loads a release model with an instant model beside it. Both are
+    /// distinct small models with the same inputs and state precision; the
+    /// instant model may be instant-only (its curve is never used) or a full
+    /// model, whose curve and answer-time outputs are ignored.
     pub fn load_paired(
         release_path: PathBuf,
         instant_path: PathBuf,
@@ -289,7 +292,8 @@ impl RwkvRuntime {
         if !super::SMALL_MODEL
             || !release_model.small()
             || release_model.instant_only()
-            || !instant_model.instant_only()
+            || !instant_model.small()
+            || instant_model == release_model
             || release_model.leak_free_inputs() != instant_model.leak_free_inputs()
         {
             return Err(invalid_input("unsupported RWKV model pair"));
@@ -1110,26 +1114,42 @@ mod tests {
             .join(format!("../qt/aqt/rwkv_inference/{folder}/weights.f32.bin"))
     }
 
-    /// The instant-only model as a plain engine, with its raw (untrained)
-    /// curve outputs: the reference for the paired runtime's instant outputs.
-    fn instant_alone(precision: StatePrecision) -> RwkvRuntime {
+    /// The instant models the paired runtime accepts beside the release:
+    /// the show-time retrain (SM92, RWKV-Instant's default) and the
+    /// instant-only model (SM57).
+    const INSTANT_MODELS: [(ModelKind, &str); 2] =
+        [(ModelKind::Sm92, "sm92"), (ModelKind::Sm57, "sm57")];
+
+    /// An instant model as a plain engine (for SM57 with its raw, untrained
+    /// curve outputs): the reference for the paired runtime's instant outputs.
+    fn instant_alone_of(
+        precision: StatePrecision,
+        (model, folder): (ModelKind, &str),
+    ) -> RwkvRuntime {
         RwkvRuntime::Primary(Box::new(
-            RwkvRuntime::load_primary(model_path("sm57"), 0.9, 36_500, precision, ModelKind::Sm57)
-                .unwrap(),
+            RwkvRuntime::load_primary(model_path(folder), 0.9, 36_500, precision, model).unwrap(),
         ))
     }
 
-    fn paired(precision: StatePrecision) -> RwkvRuntime {
+    fn instant_alone(precision: StatePrecision) -> RwkvRuntime {
+        instant_alone_of(precision, (ModelKind::Sm57, "sm57"))
+    }
+
+    fn paired_with(precision: StatePrecision, (model, folder): (ModelKind, &str)) -> RwkvRuntime {
         RwkvRuntime::load_paired(
             model_path("sm72e25"),
-            model_path("sm57"),
+            model_path(folder),
             0.9,
             36_500,
             precision,
             ModelKind::Sm72e25,
-            ModelKind::Sm57,
+            model,
         )
         .unwrap()
+    }
+
+    fn paired(precision: StatePrecision) -> RwkvRuntime {
+        paired_with(precision, (ModelKind::Sm57, "sm57"))
     }
 
     fn query_of(answer: &ReviewInput, days: i64) -> ReviewInput {
@@ -1253,7 +1273,6 @@ mod tests {
 
         let history = vec![[0.25; super::super::ANSWER_TIME_FEATURES]; queries.len()];
         assert!(pair.has_answer_time_head() && release.has_answer_time_head());
-        assert!(!instant.has_answer_time_head());
         assert_eq!(
             pair.predict_answer_times(requests(pair, queries), history.clone())
                 .unwrap(),
@@ -1292,6 +1311,10 @@ mod tests {
         assert_eq!(ModelKind::parse("sm57").unwrap(), ModelKind::Sm57);
         for (release_model, instant_model) in [
             (ModelKind::Sm72e25, ModelKind::Sm72e25),
+            (ModelKind::Sm92, ModelKind::Sm92),
+            (ModelKind::Sm72e25, ModelKind::Legacy),
+            (ModelKind::Sm72e25, ModelKind::Sm56),
+            (ModelKind::Sm57, ModelKind::Sm92),
             (ModelKind::Sm57, ModelKind::Sm57),
             (ModelKind::Legacy, ModelKind::Sm57),
             (ModelKind::Sm56, ModelKind::Sm57),
@@ -1307,12 +1330,19 @@ mod tests {
             )
             .is_err());
         }
-        for precision in [StatePrecision::F32, StatePrecision::Int4CardsInt8Notes] {
-            let label = format!("{precision:?}");
-            let mut pair = paired(precision);
+        for (instant_model, precision) in INSTANT_MODELS.into_iter().flat_map(|model| {
+            [StatePrecision::F32, StatePrecision::Int4CardsInt8Notes].map(|p| (model, p))
+        }) {
+            let label = format!("{} {precision:?}", instant_model.1);
+            let mut pair = paired_with(precision, instant_model);
             let mut release = load(ModelKind::Sm72e25, precision);
-            let mut instant = instant_alone(precision);
+            let mut instant = instant_alone_of(precision, instant_model);
             assert!(pair.is_paired() && pair.has_curve() && !release.is_paired());
+            // Only the instant-only model (SM57) lacks an answer-time head.
+            assert_eq!(
+                instant.has_answer_time_head(),
+                !instant_model.0.instant_only()
+            );
             let answers = crate::rwkv::precision_tests::reviews(21);
             let (first, rest) = answers.split_at(14);
             let pair_predictions = pair.warm_up_reviews(first.to_vec(), true).unwrap();
