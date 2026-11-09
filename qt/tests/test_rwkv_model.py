@@ -11,6 +11,9 @@ import pytest
 from aqt import rwkv_scheduler
 from aqt.profiles import ProfileManager, profileConf
 from aqt.rwkv_model import (
+    RWKV_INSTANT_MODEL,
+    RWKV_INSTANT_ONLY_MODEL,
+    RWKV_MODEL_FILES,
     RWKV_MODELS,
     RwkvRuntimeModels,
     model_for_profile,
@@ -347,12 +350,12 @@ def test_cache_replay_identity_tracks_active_model_until_profile_reopen(
 @pytest.mark.parametrize(
     "instant_used,curve_used,specialized,expected",
     [
-        # Only RWKV-Instant: the instant-only model (SM57) alone, no toggle needed.
-        (True, False, False, RwkvRuntimeModels("sm57")),
-        (True, False, True, RwkvRuntimeModels("sm57")),
+        # Only RWKV-Instant: the show-time retrain (SM92) alone, no toggle needed.
+        (True, False, False, RwkvRuntimeModels("sm92")),
+        (True, False, True, RwkvRuntimeModels("sm92")),
         # Both schedulers: the shared release (SM63) unless the toggle is on.
         (True, True, False, RwkvRuntimeModels("sm72e25")),
-        (True, True, True, RwkvRuntimeModels("sm72e25", "sm57")),
+        (True, True, True, RwkvRuntimeModels("sm72e25", "sm92")),
         # Only RWKV-Curve, or neither: the release alone.
         (False, True, False, RwkvRuntimeModels("sm72e25")),
         (False, True, True, RwkvRuntimeModels("sm72e25")),
@@ -371,11 +374,22 @@ def test_runtime_models_pick_the_instant_model_per_scheduler(
     assert models == expected
     if instant_used:
         assert models.instant_scheduler_model == (
-            "sm57" if specialized or not curve_used else "sm72e25"
+            "sm92" if specialized or not curve_used else "sm72e25"
         )
-    # RWKV-Curve always keeps the release state; the instant-only model alone
-    # never serves a curve.
-    assert models.curve_model == (None if models.model == "sm57" else "sm72e25")
+    # RWKV-Curve keeps the release state whenever it is used; the show-time
+    # retrain (SM92) alone has a trained curve, as for a profile picking it.
+    assert models.curve_model == models.model
+    assert "sm57" not in models
+
+
+def test_instant_only_model_stays_selectable():
+    # The instant-only small model (SM57) stays bundled but unused by default;
+    # alone it never serves a curve.
+    assert RWKV_INSTANT_MODEL == "sm92"
+    assert RWKV_INSTANT_ONLY_MODEL == "sm57"
+    assert RWKV_INSTANT_ONLY_MODEL in RWKV_MODEL_FILES
+    assert RwkvRuntimeModels("sm57").curve_model is None
+    assert RwkvRuntimeModels("sm72e25", "sm57").curve_model == "sm72e25"
 
 
 @pytest.mark.parametrize("model", [m for m in RWKV_MODELS if m != "sm72e25"])
@@ -416,9 +430,9 @@ def _deck_configs(*, curve, instant):
 @pytest.mark.parametrize(
     "curve,instant,specialized,expected",
     [
-        (False, True, False, ("sm57", None)),
+        (False, True, False, ("sm92", None)),
         (True, True, False, ("sm72e25", None)),
-        (True, True, True, ("sm72e25", "sm57")),
+        (True, True, True, ("sm72e25", "sm92")),
         (True, False, True, ("sm72e25", None)),
     ],
 )
@@ -468,7 +482,7 @@ def test_profile_presets_and_toggle_reach_the_native_backend(
     if expected[1] is None:
         assert created["instant_model_path"] is None
     else:
-        assert Path(created["instant_model_path"]).parent.name == "sm57"
+        assert Path(created["instant_model_path"]).parent.name == "sm92"
     # The cache identity follows the runtime models until the next profile open.
     assert rwkv_scheduler._rwkv_runtime_models() == RwkvRuntimeModels(*expected)
 
@@ -485,7 +499,7 @@ def test_paired_runtime_gets_its_own_replay_identity(monkeypatch):
         lambda reviewer: False,
     )
     keys = []
-    for instant_model in (None, "sm57"):
+    for instant_model in (None, "sm57", "sm92"):
         monkeypatch.setattr(
             rwkv_scheduler,
             "_reviewer_backend",
@@ -503,4 +517,5 @@ def test_paired_runtime_gets_its_own_replay_identity(monkeypatch):
                 ),
             )
         )
-    assert keys[0] != keys[1]
+    # Single, paired with SM57 and paired with SM92 states never share a key.
+    assert len(set(keys)) == 3

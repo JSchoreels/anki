@@ -143,44 +143,67 @@ entity codes, canonical history and routing rules are unchanged. Its Curve head
 is a mixture of three learned power curves and its Instant head remains a
 four-rating classifier.
 
-### Instant-Only Model for RWKV-Instant (SM57)
+### Instant Model for RWKV-Instant: the Show-Time Retrain of the Release (SM92)
+
+Since 2026-11-08 RWKV-Instant's own model, with the small model, leak-free,
+cool-down from epoch 25 (SM63) selected, is the show-time retrain of the release
+(SM92, see below), in place of the instant-only small model (SM57). RWKV-Instant
+queries the model at show time: the interval runs up to the moment the card is
+shown, which is what the show-time retrain (SM92) was trained on, while the
+instant-only small model (SM57) was trained on the review log's answer-to-answer
+inputs. Upstream scoring on show-time inputs (722 users of the 732-user held-out
+set, w8+s8, leak-free; points are % of the big model (1 leak-free epoch)'s
+normal-input Instant LogLoss, 0.275757): Instant LogLoss 0.276876 for the show-time
+retrain (SM92), 0.277236 for the instant-only small model (SM57) stage 4 and
+0.277718 for the small model (SM63). The instant-only small model (SM57) minus the
+show-time retrain (SM92) is +0.130 points [+0.059, +0.216] (95% CI), so the
+show-time retrain (SM92) is better and passes the go rule (CI below 0 and at least
+0.05 points). On normal inputs the instant-only small model (SM57) led by 0.31
+points; on show-time inputs it pays +0.485 points, the show-time retrain (SM92)
++0.043. Source: anki-rwkv `artifacts/small-model/showtime/showtime-report.md`.
 
 The instant-only small model (SM57, folder `qt/aqt/rwkv_inference/sm57/`, never a
-profile's `rwkvModel` value) is the small model, leak-free, cool-down from epoch 25
-(SM63) trained 5 more instant-only epochs (4 more than its first version) plus the same one-epoch 32k Muon cool-down with the
-curve loss off. It serves RWKV-Instant only: its curve head is untrained, so it
-never provides curve recall, intervals, S90 or answer times. On the 1,500 validation
-users of the 8k split (1,487 scored, unseen by both) its Instant LogLoss is 0.27889
-against 0.27954 for the small model (SM63): −0.231% [−0.246, −0.218] of the small
-model's (SM63) LogLoss, lower for
-1,358 users and higher for 128.
+profile's `rwkvModel` value) stays bundled but is unused by default; switching
+back, or to a later show-time instant-only model, is the one constant
+`RWKV_INSTANT_MODEL` in `qt/aqt/rwkv_model.py`. It is the small model (SM63)
+trained 5 more instant-only epochs (4 more than its first version) plus the same
+one-epoch 32k Muon cool-down with the curve loss off; its curve head is untrained,
+so alone it runs in the `InstantOnly` runtime mode and never provides curve
+recall, intervals, S90 or answer times. On normal inputs, on the 1,500 validation
+users of the 8k split (1,487 scored, unseen by both), its Instant LogLoss is
+0.27889 against 0.27954 for the small model (SM63): −0.231% [−0.246, −0.218].
 
 With the small model (SM63) selected, the runtime models follow the presets'
 schedulers, read at profile open:
 
 | Presets use | Advanced toggle | RWKV-Instant | RWKV-Curve | Model states |
 | --- | --- | --- | --- | --- |
-| RWKV-Instant only | ignored | the instant-only small model (SM57) | (none) | one |
+| RWKV-Instant only | ignored | the show-time retrain of the release (SM92) | (none) | one |
 | both | off (default) | the small model (SM63) | the small model (SM63) | one |
-| both | on | the instant-only small model (SM57) | the small model (SM63) | two |
+| both | on | the show-time retrain of the release (SM92) | the small model (SM63) | two |
 | RWKV-Curve only | ignored | (none) | the small model (SM63) | one |
 
 The toggle, **Use specialized model for RWKV-Instant (2x RAM if used alongside
 RWKV-Curve)**, is shown under Advanced when the small model (SM63) is selected and
 is stored in the profile as `rwkvSpecializedInstantModel` (default off, not synced,
 saved with the model choice through `rwkv_profile_settings.specialized_instant_model`).
-With RWKV-Instant only, the runtime loads the instant-only model (SM57) alone and gives no curve output: Instant
-presets keep their fallback intervals, the RWKV workload simulation reports that it
-needs the RWKV-Curve model, and Card Info shows no answer time (the answer-time head
-(SM83) was trained on the small model's (SM63) features and never gets another
-model's). With both and
-the toggle on, the paired runtime keeps one state per model and per entity, replays
-every answer on both, scores the queue with the instant-only model (SM57) alone, and takes curve recall,
-intervals, S90 and answer times from the small model (SM63). The show-time retrain of the release
-(SM92), Legacy and the older small models serve both schedulers alone. See the
-[instant model for RWKV-Instant (SM93) integration report](rwkv-sm93-2026-11-07.MD)
-for the state layouts, tests and the memory and CPU measurements (paired: about 2×
-state and answer-replay CPU, queue scoring unchanged).
+With RWKV-Instant only, the runtime loads the show-time retrain (SM92) alone,
+exactly as for a profile whose model is `sm92` (the normal single-model runtime, its
+own curve and answer-time head (SM83)): the state and the replay key are the ones
+of that profile, and differ from the instant-only small model's (SM57), so the first
+open rebuilds state from history once. With both and the toggle on, the paired
+runtime keeps one state per model and per entity, replays every answer on both,
+scores the queue with the show-time retrain (SM92) alone, and takes curve recall,
+intervals, S90 and answer times from the small model (SM63); the replay key's
+`instantModel` is `sm92`, so states paired with the instant-only small model (SM57)
+are never reused. The native paired mode accepts any distinct small model with the
+same input rule as the release beside it; the show-time retrain (SM92) has the same
+architecture export as the small model (SM63). A profile whose model is the
+show-time retrain (SM92), Legacy or an older small model serves both schedulers
+alone. See the [instant model for RWKV-Instant (SM93) integration
+report](rwkv-sm93-2026-11-07.MD) for the state layouts, tests and the memory and
+CPU measurements (paired: about 2× state and answer-replay CPU, queue scoring
+unchanged).
 
 ### Show-Time Retrain of the Release (SM92)
 
