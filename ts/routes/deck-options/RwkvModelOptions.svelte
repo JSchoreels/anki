@@ -15,7 +15,8 @@ License: GNU AGPL, version 3 or later; http://www.gnu.org/licenses/agpl.html
 
     const settings = state.rwkvProfileSettings;
     $: useSmallerModel = $settings.model !== "legacy";
-    // Only the small model (SM63) has an instant-only sibling (SM57).
+    // Only the small model (SM63) gets a separate RWKV-Instant model: the
+    // show-time retrain of the release (SM92).
     $: hasInstantModel = $settings.model === "sm72e25";
 
     function changeSpecializedInstantModel(event: Event): void {
