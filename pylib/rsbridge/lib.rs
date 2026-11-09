@@ -131,7 +131,7 @@ impl Backend {
 #[pymethods]
 impl RwkvInference {
     #[new]
-    /// With `instant_model_path` and `instant_model`, an instant-only model
+    /// With `instant_model_path` and `instant_model`, a second small model
     /// runs beside `model`: it provides instant recall and button
     /// probabilities, `model` the curve, intervals, S90 and answer time.
     #[allow(clippy::too_many_arguments)]
@@ -180,7 +180,7 @@ impl RwkvInference {
         .map_err(|err| PyException::new_err(err.to_string()))
     }
 
-    /// Whether an instant-only model runs beside the release model.
+    /// Whether an instant model runs beside the release model.
     fn is_paired(&self) -> bool {
         self.inner.is_paired()
     }

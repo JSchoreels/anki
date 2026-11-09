@@ -362,7 +362,7 @@ class EmbeddedRwkvReviewerBackend(RwkvStatefulReviewerBackend):
         del device, dtype
         self.state_precision = state_precision
         self.model_name = model
-        # An instant-only model beside `model` (RWKV-Instant's outputs).
+        # A second small model beside `model` (RWKV-Instant's outputs).
         self.instant_model_name = instant_model
         super().__init__(
             _RustRwkvRuntime(
