@@ -623,7 +623,7 @@ impl Collection {
             .state
             .rwkv_retrievability_scores
             .as_ref()
-            .map_or(true, |scores| scores.days_elapsed != days_elapsed)
+            .is_none_or(|scores| scores.days_elapsed != days_elapsed)
         {
             self.state.rwkv_retrievability_scores = Some(RwkvRetrievabilityScores {
                 days_elapsed,
@@ -696,7 +696,7 @@ impl Collection {
             self.state
                 .card_queues
                 .as_ref()
-                .map_or(true, |queues| !queues.main_contains(card_id)),
+                .is_none_or(|queues| !queues.main_contains(card_id)),
             "cannot patch RWKV queue score before the answered card is removed"
         );
         let timing = self.timing_today()?;

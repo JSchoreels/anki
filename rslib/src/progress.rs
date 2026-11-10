@@ -91,7 +91,7 @@ impl<P: Into<Progress> + Default + Clone> ThrottlingProgressHandler<P> {
     pub(crate) fn increment(&mut self, accessor: impl Fn(&mut P) -> &mut usize) -> Result<()> {
         let field = accessor(&mut self.state);
         *field += 1;
-        if *field % 17 == 0 {
+        if (*field).is_multiple_of(17) {
             self.update(true, |_| ())?;
         }
         Ok(())
@@ -429,7 +429,7 @@ impl<'f, F: 'f + FnMut(usize) -> Result<()>> Incrementor<'f, F> {
     /// Returns [AnkiError::Interrupted] if the operation should be cancelled.
     pub(crate) fn increment(&mut self) -> Result<()> {
         self.count += 1;
-        if self.count % self.update_interval != 0 {
+        if !self.count.is_multiple_of(self.update_interval) {
             return Ok(());
         }
         (self.update_fn)(self.count)
