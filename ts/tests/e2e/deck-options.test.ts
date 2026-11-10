@@ -14,6 +14,7 @@ import {
     RwkvProfileSettings,
     UpdateDeckConfigsRequest,
 } from "@generated/anki/deck_config_pb";
+import { Bool } from "@generated/anki/generic_pb";
 import {
     RwkvComparisonOptions_Learner,
     RwkvComparisonOptions_PerformanceScenario,
@@ -24,6 +25,27 @@ import {
 
 import { expect, test } from "./fixtures";
 import { decodeRequestBody } from "./helpers";
+
+test("RWKV comparison explains that it needs RWKV-Curve on an instant-only runtime", async ({ page }) => {
+    let started = 0;
+    await page.route("**/_anki/rwkvWorkloadAvailable", async (route) => {
+        await route.fulfill({ body: Buffer.from(new Bool({ val: false }).toBinary()) });
+    });
+    await page.route("**/_anki/startRwkvWorkload", async (route) => {
+        started += 1;
+        await route.fulfill({ body: Buffer.alloc(0) });
+    });
+    await page.goto("/deck-options/1");
+    const card = page.getByRole("heading", { name: "RWKV", exact: true }).locator("../..");
+    await card.locator("details.rwkv-advanced summary").click();
+    await card.getByRole("button", { name: "Compare RWKV with FSRS", exact: true }).click();
+    const comparison = page.getByRole("dialog").filter({
+        has: page.getByRole("heading", { name: "FSRS / RWKV Efficiency Comparison (Experimental)", exact: true }),
+    });
+    await expect(comparison.getByText(/RWKV workload simulation needs RWKV-Curve\./)).toBeVisible();
+    await expect(comparison.getByRole("button", { name: "Simulate", exact: true })).toBeDisabled();
+    expect(started).toBe(0);
+});
 
 test("RWKV comparison sends the selected shared learner and scenario", async ({ page }) => {
     let submitted: SimulateFsrsReviewRequest | undefined;

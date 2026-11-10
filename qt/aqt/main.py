@@ -1035,6 +1035,10 @@ class AnkiQt(QMainWindow):
         if (changes.deck or changes.deck_config) and not self._legacy_reset_in_progress:
             from aqt import rwkv_scheduler
 
+            if changes.deck_config:
+                # An instant-only runtime gets a curve model once a preset
+                # uses RWKV-Curve; the recovery below rebuilds its state.
+                rwkv_scheduler.refresh_rwkv_runtime_models_after_preset_change(self)
             rwkv_scheduler.request_rwkv_state_cache_recovery(
                 self,
                 reason="deck or preset change",

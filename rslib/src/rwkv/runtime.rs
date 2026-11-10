@@ -26,7 +26,8 @@ pub enum ModelKind {
     Sm57,
     /// The show-time instant-only model, stage 2 (SM98): instant-only like
     /// SM57, trained on show-time inputs. It serves RWKV-Instant beside the
-    /// release only, never alone as a full model.
+    /// release, or alone as [`RwkvRuntime::InstantOnly`] when no preset uses
+    /// RWKV-Curve; never as a full model.
     Sm98,
 }
 

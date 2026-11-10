@@ -306,9 +306,10 @@ message RwkvProfileSettings {
   // Was the opt-in specialized_instant_model, whose meaning single_model
   // reverses.
   reserved 3;
-  // Opt-out: with RWKV-Instant in use, run one model for both schedulers
-  // instead of RWKV-Instant's own model (the show-time instant-only model,
-  // stage 2, SM98) beside the release (two model states, the default).
+  // Opt-out: with RWKV-Instant and RWKV-Curve both in use, run one model for
+  // both schedulers instead of RWKV-Instant's own model (the show-time
+  // instant-only model, stage 2, SM98) beside the release (two model states,
+  // the default). Ignored for RWKV-Instant without RWKV-Curve: SM98 alone.
   bool single_model = 4;
 }
 

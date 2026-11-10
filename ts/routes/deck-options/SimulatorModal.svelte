@@ -60,7 +60,7 @@ License: GNU AGPL, version 3 or later; http://www.gnu.org/licenses/agpl.html
     import EasyDaysInput from "./EasyDaysInput.svelte";
     import Warning from "./Warning.svelte";
     import { ComputeRetentionProgress } from "@generated/anki/collection_pb";
-    import { Empty } from "@generated/anki/generic_pb";
+    import { Bool, Empty } from "@generated/anki/generic_pb";
     import { workloadRequestForPreset } from "./simulator-workload";
     import Modal from "bootstrap/js/dist/modal";
     import {
@@ -372,6 +372,31 @@ License: GNU AGPL, version 3 or later; http://www.gnu.org/licenses/agpl.html
         return `RWKV workload: ${pct.toFixed(1)}% (${val.current}/${val.total})`;
     }
 
+    // Set when the RWKV runtime has no RWKV-Curve model (RWKV-Instant alone
+    // runs the instant-only model): RWKV workload simulation cannot run.
+    let rwkvWorkloadUnavailable = "";
+
+    async function refreshRwkvWorkloadAvailability(): Promise<boolean> {
+        if (!rwkvWorkload) {
+            return true;
+        }
+        try {
+            const available = await postProto(
+                "rwkvWorkloadAvailable",
+                new Empty({}),
+                Bool,
+                { alertOnError: false },
+            );
+            rwkvWorkloadUnavailable = available.val
+                ? ""
+                : tr.deckConfigRwkvWorkloadNeedsCurve();
+        } catch {
+            // Unknown: let the simulation itself report any error.
+            rwkvWorkloadUnavailable = "";
+        }
+        return !rwkvWorkloadUnavailable;
+    }
+
     async function updateRwkvWorkloadProgress(): Promise<void> {
         if (workloadProgressPollPending) {
             return;
@@ -543,6 +568,9 @@ License: GNU AGPL, version 3 or later; http://www.gnu.org/licenses/agpl.html
     }
 
     async function simulateWorkload(): Promise<void> {
+        if (!(await refreshRwkvWorkloadAvailability())) {
+            return;
+        }
         const responses: NamedWorkloadResponse[] = [];
         const fsrsResponses: NamedWorkloadResponse[][] = [[], []];
         const rwkvResponses: NamedWorkloadResponse[][] = [[], []];
@@ -801,7 +829,13 @@ License: GNU AGPL, version 3 or later; http://www.gnu.org/licenses/agpl.html
             void postProto("cancelRwkvWorkload", new Empty({}), Empty, {
                 alertOnError: false,
             }).catch(() => {});
-            alert(err);
+            const needsCurve = tr.deckConfigRwkvWorkloadNeedsCurve();
+            if (String(err).includes(needsCurve)) {
+                // The runtime lost its curve model since the last check.
+                rwkvWorkloadUnavailable = needsCurve;
+            } else {
+                alert(err);
+            }
             throw err;
         }
     }
@@ -1180,8 +1214,11 @@ License: GNU AGPL, version 3 or later; http://www.gnu.org/licenses/agpl.html
 
     function setupModal(node: Element) {
         modal = new Modal(node);
+        const onShow = () => void refreshRwkvWorkloadAvailability();
+        node.addEventListener("show.bs.modal", onShow);
         return {
             destroy() {
+                node.removeEventListener("show.bs.modal", onShow);
                 modal?.dispose();
                 modal = null;
             },
@@ -1636,10 +1673,18 @@ License: GNU AGPL, version 3 or later; http://www.gnu.org/licenses/agpl.html
                         </details>
                     </div>
 
+                    {#if rwkvWorkload}
+                        <Warning
+                            warning={rwkvWorkloadUnavailable}
+                            className="alert-info"
+                        />
+                    {/if}
+
                     <div>
                         <button
                             class="btn {computing ? 'btn-warning' : 'btn-primary'}"
-                            disabled={computing}
+                            disabled={computing ||
+                                (rwkvWorkload && !!rwkvWorkloadUnavailable)}
                             on:click={workload ? simulateWorkload : simulateFsrs}
                         >
                             {tr.deckConfigSimulate()}

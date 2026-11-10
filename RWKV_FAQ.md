@@ -170,15 +170,24 @@ stage 2 (SM98), trained only to predict the next answer at the moment a card is
 shown. On 722 held-out users its Instant LogLoss is 0.248% lower than the
 show-time retrain's (SM92), which RWKV-Instant used before, and 0.554% lower than
 the small model's (SM63) (both % of the big model (1 leak-free epoch)'s
-normal-input Instant LogLoss). It has no trained forgetting curve, so it always
-runs beside the small model (SM63), which still gives RWKV-Curve, the RWKV
-intervals, the workload simulation and the answer-time estimate in Card Info. That
-keeps two model states (about twice the memory, and answers replay on both).
-**Use one model for RWKV (about half the memory, slightly worse RWKV-Instant
-predictions)** under Advanced turns the pair off: a profile with RWKV-Instant and no
-RWKV-Curve then runs the show-time retrain (SM92) alone, and presets that use both
-share the small model (SM63). Changes apply when the profile is reopened and
-rebuild RWKV state from history once. Details: [integration report](docs/rwkv-sm98-2026-11-10.MD).
+normal-input Instant LogLoss). It has no trained forgetting curve:
+
+- When no preset uses RWKV-Curve (neither as scheduler nor as RWKV-Instant's
+  fallback), it runs alone, one model state. Due dates, intervals and memory
+  states come from the FSRS fallback, Card Info shows FSRS stability and
+  retrievability without the RWKV-Curve S90 and answer-time rows, and the RWKV
+  workload simulation is unavailable (Deck Options says to turn on RWKV-Curve in a
+  preset first).
+- When presets use both, it runs beside the small model (SM63), which gives
+  RWKV-Curve, the RWKV intervals, the workload simulation and the answer-time
+  estimate. That keeps two model states (about twice the memory, and answers
+  replay on both). **Use one model for RWKV (about half the memory, slightly worse
+  RWKV-Instant predictions)** under Advanced makes both schedulers share the small
+  model (SM63) instead; it has no effect without RWKV-Curve.
+
+Changes apply when the profile is reopened and rebuild RWKV state from history
+once; saving a preset that turns RWKV-Curve on switches at once. Details:
+[integration report](docs/rwkv-sm98-2026-11-10.MD).
 
 ### How do intervals and desired retention fit in?
 
