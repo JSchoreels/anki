@@ -83,9 +83,8 @@ fn merge_rwkv_history_reset_mirrors(
         let local_mirror = parse(local.get(&key));
         let remote_mirror = parse(remote.get(&key));
         if local_mirror.is_some_and(|left| {
-            remote_mirror.map_or(true, |right| {
-                (left.updated, left.after) > (right.updated, right.after)
-            })
+            remote_mirror
+                .is_none_or(|right| (left.updated, left.after) > (right.updated, right.after))
         }) {
             remote.insert(key.clone(), local[&key].clone());
             result.needs_upload = true;

@@ -295,12 +295,11 @@ impl SimulationPresetRoute {
     fn matches_card(&self, card_id: i64) -> bool {
         self.card_ids
             .as_ref()
-            .map_or(true, |card_ids| card_ids.contains(&card_id))
+            .is_none_or(|card_ids| card_ids.contains(&card_id))
     }
 
     fn matches_reps(&self, reps: u32) -> bool {
-        self.min_reps.map_or(true, |min| reps >= min)
-            && self.max_reps.map_or(true, |max| reps <= max)
+        self.min_reps.is_none_or(|min| reps >= min) && self.max_reps.is_none_or(|max| reps <= max)
     }
 
     fn matches_interval(&self, interval: f32) -> bool {
@@ -309,8 +308,8 @@ impl SimulationPresetRoute {
         {
             return false;
         }
-        self.min_interval_days.map_or(true, |min| interval >= min)
-            && self.max_interval_days.map_or(true, |max| interval <= max)
+        self.min_interval_days.is_none_or(|min| interval >= min)
+            && self.max_interval_days.is_none_or(|max| interval <= max)
     }
 
     fn matches_state(&self, card_id: i64, reps: u32, interval: f32) -> bool {
@@ -348,15 +347,15 @@ impl SimulationPresetRouteForTarget {
         }
         self.card_ids
             .as_ref()
-            .map_or(true, |card_ids| card_ids.contains(&card.id))
-            && self.min_reps.map_or(true, |min| card.reps >= min)
-            && self.max_reps.map_or(true, |max| card.reps <= max)
+            .is_none_or(|card_ids| card_ids.contains(&card.id))
+            && self.min_reps.is_none_or(|min| card.reps >= min)
+            && self.max_reps.is_none_or(|max| card.reps <= max)
             && self
                 .min_interval_days
-                .map_or(true, |min| card.interval >= min)
+                .is_none_or(|min| card.interval >= min)
             && self
                 .max_interval_days
-                .map_or(true, |max| card.interval <= max)
+                .is_none_or(|max| card.interval <= max)
     }
 }
 

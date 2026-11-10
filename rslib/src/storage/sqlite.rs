@@ -58,13 +58,13 @@ fn open_or_create_collection_db(
     path: &Path,
     persistent_retrievability_cache: bool,
 ) -> Result<Connection> {
-    let db = Connection::open(path)?;
+    let mut db = Connection::open(path)?;
 
     if std::env::var("TRACESQL").is_ok() {
         db.trace_v2(
             rusqlite::trace::TraceEventCodes::SQLITE_TRACE_STMT,
             Some(trace),
-        );
+        )?;
     }
 
     db.busy_timeout(std::time::Duration::from_secs(0))?;
