@@ -736,6 +736,14 @@
     "repository": "https://github.com/orlp/foldhash"
   },
   {
+    "authors": "Orson Peters <orsonpeters@gmail.com>",
+    "description": "A fast, non-cryptographic, minimally DoS-resistant hashing algorithm.",
+    "license": "Zlib",
+    "license_file": null,
+    "name": "foldhash",
+    "repository": "https://github.com/orlp/foldhash"
+  },
+  {
     "authors": "Steven Fackler <sfackler@gmail.com>",
     "description": "A framework for Rust wrappers over C APIs",
     "license": "Apache-2.0 OR MIT",
@@ -912,12 +920,12 @@
     "repository": "https://github.com/rust-lang/hashbrown"
   },
   {
-    "authors": "kyren <kerriganw@gmail.com>",
+    "authors": null,
     "description": "HashMap-like containers that hold their key-value pairs in a user controllable order",
     "license": "Apache-2.0 OR MIT",
     "license_file": null,
     "name": "hashlink",
-    "repository": "https://github.com/kyren/hashlink"
+    "repository": "https://github.com/djc/hashlink"
   },
   {
     "authors": "Sean McArthur <sean@seanmonstar.com>",
@@ -2160,6 +2168,14 @@
     "repository": "https://github.com/vorot/roots"
   },
   {
+    "authors": null,
+    "description": "Helping to implement SQLite VFS.",
+    "license": "MIT",
+    "license_file": null,
+    "name": "rsqlite-vfs",
+    "repository": "https://github.com/Spxg/sqlite-wasm-rs"
+  },
+  {
     "authors": "The rusqlite developers",
     "description": "Ergonomic wrapper for SQLite",
     "license": "MIT",
@@ -2528,6 +2544,14 @@
     "repository": "https://github.com/mvdnes/spin-rs.git"
   },
   {
+    "authors": "Spxg <noz@live.com>",
+    "description": "`wasm32-unknown-unknown` bindings to the libsqlite3 library.",
+    "license": "MIT",
+    "license_file": null,
+    "name": "sqlite-wasm-rs",
+    "repository": "https://github.com/Spxg/sqlite-wasm-rs"
+  },
+  {
     "authors": "Robert Grosse <n210241048576@gmail.com>",
     "description": "An unsafe marker trait for types like Box and Rc that dereference to a stable address even when moved, and hence can be used with libraries such as owning_ref and rental.",
     "license": "Apache-2.0 OR MIT",
@@ -2598,6 +2622,14 @@
     "license_file": null,
     "name": "symlink",
     "repository": "https://gitlab.com/chris-morgan/symlink"
+  },
+  {
+    "authors": "David Tolnay <dtolnay@gmail.com>",
+    "description": "Parser for Rust source code",
+    "license": "Apache-2.0 OR MIT",
+    "license_file": null,
+    "name": "syn",
+    "repository": "https://github.com/dtolnay/syn"
   },
   {
     "authors": "David Tolnay <dtolnay@gmail.com>",
@@ -3389,14 +3421,6 @@
     "license": "Apache-2.0 OR MIT",
     "license_file": null,
     "name": "windows-strings",
-    "repository": "https://github.com/microsoft/windows-rs"
-  },
-  {
-    "authors": "Microsoft",
-    "description": "Rust for Windows",
-    "license": "Apache-2.0 OR MIT",
-    "license_file": null,
-    "name": "windows-sys",
     "repository": "https://github.com/microsoft/windows-rs"
   },
   {

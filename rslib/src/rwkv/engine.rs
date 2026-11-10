@@ -2357,7 +2357,7 @@ insert into segments (
                     let interval = intervals[position]
                         .unwrap_or(1)
                         .clamp(1, config.max_interval);
-                    if review_count % config.state_update_interval == 0 {
+                    if review_count.is_multiple_of(config.state_update_interval) {
                         self.apply_simulation_answer(&answer_input, states)?;
                     }
 
