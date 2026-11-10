@@ -24,6 +24,10 @@ pub enum ModelKind {
     /// it never provides curve outputs (see [`RwkvRuntime::InstantOnly`] and
     /// [`RwkvRuntime::load_paired`]).
     Sm57,
+    /// The show-time instant-only model, stage 2 (SM98): instant-only like
+    /// SM57, trained on show-time inputs. It serves RWKV-Instant beside the
+    /// release only, never alone as a full model.
+    Sm98,
 }
 
 impl ModelKind {
@@ -39,6 +43,7 @@ impl ModelKind {
             "sm72e25" => Ok(Self::Sm72e25),
             "sm92" => Ok(Self::Sm92),
             "sm57" => Ok(Self::Sm57),
+            "sm98" => Ok(Self::Sm98),
             _ => Err(io::Error::new(
                 io::ErrorKind::InvalidInput,
                 "unknown RWKV model",
@@ -51,14 +56,14 @@ impl ModelKind {
     pub fn leak_free_inputs(self) -> bool {
         matches!(
             self,
-            Self::Sm72 | Self::Sm72e20 | Self::Sm72e25 | Self::Sm92 | Self::Sm57
+            Self::Sm72 | Self::Sm72e20 | Self::Sm72e25 | Self::Sm92 | Self::Sm57 | Self::Sm98
         )
     }
 
     /// Checkpoints whose curve head was never trained: they may provide
     /// instant recall and button probabilities only, never intervals.
     pub fn instant_only(self) -> bool {
-        matches!(self, Self::Sm57)
+        matches!(self, Self::Sm57 | Self::Sm98)
     }
 
     fn small(self) -> bool {
@@ -897,6 +902,7 @@ mod tests {
             ModelKind::Sm72e25 => "../qt/aqt/rwkv_inference/sm72e25/weights.f32.bin",
             ModelKind::Sm92 => "../qt/aqt/rwkv_inference/sm92/weights.f32.bin",
             ModelKind::Sm57 => "../qt/aqt/rwkv_inference/sm57/weights.f32.bin",
+            ModelKind::Sm98 => "../qt/aqt/rwkv_inference/sm98/weights.f32.bin",
         });
         RwkvRuntime::load_with_precision(path, 0.9, 36_500, precision, model).unwrap()
     }
@@ -1115,10 +1121,18 @@ mod tests {
     }
 
     /// The instant models the paired runtime accepts beside the release:
-    /// the show-time retrain (SM92, RWKV-Instant's default) and the
-    /// instant-only model (SM57).
-    const INSTANT_MODELS: [(ModelKind, &str); 2] =
-        [(ModelKind::Sm92, "sm92"), (ModelKind::Sm57, "sm57")];
+    /// the show-time instant-only model, stage 2 (SM98, the specialized
+    /// RWKV-Instant model), the show-time retrain (SM92) and the instant-only
+    /// model (SM57).
+    const INSTANT_MODELS: [(ModelKind, &str); 3] = [
+        (ModelKind::Sm98, "sm98"),
+        (ModelKind::Sm92, "sm92"),
+        (ModelKind::Sm57, "sm57"),
+    ];
+
+    /// The instant-only models: never a full model alone.
+    const INSTANT_ONLY_MODELS: [(ModelKind, &str); 2] =
+        [(ModelKind::Sm57, "sm57"), (ModelKind::Sm98, "sm98")];
 
     /// An instant model as a plain engine (for SM57 with its raw, untrained
     /// curve outputs): the reference for the paired runtime's instant outputs.
@@ -1129,10 +1143,6 @@ mod tests {
         RwkvRuntime::Primary(Box::new(
             RwkvRuntime::load_primary(model_path(folder), 0.9, 36_500, precision, model).unwrap(),
         ))
-    }
-
-    fn instant_alone(precision: StatePrecision) -> RwkvRuntime {
-        instant_alone_of(precision, (ModelKind::Sm57, "sm57"))
     }
 
     fn paired_with(precision: StatePrecision, (model, folder): (ModelKind, &str)) -> RwkvRuntime {
@@ -1307,8 +1317,10 @@ mod tests {
             .is_err());
             return;
         }
-        assert!(ModelKind::Sm57.instant_only() && ModelKind::Sm57.leak_free_inputs());
-        assert_eq!(ModelKind::parse("sm57").unwrap(), ModelKind::Sm57);
+        for (model, name) in INSTANT_ONLY_MODELS {
+            assert!(model.instant_only() && model.leak_free_inputs());
+            assert_eq!(ModelKind::parse(name).unwrap(), model);
+        }
         for (release_model, instant_model) in [
             (ModelKind::Sm72e25, ModelKind::Sm72e25),
             (ModelKind::Sm92, ModelKind::Sm92),
@@ -1318,6 +1330,13 @@ mod tests {
             (ModelKind::Sm57, ModelKind::Sm57),
             (ModelKind::Legacy, ModelKind::Sm57),
             (ModelKind::Sm56, ModelKind::Sm57),
+            // The show-time instant-only model, stage 2 (SM98): only beside a
+            // full leak-free release, never as the release side.
+            (ModelKind::Sm98, ModelKind::Sm98),
+            (ModelKind::Sm98, ModelKind::Sm72e25),
+            (ModelKind::Sm98, ModelKind::Sm57),
+            (ModelKind::Legacy, ModelKind::Sm98),
+            (ModelKind::Sm56, ModelKind::Sm98),
         ] {
             assert!(RwkvRuntime::load_paired(
                 model_path("sm72e25"),
@@ -1338,7 +1357,7 @@ mod tests {
             let mut release = load(ModelKind::Sm72e25, precision);
             let mut instant = instant_alone_of(precision, instant_model);
             assert!(pair.is_paired() && pair.has_curve() && !release.is_paired());
-            // Only the instant-only model (SM57) lacks an answer-time head.
+            // Only the instant-only models (SM57, SM98) lack an answer-time head.
             assert_eq!(
                 instant.has_answer_time_head(),
                 !instant_model.0.instant_only()
@@ -1485,81 +1504,85 @@ mod tests {
             .is_err());
             return;
         }
-        let precision = StatePrecision::Int4CardsInt8Notes;
-        let mut alone = RwkvRuntime::load_with_precision(
-            model_path("sm57"),
-            0.9,
-            36_500,
-            precision,
-            ModelKind::Sm57,
-        )
-        .unwrap();
-        let mut raw = instant_alone(precision);
-        assert!(!alone.has_curve() && !alone.is_paired() && raw.has_curve());
-        let answers = crate::rwkv::precision_tests::reviews(21);
-        assert_eq!(
-            prediction_bits(&alone.warm_up_reviews(answers.clone(), true).unwrap()),
-            prediction_bits(&raw.warm_up_reviews(answers.clone(), true).unwrap())
-        );
-        let queries: Vec<_> = answers[..7]
-            .iter()
-            .map(|answer| query_of(answer, 3))
-            .collect();
-        let alone_out = output_bits(&alone.predict_many(requests(&alone, &queries)).unwrap());
-        let raw_out = output_bits(&raw.predict_many(requests(&raw, &queries)).unwrap());
-        for (alone, raw) in alone_out.iter().zip(&raw_out) {
-            assert_eq!((alone.0, alone.1), (raw.0, raw.1));
-            assert_eq!(
-                (alone.2, alone.3, alone.4, alone.5, alone.6),
-                (None, [None; 4], [None; 4], None, None)
-            );
-        }
-        let query = review_with_state(&mut alone, &queries[0]);
-        assert!(query.curve_retrievability.is_none() && query.intervals == [None; 4]);
-        assert_eq!(
-            query.retrievability.to_bits(),
-            review_with_state(&mut raw, &queries[0])
-                .retrievability
-                .to_bits()
-        );
-        // Answers through `review` advance the state as the raw engine does.
-        let answer = later(&answers[3]);
-        let alone_answer = review_with_state(&mut alone, &answer);
-        let raw_answer = review_with_state(&mut raw, &answer);
-        assert_eq!(alone_answer.card_state, raw_answer.card_state);
-        assert_eq!(alone_answer.global_state, raw_answer.global_state);
-        assert_eq!(
-            bits(
-                &alone
-                    .predict_retrievability_many_from_warm_up(queries.clone())
-                    .unwrap()
-            ),
-            bits(
-                &raw.predict_retrievability_many_from_warm_up(queries)
-                    .unwrap()
+        // Each instant-only model alone loads in the instant-only mode, never
+        // as a full model with its untrained curve.
+        for instant_model in INSTANT_ONLY_MODELS {
+            let precision = StatePrecision::Int4CardsInt8Notes;
+            let mut alone = RwkvRuntime::load_with_precision(
+                model_path(instant_model.1),
+                0.9,
+                36_500,
+                precision,
+                instant_model.0,
             )
-        );
-        assert!(!alone.has_answer_time_head());
-        let config = || RwkvWorkloadSimulationConfig {
-            min_dr: 80,
-            max_dr: 90,
-            target_dr_step: 5,
-            days_to_simulate: 1,
-            review_limit: 10,
-            new_limit: 0,
-            new_cards_ignore_review_limit: false,
-            max_interval: 36_500,
-            review_order: anki_proto::deck_config::deck_config::config::ReviewCardOrder::Day,
-            suspend_after_lapses: None,
-            state_update_interval: 1,
-            review_model: RwkvWorkloadReviewModel {
-                grade_seconds: [1.0; 4],
-                bucket_probabilities: Vec::new(),
-            },
-        };
-        assert!(alone
-            .simulate_workload_from_warm_up(Vec::new(), config(), &mut |_, _| Ok(()))
-            .is_err());
+            .unwrap();
+            let mut raw = instant_alone_of(precision, instant_model);
+            assert!(!alone.has_curve() && !alone.is_paired() && raw.has_curve());
+            let answers = crate::rwkv::precision_tests::reviews(21);
+            assert_eq!(
+                prediction_bits(&alone.warm_up_reviews(answers.clone(), true).unwrap()),
+                prediction_bits(&raw.warm_up_reviews(answers.clone(), true).unwrap())
+            );
+            let queries: Vec<_> = answers[..7]
+                .iter()
+                .map(|answer| query_of(answer, 3))
+                .collect();
+            let alone_out = output_bits(&alone.predict_many(requests(&alone, &queries)).unwrap());
+            let raw_out = output_bits(&raw.predict_many(requests(&raw, &queries)).unwrap());
+            for (alone, raw) in alone_out.iter().zip(&raw_out) {
+                assert_eq!((alone.0, alone.1), (raw.0, raw.1));
+                assert_eq!(
+                    (alone.2, alone.3, alone.4, alone.5, alone.6),
+                    (None, [None; 4], [None; 4], None, None)
+                );
+            }
+            let query = review_with_state(&mut alone, &queries[0]);
+            assert!(query.curve_retrievability.is_none() && query.intervals == [None; 4]);
+            assert_eq!(
+                query.retrievability.to_bits(),
+                review_with_state(&mut raw, &queries[0])
+                    .retrievability
+                    .to_bits()
+            );
+            // Answers through `review` advance the state as the raw engine does.
+            let answer = later(&answers[3]);
+            let alone_answer = review_with_state(&mut alone, &answer);
+            let raw_answer = review_with_state(&mut raw, &answer);
+            assert_eq!(alone_answer.card_state, raw_answer.card_state);
+            assert_eq!(alone_answer.global_state, raw_answer.global_state);
+            assert_eq!(
+                bits(
+                    &alone
+                        .predict_retrievability_many_from_warm_up(queries.clone())
+                        .unwrap()
+                ),
+                bits(
+                    &raw.predict_retrievability_many_from_warm_up(queries)
+                        .unwrap()
+                )
+            );
+            assert!(!alone.has_answer_time_head());
+            let config = || RwkvWorkloadSimulationConfig {
+                min_dr: 80,
+                max_dr: 90,
+                target_dr_step: 5,
+                days_to_simulate: 1,
+                review_limit: 10,
+                new_limit: 0,
+                new_cards_ignore_review_limit: false,
+                max_interval: 36_500,
+                review_order: anki_proto::deck_config::deck_config::config::ReviewCardOrder::Day,
+                suspend_after_lapses: None,
+                state_update_interval: 1,
+                review_model: RwkvWorkloadReviewModel {
+                    grade_seconds: [1.0; 4],
+                    bucket_probabilities: Vec::new(),
+                },
+            };
+            assert!(alone
+                .simulate_workload_from_warm_up(Vec::new(), config(), &mut |_, _| Ok(()))
+                .is_err());
+        }
     }
 
     fn read_u32(bytes: &[u8], at: &mut usize) -> usize {

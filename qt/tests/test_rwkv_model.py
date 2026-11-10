@@ -13,12 +13,14 @@ from aqt.profiles import ProfileManager, profileConf
 from aqt.rwkv_model import (
     RWKV_INSTANT_MODEL,
     RWKV_INSTANT_ONLY_MODEL,
+    RWKV_INSTANT_ONLY_MODELS,
     RWKV_MODEL_FILES,
     RWKV_MODELS,
+    RWKV_SPECIALIZED_INSTANT_MODEL,
     RwkvRuntimeModels,
     model_for_profile,
     runtime_models,
-    specialized_instant_model_for_profile,
+    single_model_for_profile,
 )
 
 
@@ -90,7 +92,12 @@ def test_deck_options_applies_local_choices_only_after_a_successful_save(
     from anki.deck_config_pb2 import UpdateDeckConfigsRequest
     from aqt import mediasrv
 
-    profile = {"rwkvModel": "sm36", "rwkvStatePrecision": "int8", "other": 42}
+    profile = {
+        "rwkvModel": "sm36",
+        "rwkvStatePrecision": "int8",
+        "rwkvSpecializedInstantModel": True,
+        "other": 42,
+    }
     save = MagicMock()
     owner = SimpleNamespace(
         pm=SimpleNamespace(profile=profile, save=save),
@@ -103,12 +110,18 @@ def test_deck_options_applies_local_choices_only_after_a_successful_save(
     if has_settings:
         request.rwkv_profile_settings.model = "legacy"
         request.rwkv_profile_settings.state_precision = "cards_int4_notes_int8"
-        request.rwkv_profile_settings.specialized_instant_model = True
+        request.rwkv_profile_settings.single_model = True
     mediasrv._on_update_deck_configs_success(request, close_on_success=False)
     assert profile == {
         "rwkvModel": "legacy" if should_save else "sm36",
         "rwkvStatePrecision": "cards_int4_notes_int8" if should_save else "int8",
-        **({"rwkvSpecializedInstantModel": True} if should_save else {}),
+        # A save stores the opt-out and drops the former opt-in toggle, whose
+        # values meant the opposite.
+        **(
+            {"rwkvSingleModel": True}
+            if should_save
+            else {"rwkvSpecializedInstantModel": True}
+        ),
         "other": 42,
     }
     assert save.call_count == int(should_save)
@@ -348,14 +361,17 @@ def test_cache_replay_identity_tracks_active_model_until_profile_reopen(
 
 
 @pytest.mark.parametrize(
-    "instant_used,curve_used,specialized,expected",
+    "instant_used,curve_used,single,expected",
     [
-        # Only RWKV-Instant: the show-time retrain (SM92) alone, no toggle needed.
-        (True, False, False, RwkvRuntimeModels("sm92")),
+        # RWKV-Instant, alone or with RWKV-Curve: by default the show-time
+        # instant-only model, stage 2 (SM98) beside the release, which keeps
+        # curve, intervals, S90 and answer time.
+        (True, False, False, RwkvRuntimeModels("sm72e25", "sm98")),
+        (True, True, False, RwkvRuntimeModels("sm72e25", "sm98")),
+        # The one-model opt-out: the show-time retrain (SM92) alone for
+        # RWKV-Instant only, the shared release (SM63) for both.
         (True, False, True, RwkvRuntimeModels("sm92")),
-        # Both schedulers: the shared release (SM63) unless the toggle is on.
-        (True, True, False, RwkvRuntimeModels("sm72e25")),
-        (True, True, True, RwkvRuntimeModels("sm72e25", "sm92")),
+        (True, True, True, RwkvRuntimeModels("sm72e25")),
         # Only RWKV-Curve, or neither: the release alone.
         (False, True, False, RwkvRuntimeModels("sm72e25")),
         (False, True, True, RwkvRuntimeModels("sm72e25")),
@@ -363,33 +379,47 @@ def test_cache_replay_identity_tracks_active_model_until_profile_reopen(
     ],
 )
 def test_runtime_models_pick_the_instant_model_per_scheduler(
-    instant_used, curve_used, specialized, expected
+    instant_used, curve_used, single, expected
 ):
     models = runtime_models(
         "sm72e25",
         instant_used=instant_used,
         curve_used=curve_used,
-        specialized_instant_model=specialized,
+        single_model=single,
     )
     assert models == expected
     if instant_used:
         assert models.instant_scheduler_model == (
-            "sm92" if specialized or not curve_used else "sm72e25"
+            "sm98" if not single else "sm72e25" if curve_used else "sm92"
         )
-    # RWKV-Curve keeps the release state whenever it is used; the show-time
-    # retrain (SM92) alone has a trained curve, as for a profile picking it.
+    # Every case keeps a trained curve: the release state, or the show-time
+    # retrain (SM92) alone, as for a profile picking it. An instant-only model
+    # (SM57, SM98) never runs alone.
     assert models.curve_model == models.model
+    assert models.model not in RWKV_INSTANT_ONLY_MODELS
     assert "sm57" not in models
 
 
 def test_instant_only_model_stays_selectable():
     # The instant-only small model (SM57) stays bundled but unused by default;
-    # alone it never serves a curve.
+    # alone it never serves a curve. The show-time retrain (SM92) stays the
+    # toggle-off RWKV-Instant model.
     assert RWKV_INSTANT_MODEL == "sm92"
     assert RWKV_INSTANT_ONLY_MODEL == "sm57"
     assert RWKV_INSTANT_ONLY_MODEL in RWKV_MODEL_FILES
     assert RwkvRuntimeModels("sm57").curve_model is None
     assert RwkvRuntimeModels("sm72e25", "sm57").curve_model == "sm72e25"
+
+
+def test_specialized_instant_model_is_sm98_and_instant_only():
+    # The show-time instant-only model, stage 2 (SM98): bundled, never a
+    # profile's model choice, and alone it would serve no curve.
+    assert RWKV_SPECIALIZED_INSTANT_MODEL == "sm98"
+    assert RWKV_SPECIALIZED_INSTANT_MODEL in RWKV_INSTANT_ONLY_MODELS
+    assert RWKV_MODEL_FILES["sm98"] == Path("sm98/weights.f32.bin")
+    assert "sm98" not in RWKV_MODELS
+    assert RwkvRuntimeModels("sm98").curve_model is None
+    assert RwkvRuntimeModels("sm72e25", "sm98").curve_model == "sm72e25"
 
 
 @pytest.mark.parametrize("model", [m for m in RWKV_MODELS if m != "sm72e25"])
@@ -401,7 +431,7 @@ def test_runtime_models_keep_other_models_shared(model, instant_used, curve_used
         model,
         instant_used=instant_used,
         curve_used=curve_used,
-        specialized_instant_model=True,
+        single_model=False,
     ) == RwkvRuntimeModels(model)
     assert "sm57" not in RWKV_MODELS
 
@@ -411,13 +441,16 @@ def test_runtime_models_keep_other_models_shared(model, instant_used, curve_used
     [
         (None, False),
         ({}, False),
+        ({"rwkvSingleModel": False}, False),
+        ({"rwkvSingleModel": "yes"}, False),
+        ({"rwkvSingleModel": True}, True),
+        # The former opt-in toggle is ignored either way.
+        ({"rwkvSpecializedInstantModel": True}, False),
         ({"rwkvSpecializedInstantModel": False}, False),
-        ({"rwkvSpecializedInstantModel": "yes"}, False),
-        ({"rwkvSpecializedInstantModel": True}, True),
     ],
 )
-def test_specialized_instant_model_toggle_defaults_off(profile, expected):
-    assert specialized_instant_model_for_profile(profile) is expected
+def test_single_model_opt_out_defaults_off(profile, expected):
+    assert single_model_for_profile(profile) is expected
 
 
 def _deck_configs(*, curve, instant):
@@ -428,16 +461,18 @@ def _deck_configs(*, curve, instant):
 
 
 @pytest.mark.parametrize(
-    "curve,instant,specialized,expected",
+    "curve,instant,single,expected",
     [
-        (False, True, False, ("sm92", None)),
-        (True, True, False, ("sm72e25", None)),
-        (True, True, True, ("sm72e25", "sm92")),
+        (False, True, False, ("sm72e25", "sm98")),
+        (False, True, True, ("sm92", None)),
+        (True, True, False, ("sm72e25", "sm98")),
+        (True, True, True, ("sm72e25", None)),
+        (True, False, False, ("sm72e25", None)),
         (True, False, True, ("sm72e25", None)),
     ],
 )
-def test_profile_presets_and_toggle_reach_the_native_backend(
-    monkeypatch, curve, instant, specialized, expected
+def test_profile_presets_and_opt_out_reach_the_native_backend(
+    monkeypatch, curve, instant, single, expected
 ):
     import aqt
     from aqt import rwkv_srs_benchmark
@@ -452,7 +487,7 @@ def test_profile_presets_and_toggle_reach_the_native_backend(
             pm=SimpleNamespace(
                 profile={
                     "rwkvModel": "sm72e25",
-                    "rwkvSpecializedInstantModel": specialized,
+                    "rwkvSingleModel": single,
                 }
             ),
             col=SimpleNamespace(
@@ -482,7 +517,7 @@ def test_profile_presets_and_toggle_reach_the_native_backend(
     if expected[1] is None:
         assert created["instant_model_path"] is None
     else:
-        assert Path(created["instant_model_path"]).parent.name == "sm92"
+        assert Path(created["instant_model_path"]).parent.name == "sm98"
     # The cache identity follows the runtime models until the next profile open.
     assert rwkv_scheduler._rwkv_runtime_models() == RwkvRuntimeModels(*expected)
 
@@ -499,7 +534,7 @@ def test_paired_runtime_gets_its_own_replay_identity(monkeypatch):
         lambda reviewer: False,
     )
     keys = []
-    for instant_model in (None, "sm57", "sm92"):
+    for instant_model in (None, "sm57", "sm92", "sm98"):
         monkeypatch.setattr(
             rwkv_scheduler,
             "_reviewer_backend",
@@ -517,5 +552,5 @@ def test_paired_runtime_gets_its_own_replay_identity(monkeypatch):
                 ),
             )
         )
-    # Single, paired with SM57 and paired with SM92 states never share a key.
-    assert len(set(keys)) == 3
+    # Single and paired with SM57, SM92 or SM98 states never share a key.
+    assert len(set(keys)) == 4

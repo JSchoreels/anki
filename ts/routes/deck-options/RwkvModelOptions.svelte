@@ -15,12 +15,14 @@ License: GNU AGPL, version 3 or later; http://www.gnu.org/licenses/agpl.html
 
     const settings = state.rwkvProfileSettings;
     $: useSmallerModel = $settings.model !== "legacy";
-    // Only the small model (SM63) gets a separate RWKV-Instant model: the
-    // show-time retrain of the release (SM92).
+    // Only the small model (SM63) gets a separate RWKV-Instant model: by
+    // default the show-time instant-only model, stage 2 (SM98) beside it.
+    // The opt-out shows whatever the presets' schedulers, so for every
+    // profile that uses RWKV-Instant, alone or with RWKV-Curve.
     $: hasInstantModel = $settings.model === "sm72e25";
 
-    function changeSpecializedInstantModel(event: Event): void {
-        $settings.specializedInstantModel = (event.target as HTMLInputElement).checked;
+    function changeSingleModel(event: Event): void {
+        $settings.singleModel = (event.target as HTMLInputElement).checked;
     }
 
     function changeModel(event: Event): void {
@@ -53,17 +55,17 @@ License: GNU AGPL, version 3 or later; http://www.gnu.org/licenses/agpl.html
         </dl>
         {#if hasInstantModel}
             <div class="model-row">
-                <label for="rwkv-specialized-instant-model">
-                    {tr.deckConfigRwkvSpecializedInstantModel()}
+                <label for="rwkv-single-model">
+                    {tr.deckConfigRwkvSingleModel()}
                 </label>
                 <Switch
-                    id="rwkv-specialized-instant-model"
-                    value={$settings.specializedInstantModel}
+                    id="rwkv-single-model"
+                    value={$settings.singleModel}
                     {disabled}
-                    on:input={changeSpecializedInstantModel}
+                    on:input={changeSingleModel}
                 />
             </div>
-            <p>{tr.deckConfigRwkvSpecializedInstantModelDescription()}</p>
+            <p>{tr.deckConfigRwkvSingleModelDescription()}</p>
         {/if}
         <p>{tr.deckConfigRwkvProfileSettingsScope()}</p>
         <p>{tr.deckConfigRwkvModelMigration()}</p>
