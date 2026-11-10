@@ -20926,12 +20926,12 @@ def _rwkv_runtime_models_for_profile(mw: object) -> RwkvRuntimeModels:
     """The runtime models for the open profile and the schedulers its presets use.
 
     Read when the backend is created (profile open); a later change of the
-    profile toggle or of the presets' schedulers applies at the next open.
+    profile opt-out or of the presets' schedulers applies at the next open.
     """
     from aqt.rwkv_model import (
         model_for_profile,
         runtime_models,
-        specialized_instant_model_for_profile,
+        single_model_for_profile,
     )
 
     profile = getattr(getattr(mw, "pm", None), "profile", None)
@@ -20944,7 +20944,7 @@ def _rwkv_runtime_models_for_profile(mw: object) -> RwkvRuntimeModels:
         model,
         instant_used=config_state.instant_enabled,
         curve_used=config_state.curve_enabled,
-        specialized_instant_model=specialized_instant_model_for_profile(profile),
+        single_model=single_model_for_profile(profile),
     )
 
 
