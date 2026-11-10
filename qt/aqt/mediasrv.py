@@ -1373,6 +1373,14 @@ def rwkv_workload_progress() -> bytes:
     return aqt.rwkv_scheduler.rwkv_workload_progress_bytes()
 
 
+def rwkv_workload_available() -> bytes:
+    # False on an instant-only runtime (no RWKV-Curve model): Deck Options
+    # shows why instead of starting a simulation that cannot run.
+    return generic_pb2.Bool(
+        val=aqt.rwkv_scheduler.rwkv_workload_simulation_available()
+    ).SerializeToString()
+
+
 def save_custom_colours() -> bytes:
     colors = [
         QColorDialog.customColor(i).name(QColor.NameFormat.HexRgb)
@@ -1507,6 +1515,7 @@ post_handler_list = [
     rwkv_workload_result,
     cancel_rwkv_workload,
     rwkv_workload_progress,
+    rwkv_workload_available,
     get_profile_config_json,
     set_profile_config_json,
     get_meta_json,

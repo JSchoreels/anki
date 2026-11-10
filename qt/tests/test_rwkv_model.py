@@ -363,18 +363,19 @@ def test_cache_replay_identity_tracks_active_model_until_profile_reopen(
 @pytest.mark.parametrize(
     "instant_used,curve_used,single,expected",
     [
-        # RWKV-Instant, alone or with RWKV-Curve: by default the show-time
-        # instant-only model, stage 2 (SM98) beside the release, which keeps
-        # curve, intervals, S90 and answer time.
-        (True, False, False, RwkvRuntimeModels("sm72e25", "sm98")),
+        # RWKV-Instant and no RWKV-Curve (as scheduler or as RWKV-Instant's
+        # fallback): the show-time instant-only model, stage 2 (SM98) alone,
+        # an instant-only runtime, whatever the opt-out.
+        (True, False, False, RwkvRuntimeModels("sm98")),
+        (True, False, True, RwkvRuntimeModels("sm98")),
+        # Both: by default SM98 beside the release, which keeps curve,
+        # intervals, S90 and answer time; the opt-out shares the release.
         (True, True, False, RwkvRuntimeModels("sm72e25", "sm98")),
-        # The one-model opt-out: the show-time retrain (SM92) alone for
-        # RWKV-Instant only, the shared release (SM63) for both.
-        (True, False, True, RwkvRuntimeModels("sm92")),
         (True, True, True, RwkvRuntimeModels("sm72e25")),
         # Only RWKV-Curve, or neither: the release alone.
         (False, True, False, RwkvRuntimeModels("sm72e25")),
         (False, True, True, RwkvRuntimeModels("sm72e25")),
+        (False, False, False, RwkvRuntimeModels("sm72e25")),
         (False, False, True, RwkvRuntimeModels("sm72e25")),
     ],
 )
@@ -390,21 +391,27 @@ def test_runtime_models_pick_the_instant_model_per_scheduler(
     assert models == expected
     if instant_used:
         assert models.instant_scheduler_model == (
-            "sm98" if not single else "sm72e25" if curve_used else "sm92"
+            "sm72e25" if curve_used and single else "sm98"
         )
-    # Every case keeps a trained curve: the release state, or the show-time
-    # retrain (SM92) alone, as for a profile picking it. An instant-only model
-    # (SM57, SM98) never runs alone.
-    assert models.curve_model == models.model
-    assert models.model not in RWKV_INSTANT_ONLY_MODELS
+    # A curve exists exactly when a preset uses RWKV-Curve or nothing uses
+    # RWKV-Instant; the show-time retrain (SM92) and the instant-only small
+    # model (SM57) are never picked automatically.
+    if instant_used and not curve_used:
+        assert models.curve_model is None
+        assert models.model in RWKV_INSTANT_ONLY_MODELS
+    else:
+        assert models.curve_model == models.model == "sm72e25"
     assert "sm57" not in models
+    assert "sm92" not in models
 
 
 def test_instant_only_model_stays_selectable():
     # The instant-only small model (SM57) stays bundled but unused by default;
-    # alone it never serves a curve. The show-time retrain (SM92) stays the
-    # toggle-off RWKV-Instant model.
+    # alone it never serves a curve. The show-time retrain (SM92) stays
+    # bundled and selectable as a profile model.
     assert RWKV_INSTANT_MODEL == "sm92"
+    assert RWKV_INSTANT_MODEL in RWKV_MODELS
+    assert RWKV_MODEL_FILES[RWKV_INSTANT_MODEL] == Path("sm92/weights.f32.bin")
     assert RWKV_INSTANT_ONLY_MODEL == "sm57"
     assert RWKV_INSTANT_ONLY_MODEL in RWKV_MODEL_FILES
     assert RwkvRuntimeModels("sm57").curve_model is None
@@ -413,7 +420,7 @@ def test_instant_only_model_stays_selectable():
 
 def test_specialized_instant_model_is_sm98_and_instant_only():
     # The show-time instant-only model, stage 2 (SM98): bundled, never a
-    # profile's model choice, and alone it would serve no curve.
+    # profile's model choice, and alone it serves no curve.
     assert RWKV_SPECIALIZED_INSTANT_MODEL == "sm98"
     assert RWKV_SPECIALIZED_INSTANT_MODEL in RWKV_INSTANT_ONLY_MODELS
     assert RWKV_MODEL_FILES["sm98"] == Path("sm98/weights.f32.bin")
@@ -453,33 +460,101 @@ def test_single_model_opt_out_defaults_off(profile, expected):
     assert single_model_for_profile(profile) is expected
 
 
-def _deck_configs(*, curve, instant):
-    return [
+def _deck_configs(*, curve, instant, fallback_curve=False):
+    configs = [
         {"id": 1, "rwkvReviewEnabled": curve, "rwkvReviewInstantOrderEnabled": False},
         {"id": 2, "rwkvReviewEnabled": False, "rwkvReviewInstantOrderEnabled": instant},
     ]
+    if fallback_curve:
+        # RWKV-Instant with "Fallback : Due-Date Calculator" set to RWKV-Curve.
+        configs.append(
+            {"id": 3, "rwkvReviewEnabled": True, "rwkvReviewInstantOrderEnabled": True}
+        )
+    return configs
+
+
+def _config_owner(configs, profile=None):
+    return SimpleNamespace(
+        pm=SimpleNamespace(profile=profile if profile is not None else {}),
+        col=SimpleNamespace(
+            decks=SimpleNamespace(all_config=lambda: configs),
+            get_config=lambda key: None,
+        ),
+    )
 
 
 @pytest.mark.parametrize(
-    "curve,instant,single,expected",
+    "configs,curve_enabled",
     [
-        (False, True, False, ("sm72e25", "sm98")),
-        (False, True, True, ("sm92", None)),
-        (True, True, False, ("sm72e25", "sm98")),
-        (True, True, True, ("sm72e25", None)),
-        (True, False, False, ("sm72e25", None)),
-        (True, False, True, ("sm72e25", None)),
+        (_deck_configs(curve=False, instant=False, fallback_curve=True), True),
+        (_deck_configs(curve=False, instant=True, fallback_curve=True), True),
+        (_deck_configs(curve=False, instant=True), False),
+        # The nested form saved by Deck Options.
+        (
+            [
+                {
+                    "id": 4,
+                    "jschoreels.rwkv": {
+                        "rwkv_review_enabled": True,
+                        "rwkv_review_instant_order_enabled": True,
+                    },
+                }
+            ],
+            True,
+        ),
+        (
+            [
+                {
+                    "id": 5,
+                    "jschoreels.rwkv": {
+                        "rwkv_review_enabled": False,
+                        "rwkv_review_instant_order_enabled": True,
+                    },
+                }
+            ],
+            False,
+        ),
+    ],
+)
+def test_curve_as_instant_fallback_counts_as_curve_used(configs, curve_enabled):
+    reviewer = SimpleNamespace(mw=_config_owner(configs))
+    state = rwkv_scheduler._rwkv_collection_config_state(reviewer)
+    assert state.curve_enabled is curve_enabled
+    assert state.instant_enabled
+    assert rwkv_scheduler._rwkv_runtime_models_for_profile(reviewer.mw) == (
+        RwkvRuntimeModels("sm72e25", "sm98")
+        if curve_enabled
+        else RwkvRuntimeModels("sm98")
+    )
+
+
+@pytest.mark.parametrize(
+    "curve,instant,fallback_curve,single,expected",
+    [
+        # RWKV-Instant without RWKV-Curve: SM98 alone, opt-out ignored.
+        (False, True, False, False, ("sm98", None)),
+        (False, True, False, True, ("sm98", None)),
+        # RWKV-Curve as a preset's scheduler, or as RWKV-Instant's fallback.
+        (True, True, False, False, ("sm72e25", "sm98")),
+        (True, True, False, True, ("sm72e25", None)),
+        (False, False, True, False, ("sm72e25", "sm98")),
+        (False, False, True, True, ("sm72e25", None)),
+        (False, True, True, False, ("sm72e25", "sm98")),
+        # RWKV-Curve only, or neither.
+        (True, False, False, False, ("sm72e25", None)),
+        (True, False, False, True, ("sm72e25", None)),
+        (False, False, False, False, ("sm72e25", None)),
     ],
 )
 def test_profile_presets_and_opt_out_reach_the_native_backend(
-    monkeypatch, curve, instant, single, expected
+    monkeypatch, curve, instant, fallback_curve, single, expected
 ):
     import aqt
     from aqt import rwkv_srs_benchmark
 
     monkeypatch.delenv("ANKI_RWKV_MODEL_PATH", raising=False)
     monkeypatch.delenv("ANKI_RWKV_BENCHMARK_PATH", raising=False)
-    configs = _deck_configs(curve=curve, instant=instant)
+    configs = _deck_configs(curve=curve, instant=instant, fallback_curve=fallback_curve)
     monkeypatch.setattr(
         aqt,
         "mw",
@@ -520,6 +595,10 @@ def test_profile_presets_and_opt_out_reach_the_native_backend(
         assert Path(created["instant_model_path"]).parent.name == "sm98"
     # The cache identity follows the runtime models until the next profile open.
     assert rwkv_scheduler._rwkv_runtime_models() == RwkvRuntimeModels(*expected)
+    # Workload simulation needs a curve model: not with SM98 alone.
+    assert rwkv_scheduler.rwkv_workload_simulation_available() == (
+        expected[0] != "sm98"
+    )
 
 
 def test_paired_runtime_gets_its_own_replay_identity(monkeypatch):
@@ -534,12 +613,21 @@ def test_paired_runtime_gets_its_own_replay_identity(monkeypatch):
         lambda reviewer: False,
     )
     keys = []
-    for instant_model in (None, "sm57", "sm92", "sm98"):
+    for model, instant_model in (
+        ("sm72e25", None),
+        ("sm72e25", "sm57"),
+        ("sm72e25", "sm92"),
+        ("sm72e25", "sm98"),
+        # The show-time instant-only model, stage 2 (SM98) alone, and the
+        # show-time retrain (SM92) alone.
+        ("sm98", None),
+        ("sm92", None),
+    ):
         monkeypatch.setattr(
             rwkv_scheduler,
             "_reviewer_backend",
             SimpleNamespace(
-                model_name="sm72e25",
+                model_name=model,
                 instant_model_name=instant_model,
                 state_precision="int8",
             ),
@@ -552,5 +640,141 @@ def test_paired_runtime_gets_its_own_replay_identity(monkeypatch):
                 ),
             )
         )
-    # Single and paired with SM57, SM92 or SM98 states never share a key.
-    assert len(set(keys)) == 4
+    # Single, SM98 alone and paired with SM57, SM92 or SM98 states never
+    # share a key: a switch between the pair and SM98 alone rebuilds once.
+    assert len(set(keys)) == 6
+
+
+def _embedded_backend(model, instant_model=None):
+    from aqt.rwkv_srs_benchmark import EmbeddedRwkvReviewerBackend
+
+    backend = EmbeddedRwkvReviewerBackend.__new__(EmbeddedRwkvReviewerBackend)
+    backend.model_name = model
+    backend.instant_model_name = instant_model
+    backend.state_precision = "int8"
+    return backend
+
+
+@pytest.mark.parametrize(
+    "resident,configs,single,dropped",
+    [
+        # SM98 alone, and a preset now uses RWKV-Curve (scheduler or fallback).
+        (("sm98", None), _deck_configs(curve=True, instant=True), False, True),
+        (("sm98", None), _deck_configs(curve=True, instant=True), True, True),
+        (
+            ("sm98", None),
+            _deck_configs(curve=False, instant=True, fallback_curve=True),
+            False,
+            True,
+        ),
+        # Still no RWKV-Curve: keep SM98 alone.
+        (("sm98", None), _deck_configs(curve=False, instant=True), False, False),
+        (("sm98", None), _deck_configs(curve=False, instant=False), False, False),
+        # Runtimes with a curve wait for the next profile open as before.
+        (("sm72e25", "sm98"), _deck_configs(curve=False, instant=True), False, False),
+        (("sm72e25", None), _deck_configs(curve=True, instant=True), False, False),
+    ],
+)
+def test_instant_only_runtime_reopens_once_a_preset_uses_curve(
+    monkeypatch, resident, configs, single, dropped
+):
+    monkeypatch.delenv("ANKI_RWKV_MODEL_PATH", raising=False)
+    backend = _embedded_backend(*resident)
+    monkeypatch.setattr(rwkv_scheduler, "_reviewer_backend", backend)
+    replace = MagicMock()
+    monkeypatch.setattr(rwkv_scheduler, "set_reviewer_backend", replace)
+    owner = _config_owner(configs, {"rwkvModel": "sm72e25", "rwkvSingleModel": single})
+    assert (
+        rwkv_scheduler.refresh_rwkv_runtime_models_after_preset_change(owner) is dropped
+    )
+    if dropped:
+        replace.assert_called_once_with(None)
+    else:
+        replace.assert_not_called()
+
+
+def test_runtime_refresh_ignores_other_backends(monkeypatch):
+    monkeypatch.setattr(
+        rwkv_scheduler,
+        "_reviewer_backend",
+        SimpleNamespace(model_name="sm98", instant_model_name=None),
+    )
+    replace = MagicMock()
+    monkeypatch.setattr(rwkv_scheduler, "set_reviewer_backend", replace)
+    owner = _config_owner(_deck_configs(curve=True, instant=True))
+    assert not rwkv_scheduler.refresh_rwkv_runtime_models_after_preset_change(owner)
+    monkeypatch.setattr(rwkv_scheduler, "_reviewer_backend", None)
+    assert not rwkv_scheduler.refresh_rwkv_runtime_models_after_preset_change(owner)
+    replace.assert_not_called()
+
+
+def _set_english():
+    import anki.lang
+
+    anki.lang.set_lang("en")
+
+
+@pytest.mark.parametrize("compare", [False, True])
+def test_workload_simulation_without_curve_model_explains_itself(monkeypatch, compare):
+    from anki import scheduler_pb2
+
+    _set_english()
+    monkeypatch.setattr(rwkv_scheduler, "_reviewer_backend", _embedded_backend("sm98"))
+    load = MagicMock()
+    monkeypatch.setattr(rwkv_scheduler, "load_rwkv_state_cache", load)
+    request = scheduler_pb2.SimulateFsrsReviewRequest()
+    if compare:
+        request.rwkv_comparison.SetInParent()
+    simulate = (
+        rwkv_scheduler.compare_rwkv_and_fsrs_workload
+        if compare
+        else rwkv_scheduler.simulate_rwkv_workload
+    )
+    with pytest.raises(rwkv_scheduler.RwkvWorkloadUnavailableError) as raised:
+        simulate(request, mw=SimpleNamespace())
+    assert str(raised.value) == (
+        "RWKV workload simulation needs RWKV-Curve. Turn on RWKV-Curve in a "
+        "preset (as its scheduler or as RWKV-Instant's fallback) and save to "
+        "simulate RWKV workload."
+    )
+    # Checked before any state is loaded or built.
+    load.assert_not_called()
+    with pytest.raises(rwkv_scheduler.RwkvWorkloadUnavailableError):
+        rwkv_scheduler.simulate_rwkv_workload_bytes(request.SerializeToString())
+
+
+def test_workload_start_reports_missing_curve_model_before_starting(monkeypatch):
+    _set_english()
+    monkeypatch.setattr(rwkv_scheduler, "_reviewer_backend", _embedded_backend("sm98"))
+    started = MagicMock()
+    monkeypatch.setattr(rwkv_scheduler.threading, "Thread", started)
+    with pytest.raises(
+        rwkv_scheduler.RwkvWorkloadUnavailableError, match="needs RWKV-Curve"
+    ):
+        rwkv_scheduler.start_rwkv_workload_bytes(b"")
+    started.assert_not_called()
+
+
+@pytest.mark.parametrize(
+    "resident,available",
+    [
+        (("sm98", None), False),
+        (("sm72e25", "sm98"), True),
+        (("sm72e25", None), True),
+        (("sm92", None), True),
+        (("legacy", None), True),
+    ],
+)
+def test_deck_options_learns_workload_availability(monkeypatch, resident, available):
+    from flask import Flask
+
+    from anki.generic_pb2 import Bool
+    from aqt import mediasrv
+
+    monkeypatch.setattr(
+        rwkv_scheduler, "_reviewer_backend", _embedded_backend(*resident)
+    )
+    assert "rwkvWorkloadAvailable" in mediasrv.post_handlers
+    with Flask(__name__).test_request_context(data=b""):
+        result = Bool.FromString(mediasrv.rwkv_workload_available())
+    assert result.val is available

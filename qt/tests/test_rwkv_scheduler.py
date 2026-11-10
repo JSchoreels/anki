@@ -26242,3 +26242,126 @@ def test_repeated_card_does_not_inherit_previous_reviewer_prediction() -> None:
     rwkv_scheduler.set_answer_rwkv_metadata(answer, reviewer, card, ease=3)
     assert not hasattr(answer, "rwkv_s90")
     assert not hasattr(answer, "rwkv_retrievability")
+
+
+@pytest.mark.parametrize("curve_preset", [False, True])
+def test_card_info_without_curve_model_omits_curve_and_answer_time_rows(
+    curve_preset: bool,
+) -> None:
+    """The show-time instant-only model, stage 2 (SM98) alone: RWKV-Instant's
+    recall, buttons and after-review rows only. No RWKV-Curve S90 rows and no
+    answer-time rows, even for a preset that turned on RWKV-Curve before the
+    runtime is reopened; FSRS rows come from the card's own stats."""
+
+    expected_snapshot = RwkvBackendCacheSnapshot(
+        card_states={},
+        note_states={},
+        deck_states={},
+        preset_states={},
+        global_state=None,
+        runtime_state=b"runtime",
+    )
+
+    class InstantOnlyBackend:
+        model_name = "sm98"
+        instant_model_name = None
+
+        def predict_review(
+            self,
+            *,
+            reviewer: object,
+            card: object,
+        ) -> RwkvReviewPrediction:
+            # The native instant-only runtime has no curve outputs.
+            return RwkvReviewPrediction(
+                retrievability=0.45,
+                button_probabilities=(0.55, 0.10, 0.20, 0.15),
+            )
+
+        def has_answer_time_head(self) -> bool:
+            return True
+
+        def predict_answer_time(self, *_args: object) -> object:
+            raise AssertionError("no answer time without a curve model")
+
+        def cache_snapshot(self) -> RwkvBackendCacheSnapshot:
+            return expected_snapshot
+
+        def predict_retrievability_after_reviews(
+            self,
+            *,
+            answers: Sequence[RwkvReviewInput],
+            inputs_by_card_id: Sequence[tuple[int, RwkvReviewInput]],
+            snapshot: RwkvBackendCacheSnapshot,
+        ) -> list[list[tuple[int, float]]]:
+            return [
+                [
+                    (
+                        card_id,
+                        0.6
+                        + (answer.ease or 0) * 0.05
+                        + (0.01 if review_input.current_elapsed_seconds else 0),
+                    )
+                    for card_id, review_input in inputs_by_card_id
+                ]
+                for answer in answers
+            ]
+
+    backend = InstantOnlyBackend()
+    set_reviewer_backend(backend)
+    assert not rwkv_scheduler.rwkv_workload_simulation_available()
+    reviewer = _rwkv_reviewer(
+        rwkv_review_enabled=curve_preset,
+        rwkv_review_instant_order_enabled=True,
+    )
+    rwkv_scheduler._reviewer_backend_warmup_states[
+        (id(backend), id(reviewer.mw.col))
+    ] = None
+    card = _rwkv_card(card_id=1, note_id=10, duration_millis=1234)
+
+    rows = rwkv_card_info_rows(
+        reviewer=reviewer,
+        card=card,
+        fallback_source="FSRS",
+    )
+
+    assert rows == [
+        ("RWKV computed R", "45%"),
+        RWKV_BUTTON_PROBABILITY_ROW,
+        ("Retrievability source", "RWKV"),
+        ("RWKV : R After Review", "Again:65% Hard:70% Good:75% Easy:80%"),
+        ("RWKV : R After 10min", "Again:66% Hard:71% Good:76% Easy:81%"),
+    ]
+    labels = {label for label, _ in rows}
+    assert not labels & {"RWKV Curve Next S90", "FSRS Next S90"}
+    assert not any("answer time" in label.lower() for label in labels)
+
+
+def test_instant_only_prediction_keeps_fsrs_scheduling_states() -> None:
+    """RWKV-Instant with an FSRS fallback on SM98 alone: no interval
+    overrides, so the answer buttons keep FSRS's states."""
+
+    class InstantOnlyBackend:
+        model_name = "sm98"
+        instant_model_name = None
+
+        def predict_review(
+            self,
+            *,
+            reviewer: object,
+            card: object,
+        ) -> RwkvReviewPrediction:
+            return RwkvReviewPrediction(retrievability=0.45)
+
+    set_reviewer_backend(InstantOnlyBackend())
+    reviewer = _rwkv_reviewer(
+        rwkv_review_enabled=False,
+        rwkv_review_instant_order_enabled=True,
+    )
+    card = _rwkv_card(card_id=1, note_id=10, duration_millis=1234)
+    states = SchedulingStates()
+    states.good.CopyFrom(_normal_review_state(interval=3, fuzz_delta=3))
+
+    updated = update_reviewer_scheduling_states(states, reviewer, card)
+
+    assert updated == states

@@ -167,12 +167,24 @@ def test_deck_or_preset_change_requests_rwkv_recovery_after_invalidation(
             "recover during review" if allow_during_review else "recover"
         ),
     )
+    monkeypatch.setattr(
+        aqt.rwkv_scheduler,
+        "refresh_rwkv_runtime_models_after_preset_change",
+        lambda owner: calls.append("runtime models" if owner is mw else "wrong owner"),
+    )
     changes = OpChanges(study_queues=True)
     setattr(changes, changed, True)
 
     mw.on_operation_did_execute(changes, handler=object())
 
-    assert calls == ["invalidate", "recover during review", "screen"]
+    # A preset change may swap an instant-only runtime for one with a curve
+    # before recovery rebuilds its state.
+    assert calls == [
+        "invalidate",
+        *(["runtime models"] if changed == "deck_config" else []),
+        "recover during review",
+        "screen",
+    ]
 
 
 def test_legacy_reset_invalidates_rwkv_without_requesting_recovery(

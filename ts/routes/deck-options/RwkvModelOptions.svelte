@@ -15,10 +15,11 @@ License: GNU AGPL, version 3 or later; http://www.gnu.org/licenses/agpl.html
 
     const settings = state.rwkvProfileSettings;
     $: useSmallerModel = $settings.model !== "legacy";
-    // Only the small model (SM63) gets a separate RWKV-Instant model: by
-    // default the show-time instant-only model, stage 2 (SM98) beside it.
-    // The opt-out shows whatever the presets' schedulers, so for every
-    // profile that uses RWKV-Instant, alone or with RWKV-Curve.
+    // Only the small model (SM63) gets a separate RWKV-Instant model, the
+    // show-time instant-only model, stage 2 (SM98): beside it when presets
+    // use both RWKV-Instant and RWKV-Curve, alone otherwise. The opt-out only
+    // matters for both; its description says so, since the runtime follows
+    // every preset's scheduler at profile open, not just this one's.
     $: hasInstantModel = $settings.model === "sm72e25";
 
     function changeSingleModel(event: Event): void {

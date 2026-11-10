@@ -8319,7 +8319,7 @@ def rwkv_card_info_rows(
                 wait_for_backend=wait_for_backend,
             )
         )
-    if rwkv_review_enabled(reviewer, card):
+    if rwkv_review_enabled(reviewer, card) and _rwkv_runtime_has_curve():
         rows.extend(
             _rwkv_card_info_next_s90_rows(
                 states=_scheduling_states(candidate.reviewer),
@@ -8353,6 +8353,9 @@ def _rwkv_card_info_answer_time_rows(
     has_head = getattr(backend, "has_answer_time_head", None)
     predict = getattr(backend, "predict_answer_time", None)
     if card_id is None or not callable(has_head) or not callable(predict):
+        return []
+    if not _rwkv_runtime_has_curve():
+        # The head reads the release's state; an instant-only model has none.
         return []
     try:
         if not has_head() or not _prepare_reviewer_backend_for_card_info(reviewer):
@@ -14390,6 +14393,7 @@ def start_rwkv_workload_bytes(data: bytes) -> bytes:
     global _rwkv_workload_job
 
     cancel_rwkv_workload()
+    _require_rwkv_workload_curve()
     job = RwkvWorkloadJob(cancel_event=threading.Event())
     with _rwkv_workload_job_lock:
         _rwkv_workload_job = job
@@ -14595,6 +14599,7 @@ def compare_rwkv_and_fsrs_workload(
     reviewer = SimpleNamespace(mw=mw)
     if not configure_reviewer_backend_from_environment() or _reviewer_backend is None:
         raise ValueError("RWKV backend is not available")
+    _require_rwkv_workload_curve()
     if not _reviewer_backend_warmed_up(reviewer) and not load_rwkv_state_cache(mw):
         raise ValueError("RWKV state cache is not ready. Build it first.")
     backend = _reviewer_backend
@@ -14742,6 +14747,7 @@ def simulate_rwkv_workload(
     reviewer = SimpleNamespace(mw=mw)
     if not configure_reviewer_backend_from_environment() or _reviewer_backend is None:
         raise ValueError("RWKV backend is not available")
+    _require_rwkv_workload_curve()
     if not _reviewer_backend_warmed_up(reviewer) and not load_rwkv_state_cache(mw):
         raise ValueError("RWKV state cache is not ready. Build it first.")
     if not _reviewer_backend_accepts_review_inputs():
@@ -20926,7 +20932,9 @@ def _rwkv_runtime_models_for_profile(mw: object) -> RwkvRuntimeModels:
     """The runtime models for the open profile and the schedulers its presets use.
 
     Read when the backend is created (profile open); a later change of the
-    profile opt-out or of the presets' schedulers applies at the next open.
+    profile opt-out or of the presets' schedulers applies at the next open,
+    except that a preset turning on RWKV-Curve beside an instant-only runtime
+    swaps it at once (refresh_rwkv_runtime_models_after_preset_change()).
     """
     from aqt.rwkv_model import (
         model_for_profile,
@@ -20946,6 +20954,70 @@ def _rwkv_runtime_models_for_profile(mw: object) -> RwkvRuntimeModels:
         curve_used=config_state.curve_enabled,
         single_model=single_model_for_profile(profile),
     )
+
+
+def _rwkv_runtime_has_curve() -> bool:
+    """Whether the runtime has a trained curve (not an instant-only model alone).
+
+    Without one there are no RWKV curve recall, intervals, S90, answer times
+    or workload simulations; RWKV-Instant's recall and button probabilities
+    still work, and due dates come from the presets' FSRS fallback.
+    """
+    return _rwkv_runtime_models().curve_model is not None
+
+
+def rwkv_workload_simulation_available() -> bool:
+    """Whether Deck Options can run an RWKV workload simulation."""
+    return _rwkv_runtime_has_curve()
+
+
+class RwkvWorkloadUnavailableError(ValueError):
+    """An RWKV workload simulation on a runtime without RWKV-Curve's model."""
+
+
+def _require_rwkv_workload_curve() -> None:
+    if not _rwkv_runtime_has_curve():
+        from aqt.utils import tr
+
+        raise RwkvWorkloadUnavailableError(tr.deck_config_rwkv_workload_needs_curve())
+
+
+def refresh_rwkv_runtime_models_after_preset_change(mw: object) -> bool:
+    """Drop an instant-only runtime once a preset uses RWKV-Curve.
+
+    The show-time instant-only model, stage 2 (SM98) alone has no curve, so
+    an RWKV-Curve preset (as scheduler or as RWKV-Instant's fallback) saved
+    while it runs would otherwise get FSRS intervals until the next profile
+    open. The next backend use creates the runtime the profile now needs
+    (the pair, or the release alone with the opt-out), whose replay key
+    differs, so state rebuilds once. Every other change still waits for the
+    next profile open. Returns whether the backend was dropped.
+    """
+    from aqt.rwkv_srs_benchmark import EmbeddedRwkvReviewerBackend
+
+    with _reviewer_backend_state_lock:
+        backend = _reviewer_backend
+    if not isinstance(backend, EmbeddedRwkvReviewerBackend):
+        return False
+    instant_model = getattr(backend, "instant_model_name", None)
+    resident = RwkvRuntimeModels(
+        backend.model_name,
+        instant_model if isinstance(instant_model, str) else None,
+    )
+    if resident.curve_model is not None:
+        return False
+    if not _rwkv_collection_config_state(SimpleNamespace(mw=mw)).curve_enabled:
+        return False
+    if _rwkv_runtime_models_for_profile(mw).curve_model is None:
+        return False
+    with _reviewer_backend_state_lock:
+        if _reviewer_backend is not backend:
+            return False
+        set_reviewer_backend(None)
+    logger.info(
+        "RWKV runtime reopened with a curve model: a preset now uses RWKV-Curve"
+    )
+    return True
 
 
 def _rwkv_state_precision() -> str:
