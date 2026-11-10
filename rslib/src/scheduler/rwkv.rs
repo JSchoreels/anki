@@ -662,7 +662,7 @@ impl Collection {
         let previous: Option<crate::config::RwkvHistoryResetMirror> =
             self.storage.get_config_value(&key)?;
         if (boundary > 0 || previous.is_some())
-            && previous.map_or(true, |mirror| mirror.after != Some(boundary))
+            && previous.is_none_or(|mirror| mirror.after != Some(boundary))
         {
             let mirror = crate::config::RwkvHistoryResetMirror::new(Some(boundary), previous);
             self.set_config(key.as_str(), &mirror)?;
@@ -977,7 +977,7 @@ fn rwkv_review_intervening_reviews_elapsed(
     min_intervening_reviews: u32,
 ) -> bool {
     min_intervening_reviews == 0
-        || intervening_reviews.map_or(true, |reviews| reviews >= min_intervening_reviews)
+        || intervening_reviews.is_none_or(|reviews| reviews >= min_intervening_reviews)
 }
 
 #[derive(Debug, Clone, Copy)]
@@ -1021,15 +1021,15 @@ impl RwkvHistoricalPresetRoute {
     fn matches(&self, card_id: CardId, reps: u32, interval_days: i64) -> bool {
         self.card_ids
             .as_ref()
-            .map_or(true, |card_ids| card_ids.contains(&card_id))
-            && self.min_reps.map_or(true, |minimum| reps >= minimum)
-            && self.max_reps.map_or(true, |maximum| reps <= maximum)
+            .is_none_or(|card_ids| card_ids.contains(&card_id))
+            && self.min_reps.is_none_or(|minimum| reps >= minimum)
+            && self.max_reps.is_none_or(|maximum| reps <= maximum)
             && self
                 .min_interval_days
-                .map_or(true, |minimum| interval_days as f32 >= minimum)
+                .is_none_or(|minimum| interval_days as f32 >= minimum)
             && self
                 .max_interval_days
-                .map_or(true, |maximum| interval_days as f32 <= maximum)
+                .is_none_or(|maximum| interval_days as f32 <= maximum)
     }
 }
 
