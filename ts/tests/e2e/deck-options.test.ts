@@ -28,6 +28,13 @@ import { decodeRequestBody } from "./helpers";
 
 test("RWKV comparison explains that it needs RWKV-Curve on an instant-only runtime", async ({ page }) => {
     let started = 0;
+    await page.route("**/_anki/getDeckConfigsForUpdate", async (route) => {
+        const response = await route.fetch();
+        const data = DeckConfigsForUpdate.fromBinary(await response.body());
+        data.allConfig.find((entry) => entry.config!.id === data.currentDeck!.configId)!
+            .config!.config!.rwkvReviewEnabled = true;
+        await route.fulfill({ response, body: Buffer.from(data.toBinary()) });
+    });
     await page.route("**/_anki/rwkvWorkloadAvailable", async (route) => {
         await route.fulfill({ body: Buffer.from(new Bool({ val: false }).toBinary()) });
     });
