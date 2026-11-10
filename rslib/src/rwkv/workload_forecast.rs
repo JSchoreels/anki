@@ -506,7 +506,7 @@ impl RwkvInference {
                         RwkvForecastScheduler::Sm2 => sm2_answer(&mut card.card, *ease),
                     }
                     .clamp(1, max_interval);
-                    if path.review_count % state_update_interval == 0 {
+                    if path.review_count.is_multiple_of(state_update_interval) {
                         self.apply_simulation_answer(&answer_input, &mut states)?;
                     }
 

@@ -729,7 +729,7 @@ fn state_cache_checkpoint_endpoints(
         CheckpointPolicy::Exponential => {
             let mut age_days = 1_i64;
             while last_day - age_days >= first_day
-                && max_age_days.map_or(true, |max_age_days| age_days <= max_age_days)
+                && max_age_days.is_none_or(|max_age_days| age_days <= max_age_days)
             {
                 add_endpoint(age_days);
                 age_days *= 2;

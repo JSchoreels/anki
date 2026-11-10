@@ -841,7 +841,7 @@ impl RwkvInference {
             // a new card removes it from this order; it never becomes new again.
             let mut new_order: Option<Vec<usize>> = None;
             while millis < day_start + DAY_MILLIS {
-                if sample % 128 == 0 {
+                if sample.is_multiple_of(128) {
                     check_cancel()?;
                 }
                 times.iterations += 1;
@@ -1285,7 +1285,7 @@ impl RwkvInference {
                     }
                     times.apply += started.elapsed();
                     let started = std::time::Instant::now();
-                    refresh = answers_today % refresh_interval == 0;
+                    refresh = answers_today.is_multiple_of(refresh_interval);
                     if card.input.queue == -1 {
                         card.score_in_map = false;
                     } else {

@@ -93,12 +93,12 @@ impl DeferredRwkvReview {
     }
 
     fn is_ready(self, now: TimestampSecs) -> bool {
-        self.required_intervening_reviews.map_or(true, |required| {
+        self.required_intervening_reviews.is_none_or(|required| {
             self.intervening_reviews
                 .is_some_and(|reviews| reviews >= required)
         }) && self
             .eligible_at
-            .map_or(true, |eligible_at| now >= eligible_at)
+            .is_none_or(|eligible_at| now >= eligible_at)
     }
 }
 

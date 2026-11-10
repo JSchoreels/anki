@@ -164,18 +164,30 @@ the [RWKV-Curve/Instant discussion](https://discord.com/channels/368267295601983
 
 ### Which model does RWKV-Instant use?
 
-With the default small model (SM63), a profile whose presets use RWKV-Instant and
-no RWKV-Curve runs RWKV-Instant on the instant-only small model (SM57), trained
-only to predict the next answer: on 1,487 held-out users its Instant LogLoss is
-0.231% lower than the small model's (SM63) (1,358 users better, 128 worse; the model has 4 more instant-only epochs than its first version, judged on normal inputs). It has no trained
-forgetting curve, so that profile gets no RWKV intervals, no RWKV workload
-simulation and no answer-time estimate in Card Info. When presets use both
-RWKV-Instant and RWKV-Curve, both share the small model (SM63) unless **Use specialized model for
-RWKV-Instant (2x RAM if used alongside RWKV-Curve)** is on under Advanced: then
-RWKV-Instant uses the instant-only model (SM57) and RWKV-Curve keeps the small
-model (SM63), with two model states (about
-twice the memory, and answers replay on both). Changes apply when the profile is
-reopened. Details: [integration report](docs/rwkv-sm93-2026-11-07.MD).
+With the default small model (SM63), a profile whose presets use RWKV-Instant, with
+or without RWKV-Curve, runs RWKV-Instant on the show-time instant-only model,
+stage 2 (SM98), trained only to predict the next answer at the moment a card is
+shown. On 722 held-out users its Instant LogLoss is 0.248% lower than the
+show-time retrain's (SM92), which RWKV-Instant used before, and 0.554% lower than
+the small model's (SM63) (both % of the big model (1 leak-free epoch)'s
+normal-input Instant LogLoss). It has no trained forgetting curve:
+
+- When no preset uses RWKV-Curve (neither as scheduler nor as RWKV-Instant's
+  fallback), it runs alone, one model state. Due dates, intervals and memory
+  states come from the FSRS fallback, Card Info shows FSRS stability and
+  retrievability without the RWKV-Curve S90 and answer-time rows, and the RWKV
+  workload simulation is unavailable (Deck Options says to turn on RWKV-Curve in a
+  preset first).
+- When presets use both, it runs beside the small model (SM63), which gives
+  RWKV-Curve, the RWKV intervals, the workload simulation and the answer-time
+  estimate. That keeps two model states (about twice the memory, and answers
+  replay on both). **Use one model for RWKV (about half the memory, slightly worse
+  RWKV-Instant predictions)** under Advanced makes both schedulers share the small
+  model (SM63) instead; it has no effect without RWKV-Curve.
+
+Changes apply when the profile is reopened and rebuild RWKV state from history
+once; saving a preset that turns RWKV-Curve on switches at once. Details:
+[integration report](docs/rwkv-sm98-2026-11-10.MD).
 
 ### How do intervals and desired retention fit in?
 
