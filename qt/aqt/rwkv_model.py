@@ -19,17 +19,30 @@ RWKV_MODELS = (
 RWKV_MODEL_KEY = "rwkvModel"
 # The instant-only small model (SM57): trained from the release (sm72e25) with
 # the curve loss off, on normal inputs. It is never a profile's model choice
-# and no longer used by default; it stays bundled so RWKV_INSTANT_MODEL can
+# and no longer used by default; it stays bundled so a constant below can
 # switch back to it in one line.
 RWKV_INSTANT_ONLY_MODEL = "sm57"
+# The show-time instant-only model, stage 2 (SM98): trained from the release
+# with the curve loss off, on show-time inputs. Its curve head is untrained,
+# so it never serves a curve: beside the release when presets also use
+# RWKV-Curve, alone (instant-only runtime) when they use RWKV-Instant without
+# RWKV-Curve, see runtime_models(). Never a profile's model choice.
+RWKV_SPECIALIZED_INSTANT_MODEL = "sm98"
 # Models whose curve head is untrained: they serve RWKV-Instant only.
-RWKV_INSTANT_ONLY_MODELS = (RWKV_INSTANT_ONLY_MODEL,)
-# The model that serves RWKV-Instant with the release, see runtime_models():
-# the show-time retrain of the release (SM92). RWKV-Instant queries the model
-# at show time, the inputs SM92 was trained on.
+RWKV_INSTANT_ONLY_MODELS = (RWKV_INSTANT_ONLY_MODEL, RWKV_SPECIALIZED_INSTANT_MODEL)
+# The show-time retrain of the release (SM92), a full model (curve, intervals,
+# S90 and answer time). It stays bundled and selectable as a profile model,
+# but is no longer picked automatically for RWKV-Instant (until 2026-11-10 it
+# ran alone with the opt-out and no RWKV-Curve).
 RWKV_INSTANT_MODEL = "sm92"
 RWKV_INSTANT_MODEL_RELEASES = ("sm72e25",)
-RWKV_SPECIALIZED_INSTANT_MODEL_KEY = "rwkvSpecializedInstantModel"
+# Profile opt-out (default off): one model for both schedulers instead of the
+# pair, about half the memory with slightly worse RWKV-Instant predictions.
+# Only matters when presets use both RWKV-Instant and RWKV-Curve.
+RWKV_SINGLE_MODEL_KEY = "rwkvSingleModel"
+# The former opt-in toggle (until 2026-11-10), whose values meant the
+# opposite; ignored, and dropped from the profile on the next save.
+RWKV_OLD_SPECIALIZED_INSTANT_MODEL_KEY = "rwkvSpecializedInstantModel"
 RWKV_MODEL_FILES = {
     "legacy": Path("RWKV_trained_on_5000_10000.bin"),
     "sm40": Path("sm40v2/weights.f32.bin"),
@@ -41,6 +54,7 @@ RWKV_MODEL_FILES = {
     "sm72e25": Path("sm72e25/weights.f32.bin"),
     "sm92": Path("sm92/weights.f32.bin"),
     RWKV_INSTANT_ONLY_MODEL: Path("sm57/weights.f32.bin"),
+    RWKV_SPECIALIZED_INSTANT_MODEL: Path("sm98/weights.f32.bin"),
 }
 
 
@@ -50,9 +64,10 @@ def model_for_profile(profile: Mapping[str, object] | None) -> str:
     return value if isinstance(value, str) and value in RWKV_MODELS else "sm72e25"
 
 
-def specialized_instant_model_for_profile(profile: Mapping[str, object] | None) -> bool:
-    # Off by default: with both schedulers, one shared model state.
-    value = profile.get(RWKV_SPECIALIZED_INSTANT_MODEL_KEY) if profile else None
+def single_model_for_profile(profile: Mapping[str, object] | None) -> bool:
+    # Off by default: with both schedulers, RWKV-Instant runs on its own
+    # model beside the release.
+    value = profile.get(RWKV_SINGLE_MODEL_KEY) if profile else None
     return value is True
 
 
@@ -61,8 +76,11 @@ class RwkvRuntimeModels(NamedTuple):
 
     `model` is the runtime's main model. `instant_model`, when set, runs
     beside it and provides instant recall and button probabilities, while
-    `model` keeps the curve, intervals, S90 and the answer-time head. Either
-    model's key is part of the replay key, so a change rebuilds state.
+    `model` keeps the curve, intervals, S90 and the answer-time head. An
+    instant-only `model` alone (SM98) has no curve: `curve_model` is None.
+    Both keys are part of the replay key (`instantModel` only for a pair), so
+    a switch between a pair, the release alone and SM98 alone rebuilds state
+    once and never reuses another layout's state.
     """
 
     model: str
@@ -84,25 +102,34 @@ def runtime_models(
     *,
     instant_used: bool,
     curve_used: bool,
-    specialized_instant_model: bool,
+    single_model: bool,
 ) -> RwkvRuntimeModels:
     """Pick the runtime models for a profile model and the schedulers in use.
 
-    Only the release (sm72e25) gets a separate RWKV-Instant model
-    (RWKV_INSTANT_MODEL); every other choice (SM92, Legacy, older small
-    models) serves both schedulers alone. With the release:
-      - RWKV-Instant and no RWKV-Curve: RWKV_INSTANT_MODEL alone. The
-        show-time retrain (SM92) runs exactly as for a profile that picks
-        `sm92`; the instant-only model (SM57) would give no curve output, no
-        intervals, no S90 and no answer time.
-      - both: the release alone by default; with the profile toggle,
-        RWKV_INSTANT_MODEL runs beside it (two model states).
-      - RWKV-Curve only, or neither: the release alone.
+    `curve_used` is true when any preset uses RWKV-Curve, as its scheduler or
+    as RWKV-Instant's due-date fallback (both set `rwkv_review_enabled`).
+
+    Only the release (sm72e25) gets a separate RWKV-Instant model; every
+    other choice (SM92, Legacy, older small models) serves both schedulers
+    alone. With the release and RWKV-Instant in use:
+      - RWKV-Instant without RWKV-Curve, with or without the `single_model`
+        opt-out: the show-time instant-only model, stage 2 (SM98,
+        RWKV_SPECIALIZED_INSTANT_MODEL) alone, an instant-only runtime (one
+        model state). It gives RWKV-Instant's recall and button
+        probabilities only: no curve recall, intervals, S90 or answer time,
+        and no RWKV workload simulation. Due dates and memory state come
+        from the presets' FSRS fallback.
+      - RWKV-Instant and RWKV-Curve, by default: SM98 beside the release (two
+        model states). SM98 gives RWKV-Instant's recall and button
+        probabilities; the release keeps the curve, intervals, S90 and the
+        answer time.
+      - RWKV-Instant and RWKV-Curve with the opt-out: the release alone.
+    RWKV-Curve only, or neither: the release alone.
     """
     if model not in RWKV_INSTANT_MODEL_RELEASES or not instant_used:
         return RwkvRuntimeModels(model)
     if not curve_used:
-        return RwkvRuntimeModels(RWKV_INSTANT_MODEL)
-    if specialized_instant_model:
-        return RwkvRuntimeModels(model, RWKV_INSTANT_MODEL)
+        return RwkvRuntimeModels(RWKV_SPECIALIZED_INSTANT_MODEL)
+    if not single_model:
+        return RwkvRuntimeModels(model, RWKV_SPECIALIZED_INSTANT_MODEL)
     return RwkvRuntimeModels(model)

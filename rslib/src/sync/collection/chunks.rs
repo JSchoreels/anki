@@ -231,7 +231,7 @@ impl Collection {
         let mut applied = AppliedChunk::default();
         for entry in entries {
             let existing_card = self.storage.get_card(entry.id)?;
-            let proceed = existing_card.as_ref().map_or(true, |existing_card| {
+            let proceed = existing_card.as_ref().is_none_or(|existing_card| {
                 !existing_card.usn.is_pending_sync(pending_usn) || existing_card.mtime < entry.mtime
             });
             if !proceed {
@@ -249,7 +249,7 @@ impl Collection {
                     applied.rwkv_mirror_added = true;
                 }
             }
-            applied.card_identity_changed |= existing_card.map_or(true, |existing_card| {
+            applied.card_identity_changed |= existing_card.is_none_or(|existing_card| {
                 existing_card.note_id != card.note_id
                     || existing_card.original_or_current_deck_id()
                         != card.original_or_current_deck_id()

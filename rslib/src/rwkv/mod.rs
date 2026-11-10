@@ -25,6 +25,9 @@ pub use runtime::RwkvRuntimeState;
 include!("engine.rs");
 #[cfg(test)]
 mod checkpoint_compression_bench;
+#[cfg(all(test, not(feature = "rwkv-sm40")))]
+#[path = "legacy_tests.rs"]
+mod legacy_tests;
 #[cfg(all(test, feature = "rwkv-sm40"))]
 #[path = "sm40_tests.rs"]
 mod sm40_tests;

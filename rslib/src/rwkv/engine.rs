@@ -2394,7 +2394,7 @@ insert into segments (
                     let interval = intervals[position]
                         .unwrap_or(1)
                         .clamp(1, config.max_interval);
-                    if review_count % config.state_update_interval == 0 {
+                    if review_count.is_multiple_of(config.state_update_interval) {
                         self.apply_simulation_answer(&answer_input, states)?;
                     }
 
@@ -8558,7 +8558,7 @@ impl Norm {
         let group_size = self.dim / self.groups;
 
         #[cfg(target_arch = "aarch64")]
-        if group_size % 4 == 0 && group_size * self.groups == self.dim {
+        if group_size.is_multiple_of(4) && group_size * self.groups == self.dim {
             assert!(self.weight.len() == self.dim && self.bias.len() == self.dim);
             let mut row = 0;
             // SAFETY: aarch64 guarantees NEON support. Each call reads and

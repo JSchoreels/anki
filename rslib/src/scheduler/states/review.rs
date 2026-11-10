@@ -347,7 +347,7 @@ fn leech_threshold_met(lapses: u32, threshold: u32) -> bool {
     if threshold > 0 {
         let half_threshold = (threshold as f32 / 2.0).ceil().max(1.0) as u32;
         // at threshold, and every half threshold after that, rounding up
-        lapses >= threshold && (lapses - threshold) % half_threshold == 0
+        lapses >= threshold && (lapses - threshold).is_multiple_of(half_threshold)
     } else {
         false
     }

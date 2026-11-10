@@ -2,10 +2,10 @@
 // License: GNU AGPL, version 3 or later; http://www.gnu.org/licenses/agpl.html
 
 //! Byte layouts of a paired runtime: the release model (curve, intervals,
-//! S90, answer time) and an instant model (the show-time retrain or the
-//! instant-only model: instant recall and button probabilities) replay the
-//! same history, so every serialized state holds one state of each, release
-//! first.
+//! S90, answer time) and an instant model (the show-time instant-only model,
+//! stage 2, the show-time retrain or the instant-only model: instant recall
+//! and button probabilities) replay the same history, so every serialized
+//! state holds one state of each, release first.
 
 use std::io;
 
