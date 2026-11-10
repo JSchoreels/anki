@@ -65,7 +65,8 @@ it is turned off again.
 ## Bundled RWKV Models
 
 Deck Options → RWKV → **Advanced** offers **Use Smaller Model** for the entire
-local profile. The original Legacy big model (2,762,884 parameters) and the
+local profile. The Legacy big model (2,762,884 parameters; since 2026-11-10 the big
+model (1 leak-free epoch), see below) and the
 331,511-parameter small models SM40, SM36 Muon, SM55, SM56, the small model,
 leak-free (SM72, cool-down from epoch 15, from epoch 20 and from epoch 25) and the
 show-time retrain of the release (SM92) are bundled. Only the selected model and its state are loaded.
@@ -99,7 +100,16 @@ cache identity and its background jobs keep using the current model.
 Switching models reconstructs state from canonical retained review history and
 does not rewrite collection data or existing scheduling dates.
 
-Legacy weights are `qt/aqt/rwkv_inference/RWKV_trained_on_5000_10000.bin`.
+Legacy weights are `qt/aqt/rwkv_inference/RWKV_trained_on_5000_10000.bin`. Since
+2026-11-10 the file holds the big model (1 leak-free epoch): the original big model
+(fork RWKV) trained one more epoch on leak-free inputs, same architecture and format,
+with the leak-free input rule below. On 722 users of the 732-user set (leak-free
+scoring, w8+s8; % of the big model (1 leak-free epoch)'s normal-input LogLoss of the
+same head) it scores Curve 0.29897 against 0.29966 for the original (−0.23%), Instant
+0.27576 against 0.27620 (−0.16%), and Instant on show-time inputs 0.277157 against
+0.277559 (−0.15%). The weights file's hash is part of the state cache key, so Legacy
+profiles rebuild their state once. See the [leak-free big model integration
+report](rwkv-big-leakfree-2026-11-10.MD).
 SM40 weights are `qt/aqt/rwkv_inference/sm40v2/weights.f32.bin`; the adjacent
 architecture and manifest record the exact upstream export. Weight computation
 remains f32 and storage precision defaults to INT4 cards and INT8 notes. SM36, SM55,
@@ -309,10 +319,12 @@ The author's own collection, the spaced-review slice and INT4 card state were
 not measured for SM72 (cool-down from epoch 25); the matched backup comparison linked from Deck Options
 predates SM72 and does not include it.
 
-**Leak-free input rule.** When any SM72 cool-down or SM92 is selected, the runtime forces inputs 13,
-14 and 15 to zero on every row, in the per-review, query, batched-query and
-bulk-replay paths, because SM72 never saw them set in training. Other models,
-Legacy included, keep their own feature path unchanged. The upstream rule for
+**Leak-free input rule.** When any SM72 cool-down, SM92 or Legacy (the big model (1
+leak-free epoch)) is selected, and for the instant-only models SM57 and SM98, the
+runtime forces inputs 13, 14 and 15 to zero on every row, in the per-review, query,
+batched-query and bulk-replay paths, because those models never saw them set in
+training. The earlier small models (SM40, SM36, SM55, SM56) keep their own feature
+path unchanged. The upstream rule for
 a card missing from the cards table is: keep a note of its own
 (`314159265358979323 + card_id`), take the deck of the existing card with the
 nearest card id (ties to the lower id) and that deck's preset (the placeholder
@@ -332,7 +344,7 @@ INT8 state, against 25.7 KB for the big model. The bundled test vectors
 `rwkv_sm72e25_matches_published_vectors`; `ANKI_RWKV_SM72_VECTORS`,
 `ANKI_RWKV_SM72E20_VECTORS` and `ANKI_RWKV_SM72E25_VECTORS` point the same tests at the
 full 14,403-row vectors. `rwkv_sm72_ignores_missing_id_flags_in_every_inference_path`,
-its `sm72e20` and `sm72e25` twins and `rwkv_runtime_feeds_only_sm72_leak_free_inputs` cover the input rule.
+its `sm72e20` and `sm72e25` twins and `rwkv_runtime_feeds_leak_free_inputs_to_leak_free_models` cover the input rule.
 
 The selected model and content hash participate in cache/replay identity. Native
 state-store schema 5, model-tagged runtime marker `ARWKVPROCSTATE4` and desktop

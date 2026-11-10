@@ -52,11 +52,18 @@ impl ModelKind {
     }
 
     /// Checkpoints trained without the deleted-card signal: their missing
-    /// note, deck and preset flags (inputs 13..15) are always zero.
+    /// note, deck and preset flags (inputs 13..15) are always zero. Legacy is
+    /// the big model (1 leak-free epoch) since 2026-11-10.
     pub fn leak_free_inputs(self) -> bool {
         matches!(
             self,
-            Self::Sm72 | Self::Sm72e20 | Self::Sm72e25 | Self::Sm92 | Self::Sm57 | Self::Sm98
+            Self::Legacy
+                | Self::Sm72
+                | Self::Sm72e20
+                | Self::Sm72e25
+                | Self::Sm92
+                | Self::Sm57
+                | Self::Sm98
         )
     }
 
@@ -956,7 +963,7 @@ mod tests {
     }
 
     #[test]
-    fn rwkv_runtime_feeds_only_sm72_leak_free_inputs() {
+    fn rwkv_runtime_feeds_leak_free_inputs_to_leak_free_models() {
         assert_eq!(ModelKind::parse("sm72").unwrap(), ModelKind::Sm72);
         assert_eq!(ModelKind::parse("sm72e20").unwrap(), ModelKind::Sm72e20);
         assert_eq!(ModelKind::parse("sm72e25").unwrap(), ModelKind::Sm72e25);
@@ -964,13 +971,15 @@ mod tests {
         // The same checkpoint without the runtime's input rule.
         let unadjusted = |model: ModelKind| {
             let path = PathBuf::from(env!("CARGO_MANIFEST_DIR")).join(match model {
+                ModelKind::Legacy => "../qt/aqt/rwkv_inference/RWKV_trained_on_5000_10000.bin",
                 ModelKind::Sm56 => "../qt/aqt/rwkv_inference/sm56/weights.f32.bin",
                 ModelKind::Sm72e20 => "../qt/aqt/rwkv_inference/sm72e20/weights.f32.bin",
                 ModelKind::Sm72e25 => "../qt/aqt/rwkv_inference/sm72e25/weights.f32.bin",
                 ModelKind::Sm92 => "../qt/aqt/rwkv_inference/sm92/weights.f32.bin",
                 _ => "../qt/aqt/rwkv_inference/sm72/weights.f32.bin",
             });
-            if super::super::SMALL_MODEL {
+            // Legacy runs on the big engine, the small models on the small one.
+            if super::super::SMALL_MODEL == model.small() {
                 RwkvRuntime::Primary(Box::new(
                     super::super::RwkvInference::load(path, 0.9, 36_500).unwrap(),
                 ))
@@ -1000,6 +1009,7 @@ mod tests {
                 .unwrap()
         };
         for model in [
+            ModelKind::Legacy,
             ModelKind::Sm56,
             ModelKind::Sm72,
             ModelKind::Sm72e20,
@@ -1018,7 +1028,10 @@ mod tests {
                 );
             }
         }
-        assert!(!ModelKind::Legacy.leak_free_inputs());
+        // Only the earlier small models keep the leak-input rule.
+        for model in [ModelKind::Sm40, ModelKind::Sm36, ModelKind::Sm55] {
+            assert!(!model.leak_free_inputs());
+        }
     }
 
     /// The answer-time head is optional: a model folder without
