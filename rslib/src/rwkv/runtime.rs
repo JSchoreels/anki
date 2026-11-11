@@ -29,6 +29,10 @@ pub enum ModelKind {
     /// release, or alone as [`RwkvRuntime::InstantOnly`] when no preset uses
     /// RWKV-Curve; never as a full model.
     Sm98,
+    /// The smaller instant-only model (SM101), the "Tiny" choice: SM98 with
+    /// one card layer instead of two (a smaller card state), trained the
+    /// same way. It serves RWKV-Instant exactly where SM98 does.
+    Sm101,
 }
 
 impl ModelKind {
@@ -45,6 +49,7 @@ impl ModelKind {
             "sm92" => Ok(Self::Sm92),
             "sm57" => Ok(Self::Sm57),
             "sm98" => Ok(Self::Sm98),
+            "sm101" => Ok(Self::Sm101),
             _ => Err(io::Error::new(
                 io::ErrorKind::InvalidInput,
                 "unknown RWKV model",
@@ -65,17 +70,38 @@ impl ModelKind {
                 | Self::Sm92
                 | Self::Sm57
                 | Self::Sm98
+                | Self::Sm101
         )
     }
 
     /// Checkpoints whose curve head was never trained: they may provide
     /// instant recall and button probabilities only, never intervals.
     pub fn instant_only(self) -> bool {
-        matches!(self, Self::Sm57 | Self::Sm98)
+        matches!(self, Self::Sm57 | Self::Sm98 | Self::Sm101)
     }
 
     fn small(self) -> bool {
         !matches!(self, Self::Legacy)
+    }
+
+    /// Card layers of the small models' checkpoints: the small engine reads
+    /// the count from the weights, and a file that does not match its model
+    /// key is refused.
+    fn card_layers(self) -> Option<usize> {
+        match self {
+            Self::Legacy => None,
+            Self::Sm101 => Some(1),
+            _ => Some(2),
+        }
+    }
+}
+
+fn check_card_layers(model: ModelKind, card_layers: usize) -> io::Result<()> {
+    match model.card_layers() {
+        Some(expected) if expected != card_layers => {
+            Err(invalid_input("RWKV weights do not match the model"))
+        }
+        _ => Ok(()),
     }
 }
 
@@ -260,6 +286,7 @@ impl RwkvRuntime {
                 max_interval_days,
                 precision,
             )?;
+            check_card_layers(model, engine.card_layers())?;
             let engine = if model.leak_free_inputs() {
                 engine.with_leak_free_inputs()?
             } else {
@@ -282,6 +309,7 @@ impl RwkvRuntime {
             max_interval_days,
             precision,
         )?;
+        check_card_layers(model, engine.card_layers())?;
         if model.leak_free_inputs() {
             engine.with_leak_free_inputs()
         } else {
@@ -911,6 +939,7 @@ mod tests {
             ModelKind::Sm92 => "../qt/aqt/rwkv_inference/sm92/weights.f32.bin",
             ModelKind::Sm57 => "../qt/aqt/rwkv_inference/sm57/weights.f32.bin",
             ModelKind::Sm98 => "../qt/aqt/rwkv_inference/sm98/weights.f32.bin",
+            ModelKind::Sm101 => "../qt/aqt/rwkv_inference/sm101/weights.f32.bin",
         });
         RwkvRuntime::load_with_precision(path, 0.9, 36_500, precision, model).unwrap()
     }
@@ -1135,18 +1164,70 @@ mod tests {
     }
 
     /// The instant models the paired runtime accepts beside the release:
-    /// the show-time instant-only model, stage 2 (SM98, the specialized
-    /// RWKV-Instant model), the show-time retrain (SM92) and the instant-only
-    /// model (SM57).
-    const INSTANT_MODELS: [(ModelKind, &str); 3] = [
+    /// the show-time instant-only model, stage 2 (SM98, the Small choice's
+    /// RWKV-Instant model), the smaller instant-only model (SM101, the Tiny
+    /// choice's, one card layer), the show-time retrain (SM92) and the
+    /// instant-only model (SM57).
+    const INSTANT_MODELS: [(ModelKind, &str); 4] = [
         (ModelKind::Sm98, "sm98"),
+        (ModelKind::Sm101, "sm101"),
         (ModelKind::Sm92, "sm92"),
         (ModelKind::Sm57, "sm57"),
     ];
 
     /// The instant-only models: never a full model alone.
-    const INSTANT_ONLY_MODELS: [(ModelKind, &str); 2] =
-        [(ModelKind::Sm57, "sm57"), (ModelKind::Sm98, "sm98")];
+    const INSTANT_ONLY_MODELS: [(ModelKind, &str); 3] = [
+        (ModelKind::Sm57, "sm57"),
+        (ModelKind::Sm98, "sm98"),
+        (ModelKind::Sm101, "sm101"),
+    ];
+
+    /// A model key loads only weights with its card layers: the tiny model's
+    /// key refuses two-layer weights and every other small key refuses the
+    /// tiny weights, alone or in a pair.
+    #[test]
+    fn rwkv_runtime_refuses_weights_of_another_layer_plan() {
+        if !super::super::SMALL_MODEL {
+            return;
+        }
+        for (model, folder) in [
+            (ModelKind::Sm101, "sm98"),
+            (ModelKind::Sm98, "sm101"),
+            (ModelKind::Sm72e25, "sm101"),
+        ] {
+            assert!(
+                RwkvRuntime::load_with_precision(
+                    model_path(folder),
+                    0.9,
+                    36_500,
+                    StatePrecision::F32,
+                    model,
+                )
+                .is_err(),
+                "{model:?} with {folder}"
+            );
+        }
+        assert!(RwkvRuntime::load_paired(
+            model_path("sm72e25"),
+            model_path("sm98"),
+            0.9,
+            36_500,
+            StatePrecision::F32,
+            ModelKind::Sm72e25,
+            ModelKind::Sm101,
+        )
+        .is_err());
+        assert!(RwkvRuntime::load_paired(
+            model_path("sm101"),
+            model_path("sm101"),
+            0.9,
+            36_500,
+            StatePrecision::F32,
+            ModelKind::Sm72e25,
+            ModelKind::Sm101,
+        )
+        .is_err());
+    }
 
     /// An instant model as a plain engine (for SM57 with its raw, untrained
     /// curve outputs): the reference for the paired runtime's instant outputs.
@@ -1351,6 +1432,13 @@ mod tests {
             (ModelKind::Sm98, ModelKind::Sm57),
             (ModelKind::Legacy, ModelKind::Sm98),
             (ModelKind::Sm56, ModelKind::Sm98),
+            // The smaller instant-only model (SM101): the same rule.
+            (ModelKind::Sm101, ModelKind::Sm101),
+            (ModelKind::Sm101, ModelKind::Sm72e25),
+            (ModelKind::Sm101, ModelKind::Sm98),
+            (ModelKind::Sm98, ModelKind::Sm101),
+            (ModelKind::Legacy, ModelKind::Sm101),
+            (ModelKind::Sm56, ModelKind::Sm101),
         ] {
             assert!(RwkvRuntime::load_paired(
                 model_path("sm72e25"),
@@ -1364,14 +1452,20 @@ mod tests {
             .is_err());
         }
         for (instant_model, precision) in INSTANT_MODELS.into_iter().flat_map(|model| {
-            [StatePrecision::F32, StatePrecision::Int4CardsInt8Notes].map(|p| (model, p))
+            [
+                StatePrecision::F32,
+                StatePrecision::Int8,
+                StatePrecision::Int4CardsInt8Notes,
+            ]
+            .map(|p| (model, p))
         }) {
             let label = format!("{} {precision:?}", instant_model.1);
             let mut pair = paired_with(precision, instant_model);
             let mut release = load(ModelKind::Sm72e25, precision);
             let mut instant = instant_alone_of(precision, instant_model);
             assert!(pair.is_paired() && pair.has_curve() && !release.is_paired());
-            // Only the instant-only models (SM57, SM98) lack an answer-time head.
+            // Only the instant-only models (SM57, SM98, SM101) lack an
+            // answer-time head.
             assert_eq!(
                 instant.has_answer_time_head(),
                 !instant_model.0.instant_only()
@@ -1520,8 +1614,14 @@ mod tests {
         }
         // Each instant-only model alone loads in the instant-only mode, never
         // as a full model with its untrained curve.
-        for instant_model in INSTANT_ONLY_MODELS {
-            let precision = StatePrecision::Int4CardsInt8Notes;
+        for (instant_model, precision) in INSTANT_ONLY_MODELS.into_iter().flat_map(|model| {
+            [
+                StatePrecision::F32,
+                StatePrecision::Int8,
+                StatePrecision::Int4CardsInt8Notes,
+            ]
+            .map(|p| (model, p))
+        }) {
             let mut alone = RwkvRuntime::load_with_precision(
                 model_path(instant_model.1),
                 0.9,
