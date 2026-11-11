@@ -165,7 +165,7 @@ the [RWKV-Curve/Instant discussion](https://discord.com/channels/368267295601983
 ### Which model does RWKV-Instant use?
 
 With the default size, Small (the small model, SM63), a profile whose presets use
-RWKV-Instant, with or without RWKV-Curve, runs RWKV-Instant on the show-time
+RWKV-Instant, with or without RWKV-Curve, normally runs RWKV-Instant on the show-time
 instant-only model, stage 2 (SM98), trained only to predict the next answer at the
 moment a card is shown. Tiny runs the smaller instant-only model (SM101) in its
 place, with the same rules below; Big runs the big model for both. On 722 held-out users SM98's Instant LogLoss is 0.248% lower than the
@@ -181,9 +181,8 @@ normal-input Instant LogLoss). Neither SM98 nor SM101 has a trained forgetting c
   preset first).
 - When presets use both, it runs beside the small model (SM63), which gives
   RWKV-Curve, the RWKV intervals, the workload simulation and the answer-time
-  estimate. That keeps two model states (about twice the memory, and answers
-  replay on both). **Use one model for RWKV (about half the memory, slightly worse
-  RWKV-Instant predictions)** under Advanced makes both schedulers share one model
+  estimate. That keeps two model states, and answers replay on both. **Use one
+  model for RWKV** under Advanced makes both schedulers share one model
   instead, the show-time retrain of the small model (SM92), alone (one model state;
   the pair's state is rebuilt once). On 722 held-out users it ties the small model
   (SM63) on the curve (−0.019% [−0.092, +0.085]) and predicts Instant 0.305% better

@@ -94,6 +94,7 @@ License: GNU AGPL, version 3 or later; http://www.gnu.org/licenses/agpl.html
         {/each}
     </div>
     <div class="model-description">
+        <p>{tr.deckConfigRwkvModelComparison()}</p>
         {#if hasInstantModel}
             <div class="model-row">
                 <label class="single-model-label" for="rwkv-single-model">
@@ -107,6 +108,7 @@ License: GNU AGPL, version 3 or later; http://www.gnu.org/licenses/agpl.html
                 />
             </div>
             <p>{tr.deckConfigRwkvSingleModelExplanation()}</p>
+            <p>{tr.deckConfigRwkvSingleModelInstantOnly()}</p>
         {/if}
         <p>{tr.deckConfigRwkvProfileSettingsScope()}</p>
         <p>{tr.deckConfigRwkvModelSizeMigration()}</p>

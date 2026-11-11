@@ -243,9 +243,8 @@ on the curve (a tie) and −0.305% [−0.405, −0.232] on Instant (better). The
 changes for these profiles (`model` `sm92`, no `instantModel`), so they rebuild their
 state once. Small and Tiny behave alike here.
 
-The opt-out, **Use one model for RWKV (about half the memory, slightly worse
-RWKV-Instant predictions)**, is shown under Advanced whenever the small model (SM63)
-is selected and is stored in the profile as `rwkvSingleModel` (default off, not
+The opt-out, **Use one model for RWKV**, is shown under Advanced whenever Small or
+Tiny is selected and is stored in the profile as `rwkvSingleModel` (default off, not
 synced, saved with the model choice through `rwkv_profile_settings.single_model`).
 It only matters when presets use both RWKV-Instant and RWKV-Curve, and its
 description says so (the runtime follows every preset's scheduler, not just the

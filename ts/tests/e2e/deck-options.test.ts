@@ -270,7 +270,7 @@ test(
         const small = group.getByRole("radio", { name: "Small", exact: true });
         const tiny = group.getByRole("radio", { name: "Tiny", exact: true });
         const singleModel = group.getByRole("checkbox", {
-            name: "Use one model for RWKV (about half the memory, slightly worse RWKV-Instant predictions)",
+            name: "Use one model for RWKV",
             exact: true,
         });
         const model = big;
@@ -305,11 +305,17 @@ test(
         await expect(comparison).toBeHidden();
         await expect(group.getByRole("button", { name: "About prediction models", exact: true })).toHaveCount(0);
         await expect(group.getByText("Use Smaller Model", { exact: true })).toHaveCount(0);
-        await expect(group).toContainText("Uses the most memory and takes the longest");
-        await expect(group).toContainText("Much less memory and faster than Big");
-        await expect(group).toContainText(
-            "Tiny only shrinks RWKV-Instant's state; RWKV-Curve uses the same model as Small.",
+        await expect(big).toHaveAccessibleDescription(/19\.6 KB per card and note/);
+        await expect(small).toHaveAccessibleDescription(/7\.1 KB.*64% less than Big.*3\.5 KB.*82% less/);
+        await expect(small).toHaveAccessibleDescription(/Curve 0\.28% higher, Instant 0\.35% lower/);
+        await expect(tiny).toHaveAccessibleDescription(
+            /6\.2 KB.*68% less than Big, 13% less than Small.*2\.6 KB.*87% less than Big, 26% less than Small/,
         );
+        await expect(tiny).toHaveAccessibleDescription(
+            /Curve 0\.28% higher, Instant 0\.16% lower \(0\.19% higher than Small\)/,
+        );
+        await expect(group).toContainText("With both schedulers, comparisons assume separate models");
+        await expect(group).toContainText("Factory LogLoss is from 722 users; lower is better");
         // Short descriptions without internal model IDs.
         for (const description of await group.locator(".size-description").allTextContents()) {
             expect(description).not.toMatch(/SM\d/);
@@ -325,6 +331,8 @@ test(
         );
         await tiny.check();
         await expect(singleModel).toBeVisible();
+        await expect(group).toContainText("Turn this on to use one model for both");
+        await expect(group).toContainText("If you use Instant without Curve, it always uses its own model");
         await page.setViewportSize({ width: 736, height: 1000 });
         await card.screenshot({ path: testInfo.outputPath("rwkv-options-advanced.png") });
         await page.evaluate(() => document.documentElement.classList.add("night-mode"));
