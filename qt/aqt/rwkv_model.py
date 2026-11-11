@@ -7,8 +7,9 @@ from typing import NamedTuple
 
 # The three model sizes Deck Options offers, stored in the profile under
 # RWKV_MODEL_KEY:
-#   - Big: "legacy", the big model (1 leak-free epoch) alone for both
-#     schedulers.
+#   - Big: "legacy", the show-time big model (SM91s2) alone for both
+#     schedulers (the big model (1 leak-free epoch) until 2026-11-11; same
+#     key and file, so the state rebuilds once).
 #   - Small (the default): "sm72e25", the default small model (SM63), with the
 #     show-time instant-only model, stage 2 (SM98) for RWKV-Instant.
 #   - Tiny: "tiny", the same with the smaller instant-only model (SM101, one
@@ -63,7 +64,10 @@ RWKV_INSTANT_ONLY_MODELS = (
     RWKV_TINY_INSTANT_MODEL,
 )
 # The profile choices with their own RWKV-Instant model, and the model that
-# keeps RWKV-Curve for each. Every other choice is one model for both.
+# keeps RWKV-Curve for each. Every other choice is one model for both. Big
+# has no instant model yet: the show-time instant-only big model (SM99) is
+# planned as its partner, an entry here plus a big-engine pair in the runtime
+# (RwkvRuntime::load_paired accepts only small models today).
 RWKV_CHOICE_INSTANT_MODELS = {
     RWKV_MODEL_SMALL: RWKV_SPECIALIZED_INSTANT_MODEL,
     RWKV_MODEL_TINY: RWKV_TINY_INSTANT_MODEL,
