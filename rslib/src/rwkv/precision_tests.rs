@@ -248,7 +248,13 @@ fn rwkv_state_precision_queries_and_undo_read_packed_history() {
 
 #[test]
 fn rwkv_state_precision_queue_scoring_reports_invalid_resident_state() {
-    let mut inference = runtime(StatePrecision::Int4CardsInt8Notes, [false; 3]);
+    for weights in models() {
+        check_queue_scoring_reports_invalid_resident_state(&weights);
+    }
+}
+
+fn check_queue_scoring_reports_invalid_resident_state(weights: &Path) {
+    let mut inference = runtime(weights, StatePrecision::Int4CardsInt8Notes, [false; 3]);
     let mut answer = reviews(1).remove(0);
     // Malformed historical data can produce a non-finite in-memory state.
     answer.duration_millis = Some(-10);
