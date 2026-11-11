@@ -544,7 +544,7 @@ def test_model_sizes_pick_their_runtime_models(size, case):
 @pytest.mark.parametrize(
     "stored,choice,runtime_both",
     [
-        # Big keeps the big model (1 leak-free epoch) alone.
+        # Big keeps the show-time big model (SM91s2) alone.
         ("legacy", "legacy", ("legacy", None)),
         # Unset, the old default key and unknown values: Small.
         (None, "sm72e25", ("sm72e25", "sm98")),

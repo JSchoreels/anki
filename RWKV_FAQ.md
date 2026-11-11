@@ -499,8 +499,12 @@ Deck Options → RWKV → Advanced offers three sizes:
   users, % of the big model (1 leak-free epoch)'s normal-input Instant LogLoss);
   it is still better than the small model (SM63) and the show-time retrain
   (SM92) for RWKV-Instant.
-- **Big**: the big model (1 leak-free epoch) for both schedulers, as the former
-  Legacy choice.
+- **Big**: the show-time big model (SM91s2) for both schedulers, as the former
+  Legacy choice. It is the big model (1 leak-free epoch) trained one more epoch
+  on the time since the last review measured when the card is shown, the time
+  Anki gives the model. On those inputs its Instant LogLoss is 0.35% lower and
+  its Curve LogLoss 0.06% lower (a tie) than the big model (1 leak-free epoch)
+  (722 held-out users).
 
 The show-time retrain of the release (SM92) stays a preserved choice for profiles
 that already hold it (Deck Options lists it only for them): it is the small

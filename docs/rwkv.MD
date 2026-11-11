@@ -69,15 +69,15 @@ local profile (since 2026-11-11, replacing the **Use Smaller Model** switch):
 
 | Size | Profile value | RWKV-Curve, intervals, S90, answer time | RWKV-Instant |
 | --- | --- | --- | --- |
-| **Big** | `legacy` | the big model (1 leak-free epoch) | the same model |
+| **Big** | `legacy` | the show-time big model (SM91s2) | the same model |
 | **Small** (default) | `sm72e25` | the default small model (SM63) | the show-time instant-only model, stage 2 (SM98), see below |
 | **Tiny** | `tiny` | the default small model (SM63) | the smaller instant-only model (SM101, one card layer), see below |
 
 Tiny only shrinks RWKV-Instant's state: it is Small with the smaller instant-only
 model (SM101) in the place of the show-time instant-only model, stage 2 (SM98), so
 RWKV-Curve, the intervals, S90, the workload simulation and the answer-time
-estimate are exactly Small's. The big model (2,762,884 parameters; since 2026-11-10
-the big model (1 leak-free epoch), see below), the 331,511-parameter small models
+estimate are exactly Small's. The big model (2,762,884 parameters; since 2026-11-11
+the show-time big model (SM91s2), see below), the 331,511-parameter small models
 SM40, SM36 Muon, SM55, SM56, the small model, leak-free (SM72, cool-down from epoch
 15, from epoch 20 and from epoch 25), the show-time retrain of the release (SM92),
 the instant-only models SM57 and SM98 and the 311,786-parameter smaller
@@ -115,8 +115,19 @@ cache identity and its background jobs keep using the current model.
 Switching models reconstructs state from canonical retained review history and
 does not rewrite collection data or existing scheduling dates.
 
-Legacy weights are `qt/aqt/rwkv_inference/RWKV_trained_on_5000_10000.bin`. Since
-2026-11-10 the file holds the big model (1 leak-free epoch): the original big model
+Legacy (Big) weights are `qt/aqt/rwkv_inference/RWKV_trained_on_5000_10000.bin`. Since
+2026-11-11 the file holds the show-time big model (SM91s2): the big model (1 leak-free
+epoch) trained one more epoch on show-time intervals (the time since the card's
+previous answer up to the moment the card is shown, the time RWKV-Instant gives the
+model), same architecture, format and leak-free input rule. On show-time inputs
+(722 users of the 732-user set, leak-free scoring, w8+s8, % of the big model (1
+leak-free epoch)'s show-time LogLoss, paired user bootstrap 95% CI) it scores Curve
+0.299415 against 0.29958 (−0.06% [−0.12, +0.01], a tie) and Instant 0.276183 against
+0.277157 (−0.35% [−0.46, −0.27]). On normal inputs it is slightly worse (Curve
++0.12%, Instant +0.10%), but the fork gives show-time inputs. The file name and
+profile key stay; the hash changed, so Big profiles rebuild their state once. See
+the [Big on the show-time big model report](rwkv-sm107-2026-11-11.MD).
+From 2026-11-10 to 2026-11-11 the file held the big model (1 leak-free epoch): the original big model
 (fork RWKV) trained one more epoch on leak-free inputs, same architecture and format,
 with the leak-free input rule below. On 722 users of the 732-user set (leak-free
 scoring, w8+s8; % of the big model (1 leak-free epoch)'s normal-input LogLoss of the
@@ -397,8 +408,8 @@ The author's own collection, the spaced-review slice and INT4 card state were
 not measured for SM72 (cool-down from epoch 25); the matched backup comparison linked from Deck Options
 predates SM72 and does not include it.
 
-**Leak-free input rule.** When any SM72 cool-down, SM92 or Legacy (the big model (1
-leak-free epoch)) is selected, and for the instant-only models SM57 and SM98, the
+**Leak-free input rule.** When any SM72 cool-down, SM92 or Legacy (Big, the show-time
+big model (SM91s2)) is selected, and for the instant-only models SM57 and SM98, the
 runtime forces inputs 13, 14 and 15 to zero on every row, in the per-review, query,
 batched-query and bulk-replay paths, because those models never saw them set in
 training. The earlier small models (SM40, SM36, SM55, SM56) keep their own feature

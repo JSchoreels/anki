@@ -1,10 +1,10 @@
 // Copyright: Ankitects Pty Ltd and contributors
 // License: GNU AGPL, version 3 or later; http://www.gnu.org/licenses/agpl.html
 
-//! The bundled big model ("Legacy - Bigger Model"): the big model (1
-//! leak-free epoch), checked on the big engine against vectors from the
-//! training code. Compiled into whichever engine module runs the big
-//! architecture.
+//! The bundled big model (the Big size, profile key `legacy`): the show-time
+//! big model (SM91s2) since 2026-11-11 (before: the big model (1 leak-free
+//! epoch)), checked on the big engine against vectors from the training code.
+//! Compiled into whichever engine module runs the big architecture.
 
 use std::io::Read;
 
@@ -17,6 +17,8 @@ struct VectorRow {
     ids: [i64; 5],
     skip: bool,
     elapsed: f32,
+    /// The row's own interval inputs (elapsed seconds, elapsed days).
+    interval: [f64; 2],
     fp32: Vec<f32>,
 }
 
@@ -27,9 +29,11 @@ struct Vectors {
     rows: Vec<VectorRow>,
 }
 
-/// PyTorch outputs of the big model (1 leak-free epoch) on two users' full
-/// histories (normal inputs, deleted cards: neighbour), first 500 rows per
-/// user; `ANKI_RWKV_LEGACY_VECTORS` points the test at the full vectors.
+/// PyTorch outputs of the show-time big model (SM91s2) on two users' full
+/// histories (show-time inputs, the inputs it was trained on and the ones
+/// RWKV-Instant gives it; deleted cards: neighbour), first 500 rows per user;
+/// `ANKI_RWKV_LEGACY_VECTORS` points the test at full vectors (show-time or
+/// normal inputs).
 fn legacy_vectors() -> Vec<Vectors> {
     let data = if let Ok(path) = std::env::var("ANKI_RWKV_LEGACY_VECTORS") {
         fs::read(path).unwrap()
@@ -111,8 +115,9 @@ fn rwkv_legacy_matches_published_vectors() {
     println!("legacy published vectors: {rows} rows, maximum absolute probability error {maximum}");
 }
 
-/// The big model (1 leak-free epoch) was trained with the missing note, deck
-/// and preset flags always zero: the runtime feeds it that rule, so setting
+/// The show-time big model (SM91s2), like the big model (1 leak-free epoch) it
+/// was trained from, was trained with the missing note, deck and preset flags
+/// always zero: the runtime feeds it that rule, so setting
 /// them changes no output.
 #[test]
 fn rwkv_legacy_ignores_missing_id_flags() {
@@ -141,4 +146,42 @@ fn rwkv_legacy_ignores_missing_id_flags() {
             states.store(&input, heads.next_state);
         }
     }
+}
+
+/// The show-time big model (SM91s2) was trained on show-time intervals: a
+/// query row's interval runs from the card's previous answer to the moment the
+/// card is shown, and its cumulative interval is the card's committed
+/// answer-to-answer intervals plus that interval; a committed answer keeps
+/// the answer-to-answer interval. The native feature builder fed each row's
+/// own interval reproduces the published interval inputs (features 0..8) of
+/// every query and answer row.
+#[test]
+fn rwkv_legacy_feature_builder_matches_show_time_intervals() {
+    let mut maximum = 0.0_f32;
+    let mut queries = 0;
+    for user in legacy_vectors() {
+        let mut features = FeatureState::default();
+        for (index, row) in user.rows.iter().enumerate() {
+            let [seconds, days] = row.interval;
+            let mut input = vector_input(row);
+            input.current_elapsed_seconds = Some(seconds as i64);
+            input.current_elapsed_days = Some(days as i64);
+            let actual = features.features_for(&input);
+            for (feature, (&a, &b)) in actual[..8].iter().zip(&row.features[..8]).enumerate() {
+                maximum = maximum.max((a - b).abs());
+                assert!(
+                    (a - b).abs() <= 1e-5,
+                    "{} row {index} feature {feature}: {a} != {b}",
+                    user.name
+                );
+            }
+            if row.skip {
+                queries += 1;
+            } else {
+                features.store_review(&input);
+            }
+        }
+    }
+    assert!(queries > 0);
+    println!("legacy interval features: {queries} queries, maximum absolute error {maximum}");
 }
