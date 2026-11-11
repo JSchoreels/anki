@@ -162,6 +162,60 @@ fn sm98_vectors() -> Vec<u8> {
     }
 }
 
+/// The smaller instant-only model (SM101), the Tiny choice: SM98 with one
+/// card layer, same show-time inputs (its vectors' inputs equal SM98's).
+fn sm101_vectors() -> Vec<u8> {
+    if let Ok(path) = std::env::var("ANKI_RWKV_SM101_VECTORS") {
+        fs::read(path).unwrap()
+    } else {
+        let mut data = Vec::new();
+        flate2::read::GzDecoder::new(&include_bytes!("testdata/sm101-vectors.json.gz")[..])
+            .read_to_end(&mut data)
+            .unwrap();
+        data
+    }
+}
+
+#[test]
+fn rwkv_sm101_matches_published_vectors() {
+    check_published_vectors("sm101", &sm101_vectors());
+}
+
+#[test]
+fn rwkv_sm101_ignores_missing_id_flags_in_every_inference_path() {
+    check_ignores_missing_id_flags("sm101", &sm101_vectors());
+}
+
+#[test]
+fn rwkv_sm101_feature_builder_matches_show_time_intervals() {
+    check_show_time_intervals("sm101", &sm101_vectors());
+}
+
+/// The small engine reads the card layers from the weights: one for SM101,
+/// two for every other small model, at f32 and INT8 weights.
+#[test]
+fn rwkv_small_engine_reads_card_layers_from_the_weights() {
+    for package in [
+        "sm40v2", "sm36", "sm55", "sm56", "sm72", "sm72e20", "sm72e25", "sm92", "sm57", "sm98",
+        "sm101",
+    ] {
+        for format in ["f32", "int8"] {
+            let model = SrsModel::load(&PathBuf::from(env!("CARGO_MANIFEST_DIR")).join(format!(
+                "../qt/aqt/rwkv_inference/{package}/weights.{format}.bin"
+            )))
+            .unwrap();
+            let plan = if package == "sm101" {
+                TINY_LAYER_PLAN
+            } else {
+                ENGINE_LAYER_PLAN
+            };
+            assert_eq!(model.layer_plan, plan, "{package} {format}");
+            let layers: Vec<_> = model.modules.iter().map(|m| m.layers.len()).collect();
+            assert_eq!(layers, plan.module_layers, "{package} {format}");
+        }
+    }
+}
+
 #[test]
 fn rwkv_sm98_matches_published_vectors() {
     check_published_vectors("sm98", &sm98_vectors());
@@ -411,19 +465,23 @@ fn rwkv_sm40_spec_matches_compiled_architecture() {
         include_str!("../../../qt/aqt/rwkv_inference/sm57/architecture.json"),
         include_str!("../../../qt/aqt/rwkv_inference/sm98/architecture.json"),
     ] {
-        check_compiled_architecture(source);
+        check_compiled_architecture(source, ENGINE_LAYER_PLAN);
     }
+    check_compiled_architecture(
+        include_str!("../../../qt/aqt/rwkv_inference/sm101/architecture.json"),
+        TINY_LAYER_PLAN,
+    );
 }
 
-fn check_compiled_architecture(source: &str) {
+fn check_compiled_architecture(source: &str, plan: LayerPlan) {
     let spec: serde_json::Value = serde_json::from_str(source).unwrap();
     assert_eq!(spec["d_model"], D_MODEL);
     assert_eq!(spec["head_fc_dim"], HEAD_DIM);
     assert_eq!(spec["num_curves"], NUM_CURVES);
     for id in 0..5 {
-        assert_eq!(spec["streams"][id]["n_layers"], MODULE_LAYERS[id]);
+        assert_eq!(spec["streams"][id]["n_layers"], plan.module_layers[id]);
         assert_eq!(spec["streams"][id]["head_size"], HEAD_SIZE);
-        for layer in 0..MODULE_LAYERS[id] {
+        for layer in 0..plan.module_layers[id] {
             let stripped = spec["streams"][id]["channel_mixer_stripped_layers"]
                 .as_array()
                 .unwrap()
@@ -432,7 +490,7 @@ fn check_compiled_architecture(source: &str) {
         }
     }
     let steps: Vec<(usize, usize)> = serde_json::from_value(spec["layer_steps"].clone()).unwrap();
-    assert_eq!(steps, LAYER_STEPS);
+    assert_eq!(steps, plan.steps);
 }
 
 #[derive(serde::Deserialize)]
