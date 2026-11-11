@@ -203,7 +203,7 @@ instant-only small model (SM96, never bundled) −0.035% [−0.041, −0.029]. O
 −0.512% [−0.564, −0.469] of the release's own LogLoss. Source: anki-rwkv branch
 `sm98`, `artifacts/small-model/sm98/sm98-result.md`.
 
-With the small model (SM63) selected, the runtime models follow the presets'
+With Small selected (Tiny alike, with its smaller instant-only model (SM101) in place of SM98), the runtime models follow the presets'
 schedulers and one Advanced opt-out, read at profile open. A preset "uses
 RWKV-Curve" when RWKV-Curve is its scheduler or RWKV-Instant's **Fallback : Due-Date
 Calculator** (both set `rwkv_review_enabled`):
@@ -212,7 +212,7 @@ Calculator** (both set `rwkv_review_enabled`):
 | --- | --- | --- | --- | --- |
 | RWKV-Instant, no RWKV-Curve | ignored | the show-time instant-only model, stage 2 (SM98), alone (`InstantOnly`) | none: FSRS fallback for due dates and memory states | one |
 | both | off (default) | the show-time instant-only model, stage 2 (SM98) | the small model (SM63) | two |
-| both | on | the small model (SM63) | the small model (SM63) | one |
+| both | on | the show-time retrain of the release (SM92) | the show-time retrain of the release (SM92) | one |
 | RWKV-Curve only, or neither | ignored | (none) | the small model (SM63) | one |
 
 **RWKV-Instant without RWKV-Curve (the smart switch).** The show-time instant-only
@@ -230,9 +230,18 @@ fallback) and save to simulate RWKV workload." (`rwkvWorkloadAvailable`, string
 backend refuses such a simulation with the same message before loading any state.
 FSRS simulations are unchanged. Saving a preset that turns RWKV-Curve on drops this
 instant-only runtime at once (`refresh_rwkv_runtime_models_after_preset_change`), so
-the next use loads the pair (or the small model (SM63) alone with the opt-out) and
+the next use loads the pair (or the show-time retrain of the release (SM92) alone with the opt-out) and
 rebuilds its state; every other change of the presets' schedulers or of the opt-out
 still applies at the next profile open.
+
+Since 2026-11-11 the opt-out runs the show-time retrain of the release (SM92) alone
+(a full model: curve, intervals, S90 and answer time all come from it, so nothing is
+missing in the UI) instead of the small model (SM63) alone, because show-time inputs
+are the standard for all scoring. On 722 users of the 732-user held-out set, % of the
+big model (1 leak-free epoch)'s LogLoss, SM92 minus SM63 is −0.019% [−0.092, +0.085]
+on the curve (a tie) and −0.305% [−0.405, −0.232] on Instant (better). The state key
+changes for these profiles (`model` `sm92`, no `instantModel`), so they rebuild their
+state once. Small and Tiny behave alike here.
 
 The opt-out, **Use one model for RWKV (about half the memory, slightly worse
 RWKV-Instant predictions)**, is shown under Advanced whenever the small model (SM63)
@@ -257,8 +266,8 @@ runs in the `InstantOnly` mode, never as a full model. A profile whose model is 
 show-time retrain (SM92), Legacy or an older small model serves both schedulers
 alone.
 
-The show-time retrain (SM92, `RWKV_INSTANT_MODEL`, still a selectable profile model
-but no longer picked automatically) and the instant-only small model (SM57,
+The show-time retrain (SM92, `RWKV_INSTANT_MODEL`, still a selectable profile model,
+and the one-model opt-out's model with both schedulers) and the instant-only small model (SM57,
 `RWKV_INSTANT_ONLY_MODEL`, normal inputs, unused by default) stay bundled; the
 RWKV-Instant model is the one constant `RWKV_SPECIALIZED_INSTANT_MODEL` in
 `qt/aqt/rwkv_model.py`. See the [show-time instant-only model, stage 2 (SM98)

@@ -183,8 +183,13 @@ normal-input Instant LogLoss). It has no trained forgetting curve:
   RWKV-Curve, the RWKV intervals, the workload simulation and the answer-time
   estimate. That keeps two model states (about twice the memory, and answers
   replay on both). **Use one model for RWKV (about half the memory, slightly worse
-  RWKV-Instant predictions)** under Advanced makes both schedulers share the small
-  model (SM63) instead; it has no effect without RWKV-Curve.
+  RWKV-Instant predictions)** under Advanced makes both schedulers share one model
+  instead, the show-time retrain of the small model (SM92), alone (one model state;
+  the pair's state is rebuilt once). On 722 held-out users it ties the small model
+  (SM63) on the curve (−0.019% [−0.092, +0.085]) and predicts Instant 0.305% better
+  [−0.405, −0.232] (both % of the big model (1 leak-free epoch)'s LogLoss), and it
+  still gives RWKV-Curve, the intervals, the workload simulation and the
+  answer-time estimate. The setting has no effect without RWKV-Curve.
 
 Changes apply when the profile is reopened and rebuild RWKV state from history
 once; saving a preset that turns RWKV-Curve on switches at once. Details:

@@ -389,7 +389,7 @@ def test_cache_replay_identity_tracks_active_model_until_profile_reopen(
         # Both: by default SM98 beside the release, which keeps curve,
         # intervals, S90 and answer time; the opt-out shares the release.
         (True, True, False, RwkvRuntimeModels("sm72e25", "sm98")),
-        (True, True, True, RwkvRuntimeModels("sm72e25")),
+        (True, True, True, RwkvRuntimeModels("sm92")),
         # Only RWKV-Curve, or neither: the release alone.
         (False, True, False, RwkvRuntimeModels("sm72e25")),
         (False, True, True, RwkvRuntimeModels("sm72e25")),
@@ -409,18 +409,21 @@ def test_runtime_models_pick_the_instant_model_per_scheduler(
     assert models == expected
     if instant_used:
         assert models.instant_scheduler_model == (
-            "sm72e25" if curve_used and single else "sm98"
+            "sm92" if curve_used and single else "sm98"
         )
     # A curve exists exactly when a preset uses RWKV-Curve or nothing uses
-    # RWKV-Instant; the show-time retrain (SM92) and the instant-only small
-    # model (SM57) are never picked automatically.
+    # RWKV-Instant. The show-time retrain (SM92) is picked only by the
+    # one-model opt-out with both schedulers; the instant-only small model
+    # (SM57) is never picked automatically.
     if instant_used and not curve_used:
         assert models.curve_model is None
         assert models.model in RWKV_INSTANT_ONLY_MODELS
+    elif instant_used and single:
+        assert models.curve_model == models.model == "sm92"
     else:
         assert models.curve_model == models.model == "sm72e25"
     assert "sm57" not in models
-    assert "sm92" not in models
+    assert ("sm92" in models) == (instant_used and curve_used and single)
 
 
 def test_instant_only_model_stays_selectable():
@@ -483,7 +486,7 @@ _SIZE_RUNTIMES = {
         "both": ("sm72e25", "sm98"),
         "curve only": ("sm72e25", None),
         "neither": ("sm72e25", None),
-        "both, opt-out": ("sm72e25", None),
+        "both, opt-out": ("sm92", None),
         "instant only, opt-out": ("sm98", None),
     },
     # Tiny: the same with SM101 in SM98's place; the curve stays on SM63.
@@ -492,7 +495,7 @@ _SIZE_RUNTIMES = {
         "both": ("sm72e25", "sm101"),
         "curve only": ("sm72e25", None),
         "neither": ("sm72e25", None),
-        "both, opt-out": ("sm72e25", None),
+        "both, opt-out": ("sm92", None),
         "instant only, opt-out": ("sm101", None),
     },
 }
@@ -518,6 +521,9 @@ def test_model_sizes_pick_their_runtime_models(size, case):
     # exactly when a preset uses RWKV-Curve or nothing uses RWKV-Instant.
     if size != "legacy" and instant_used and not curve_used:
         assert models.curve_model is None
+    elif size != "legacy" and instant_used and single:
+        # The opt-out with both schedulers: the show-time retrain (SM92).
+        assert models.curve_model == models.model == "sm92"
     else:
         assert models.curve_model == curve_model_for_choice(size)
     # Tiny differs from Small only in RWKV-Instant's model.
@@ -529,7 +535,10 @@ def test_model_sizes_pick_their_runtime_models(size, case):
     )
     if size == "tiny":
         assert models.curve_model == small.curve_model
-        assert (models == small) == (models.instant_scheduler_model == "sm72e25")
+        # Tiny and Small share the pair's curve model and the opt-out's SM92.
+        assert (models == small) == (
+            models.instant_scheduler_model in ("sm72e25", "sm92")
+        )
 
 
 @pytest.mark.parametrize(
@@ -683,6 +692,38 @@ def test_curve_as_instant_fallback_counts_as_curve_used(configs, curve_enabled):
     )
 
 
+def test_instant_with_curve_fallback_counts_as_curve_used_but_fsrs_fallback_does_not():
+    # RWKV-Instant with RWKV-Curve as its due-date fallback: curve used.
+    curve_fallback = SimpleNamespace(
+        mw=_config_owner(_deck_configs(curve=False, instant=False, fallback_curve=True))
+    )
+    state = rwkv_scheduler._rwkv_collection_config_state(curve_fallback)
+    assert state.instant_enabled and state.curve_enabled
+    # RWKV-Instant with the FSRS fallback (rwkv_review_enabled off): not used.
+    fsrs_fallback = SimpleNamespace(
+        mw=_config_owner(_deck_configs(curve=False, instant=True))
+    )
+    state = rwkv_scheduler._rwkv_collection_config_state(fsrs_fallback)
+    assert state.instant_enabled and not state.curve_enabled
+    for size, instant_model in (("sm72e25", "sm98"), ("tiny", "sm101")):
+        profile = {"rwkvModel": size}
+        curve_fallback.mw.pm.profile = profile
+        fsrs_fallback.mw.pm.profile = profile
+        assert rwkv_scheduler._rwkv_runtime_models_for_profile(
+            curve_fallback.mw
+        ) == RwkvRuntimeModels("sm72e25", instant_model)
+        assert rwkv_scheduler._rwkv_runtime_models_for_profile(
+            fsrs_fallback.mw
+        ) == RwkvRuntimeModels(instant_model)
+        profile["rwkvSingleModel"] = True
+        assert rwkv_scheduler._rwkv_runtime_models_for_profile(
+            curve_fallback.mw
+        ) == RwkvRuntimeModels("sm92")
+        assert rwkv_scheduler._rwkv_runtime_models_for_profile(
+            fsrs_fallback.mw
+        ) == RwkvRuntimeModels(instant_model)
+
+
 @pytest.mark.parametrize(
     "curve,instant,fallback_curve,single,expected",
     [
@@ -691,9 +732,9 @@ def test_curve_as_instant_fallback_counts_as_curve_used(configs, curve_enabled):
         (False, True, False, True, ("sm98", None)),
         # RWKV-Curve as a preset's scheduler, or as RWKV-Instant's fallback.
         (True, True, False, False, ("sm72e25", "sm98")),
-        (True, True, False, True, ("sm72e25", None)),
+        (True, True, False, True, ("sm92", None)),
         (False, False, True, False, ("sm72e25", "sm98")),
-        (False, False, True, True, ("sm72e25", None)),
+        (False, False, True, True, ("sm92", None)),
         (False, True, True, False, ("sm72e25", "sm98")),
         # RWKV-Curve only, or neither.
         (True, False, False, False, ("sm72e25", None)),
