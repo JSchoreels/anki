@@ -118,6 +118,7 @@ test.each([
     ["sm72e20", "sm72e25"],
     ["sm72e25", "sm72e25"],
     ["sm92", "sm92"],
+    ["tiny", "tiny"],
 ])("saving RWKV model %s selects %s without changing precision or pending state", (model, expected) => {
     const data = new DeckConfigsForUpdate(exampleData);
     data.rwkvProfileSettings = new RwkvProfileSettings({ model, statePrecision: "int8" });

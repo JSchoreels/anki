@@ -301,15 +301,18 @@ message DeckConfigsForUpdate {
 }
 
 message RwkvProfileSettings {
+  // The model size: "legacy" (Big), "sm72e25" (Small, the default) or "tiny"
+  // (Tiny); older small model keys and "sm92" are preserved values.
   string model = 1;
   string state_precision = 2;
   // Was the opt-in specialized_instant_model, whose meaning single_model
   // reverses.
   reserved 3;
   // Opt-out: with RWKV-Instant and RWKV-Curve both in use, run one model for
-  // both schedulers instead of RWKV-Instant's own model (the show-time
-  // instant-only model, stage 2, SM98) beside the release (two model states,
-  // the default). Ignored for RWKV-Instant without RWKV-Curve: SM98 alone.
+  // both schedulers instead of RWKV-Instant's own model (Small: the show-time
+  // instant-only model, stage 2, SM98; Tiny: the smaller instant-only model,
+  // SM101) beside the release (two model states, the default). Ignored for
+  // RWKV-Instant without RWKV-Curve: the instant model alone.
   bool single_model = 4;
 }
 

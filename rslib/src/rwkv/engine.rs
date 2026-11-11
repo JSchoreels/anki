@@ -745,6 +745,12 @@ impl RwkvInference {
         self.answer_time_head.is_some()
     }
 
+    /// Card layers of the loaded checkpoint: 1 for the tiny model (the
+    /// smaller instant-only model, SM101), 2 for the other small models.
+    pub fn card_layers(&self) -> usize {
+        self.model.card_layers()
+    }
+
     /// Predicts the answer time of each query from the frozen trunk and the
     /// history features of [`crate::rwkv::AnswerTimeHistory::features`]
     /// (computed after every review before the query; their elapsed-days
@@ -3934,6 +3940,9 @@ struct SrsModel {
     /// Leak-free checkpoints were trained with the three missing-ID flags
     /// (inputs 13..15) always zero.
     leak_free_inputs: bool,
+    /// The engine's layer counts and schedule, or the tiny model's (one card
+    /// layer) in the small engine; read from the weights at load.
+    layer_plan: LayerPlan,
 }
 
 #[cfg(any(not(target_os = "macos"), test))]
@@ -3975,6 +3984,24 @@ impl Default for ReviewRetrievabilityScratch {
     }
 }
 
+/// The tiny model is the small architecture without the card's second
+/// layer: its weights hold no `rwkv_modules.0.blocks.1.` tensor at all. Any
+/// other checkpoint keeps the engine's layers (a partly missing layer fails
+/// to load as before).
+fn layer_plan_for(weights: &WeightMap) -> LayerPlan {
+    let card_second_layer = "rwkv_modules.0.blocks.1.";
+    if SMALL_MODEL
+        && !weights
+            .tensors
+            .keys()
+            .any(|name| name.starts_with(card_second_layer))
+    {
+        TINY_LAYER_PLAN
+    } else {
+        ENGINE_LAYER_PLAN
+    }
+}
+
 impl SrsModel {
     fn load(path: &PathBuf) -> io::Result<Self> {
         let weights = WeightMap::load(path)?;
@@ -3982,7 +4009,9 @@ impl SrsModel {
     }
 
     fn from_weights(weights: WeightMap) -> io::Result<Self> {
-        let modules = MODULE_LAYERS
+        let layer_plan = layer_plan_for(&weights);
+        let modules = layer_plan
+            .module_layers
             .iter()
             .enumerate()
             .map(|(module_id, layer_count)| RwkvModule::load(&weights, module_id, *layer_count))
@@ -4024,7 +4053,14 @@ impl SrsModel {
             head_p_0: weights.linear("head_p.0", D_MODEL, HEAD_DIM, true)?,
             p_linear: weights.linear("p_linear", HEAD_DIM, 4, true)?,
             leak_free_inputs: false,
+            layer_plan,
         })
+    }
+
+    /// Card layers of the loaded checkpoint: 1 for the tiny model, else the
+    /// engine's.
+    fn card_layers(&self) -> usize {
+        self.layer_plan.module_layers[0]
     }
 
     /// Zeroes the inputs this checkpoint never saw set: feature 22 for the
@@ -4189,7 +4225,7 @@ impl SrsModel {
             })
             .collect();
         let mut v0: [Vec<f32>; 5] = std::array::from_fn(|_| vec![0.0; rows * D_MODEL]);
-        for &(module_id, layer_id) in LAYER_STEPS {
+        for &(module_id, layer_id) in self.layer_plan.steps {
             self.modules[module_id].layers[layer_id].run_query_batch(
                 &scratch.x,
                 &mut v0[module_id],
@@ -4305,7 +4341,7 @@ impl SrsModel {
         let mut x = x;
         let mut v0 = [const { Vec::new() }; 5];
         let mut next: [Vec<LayerState>; 5] = std::array::from_fn(|_| Vec::new());
-        for &(module_id, layer_id) in LAYER_STEPS {
+        for &(module_id, layer_id) in self.layer_plan.steps {
             let previous = decoded[module_id]
                 .as_ref()
                 .and_then(|state| state.layers.get(layer_id));
@@ -4380,7 +4416,8 @@ impl SrsModel {
             .map(|state| state.map(ModuleState::decoded))
             .collect();
         let mut v0 = [const { Vec::new() }; 5];
-        for (index, &(module_id, layer_id)) in LAYER_STEPS.iter().enumerate() {
+        let steps = self.layer_plan.steps;
+        for (index, &(module_id, layer_id)) in steps.iter().enumerate() {
             let previous = decoded[module_id]
                 .as_ref()
                 .and_then(|state| state.layers.get(layer_id));
@@ -4388,7 +4425,7 @@ impl SrsModel {
                 self.modules[module_id].layers[layer_id].run(&x, &v0[module_id], previous);
             x = next;
             v0[module_id] = value;
-            if index + 1 == LAYER_STEPS.len() || LAYER_STEPS[index + 1].1 != layer_id {
+            if index + 1 == steps.len() || steps[index + 1].1 != layer_id {
                 out.extend(unit.apply(&x));
             }
         }
@@ -4423,7 +4460,7 @@ impl SrsModel {
 
         let decoded = state.try_decoded()?;
         let mut v0 = [[0.0; D_MODEL]; 5];
-        for &(module_id, layer_id) in LAYER_STEPS {
+        for &(module_id, layer_id) in self.layer_plan.steps {
             let previous = decoded[module_id]
                 .as_ref()
                 .and_then(|state| state.layers.get(layer_id));
@@ -4534,17 +4571,22 @@ impl AnswerTimeHead {
 
 /// Layer rounds of the interleaved schedule (the small model: 4). A round
 /// ends where the next step starts another layer index.
-const ANSWER_TIME_ROUNDS: usize = {
+const ANSWER_TIME_ROUNDS: usize = layer_rounds(LAYER_STEPS);
+// The tiny model drops one step of round 2, not a round: an answer-time head
+// beside it would read the same number of residuals.
+const _: () = assert!(!SMALL_MODEL || layer_rounds(TINY_LAYER_STEPS) == ANSWER_TIME_ROUNDS);
+
+const fn layer_rounds(steps: &[(usize, usize)]) -> usize {
     let mut rounds = 0;
     let mut index = 0;
-    while index < LAYER_STEPS.len() {
-        if index + 1 == LAYER_STEPS.len() || LAYER_STEPS[index + 1].1 != LAYER_STEPS[index].1 {
+    while index < steps.len() {
+        if index + 1 == steps.len() || steps[index + 1].1 != steps[index].1 {
             rounds += 1;
         }
         index += 1;
     }
     rounds
-};
+}
 
 struct ReviewHeads {
     retrievability: f32,

@@ -58,6 +58,41 @@ pub(super) const LAYER_STEPS: &[(usize, usize)] = if SMALL_MODEL {
         (4, 3),
     ]
 };
+/// The tiny model (the smaller instant-only model, SM101): the small
+/// architecture with one card layer instead of two. Only the small engine
+/// loads it; every other dimension is the small model's.
+pub(super) const TINY_MODULE_LAYERS: [usize; 5] = [1, 4, 1, 3, 3];
+/// [`LAYER_STEPS`] of the small model without the card's second layer, the
+/// interleaved schedule of [`TINY_MODULE_LAYERS`].
+pub(super) const TINY_LAYER_STEPS: &[(usize, usize)] = &[
+    (0, 0),
+    (1, 0),
+    (2, 0),
+    (3, 0),
+    (4, 0),
+    (1, 1),
+    (3, 1),
+    (4, 1),
+    (1, 2),
+    (3, 2),
+    (4, 2),
+    (1, 3),
+];
+/// The per-module layer counts and the layer schedule of one loaded model:
+/// the engine's own, or the tiny model's in the small engine.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub(super) struct LayerPlan {
+    pub(super) module_layers: [usize; 5],
+    pub(super) steps: &'static [(usize, usize)],
+}
+pub(super) const ENGINE_LAYER_PLAN: LayerPlan = LayerPlan {
+    module_layers: MODULE_LAYERS,
+    steps: LAYER_STEPS,
+};
+pub(super) const TINY_LAYER_PLAN: LayerPlan = LayerPlan {
+    module_layers: TINY_MODULE_LAYERS,
+    steps: TINY_LAYER_STEPS,
+};
 pub(super) fn channel_mixer_present(module: usize, layer: usize) -> bool {
     !SMALL_MODEL || matches!((module, layer), (0, 0) | (1, 0) | (1, 3) | (2, 0))
 }

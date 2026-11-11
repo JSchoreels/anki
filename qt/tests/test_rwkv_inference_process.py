@@ -613,6 +613,10 @@ def _load_rsbridge_runtime(
         # instant-only model, stage 2 (SM98), alone only as instant-only.
         ("sm98", "sm98/weights.f32.bin"),
         ("sm72e25+sm98", "sm72e25/weights.f32.bin"),
+        # Tiny's RWKV-Instant model, the smaller instant-only model (SM101, one
+        # card layer): alone only as instant-only, and beside the release.
+        ("sm101", "sm101/weights.f32.bin"),
+        ("sm72e25+sm101", "sm72e25/weights.f32.bin"),
     ],
 )
 @pytest.mark.parametrize("state_precision", ["f32", "int8", "cards_int4_notes_int8"])
@@ -1139,7 +1143,7 @@ def test_rsbridge_rwkv_answer_time_head_is_optional() -> None:
         with_head.predict_answer_times([later_day], [[0.0] * 25])
 
 
-@pytest.mark.parametrize("instant_model", ["sm98", "sm92", "sm57"])
+@pytest.mark.parametrize("instant_model", ["sm98", "sm101", "sm92", "sm57"])
 def test_rsbridge_rwkv_instant_model_serves_instant_and_release_keeps_curve(
     instant_model: str,
 ) -> None:
@@ -1154,7 +1158,7 @@ def test_rsbridge_rwkv_instant_model_serves_instant_and_release_keeps_curve(
     paired = load(f"sm72e25+{instant_model}", "sm72e25/weights.f32.bin")
     assert paired.is_paired() and not release.is_paired() and not instant.is_paired()
     assert paired.has_answer_time_head() and release.has_answer_time_head()
-    # Only the instant-only models (SM57, SM98) have no answer-time head.
+    # Only the instant-only models (SM57, SM98, SM101) have no answer-time head.
     assert instant.has_answer_time_head() == (instant_model == "sm92")
     with pytest.raises(Exception, match="path and a name"):
         rsbridge.RwkvInference(

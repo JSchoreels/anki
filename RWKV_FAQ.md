@@ -164,13 +164,14 @@ the [RWKV-Curve/Instant discussion](https://discord.com/channels/368267295601983
 
 ### Which model does RWKV-Instant use?
 
-With the default small model (SM63), a profile whose presets use RWKV-Instant, with
-or without RWKV-Curve, runs RWKV-Instant on the show-time instant-only model,
-stage 2 (SM98), trained only to predict the next answer at the moment a card is
-shown. On 722 held-out users its Instant LogLoss is 0.248% lower than the
+With the default size, Small (the small model, SM63), a profile whose presets use
+RWKV-Instant, with or without RWKV-Curve, runs RWKV-Instant on the show-time
+instant-only model, stage 2 (SM98), trained only to predict the next answer at the
+moment a card is shown. Tiny runs the smaller instant-only model (SM101) in its
+place, with the same rules below; Big runs the big model for both. On 722 held-out users SM98's Instant LogLoss is 0.248% lower than the
 show-time retrain's (SM92), which RWKV-Instant used before, and 0.554% lower than
 the small model's (SM63) (both % of the big model (1 leak-free epoch)'s
-normal-input Instant LogLoss). It has no trained forgetting curve:
+normal-input Instant LogLoss). Neither SM98 nor SM101 has a trained forgetting curve:
 
 - When no preset uses RWKV-Curve (neither as scheduler nor as RWKV-Instant's
   fallback), it runs alone, one model state. Due dates, intervals and memory
@@ -477,17 +478,33 @@ runtime. The repository does not define one fixed rebuild time for all users.
 
 ### Which model does the fork use, and what does leak-free mean?
 
-By default, **Use Smaller Model** (Deck Options → RWKV → Advanced) selects the
-small model, leak-free, cool-down from epoch 25 (SM63): 331,511 parameters, 8.3× fewer than the big
-Legacy model, and about 4.6 KB of state per card and note instead of 25.7 KB.
-Turning the switch off selects the big Legacy model, which keeps working as
-before. The show-time retrain of the release (SM92) is an option: it is that same
-model retrained so that the time since a card's last review is measured the way Anki
+Deck Options → RWKV → Advanced offers three sizes:
+
+- **Small** (the default): the small model, leak-free, cool-down from epoch 25
+  (SM63), 331,511 parameters, 8.3× fewer than the big model, about 4.6 KB of
+  state per card and note instead of 25.7 KB. RWKV-Instant runs on its own small
+  model, the show-time instant-only model, stage 2 (SM98), see "Which model does
+  RWKV-Instant use?".
+- **Tiny**: Small with a smaller RWKV-Instant model, the smaller instant-only
+  model (SM101), which has one card layer instead of two. Tiny only shrinks
+  RWKV-Instant's state: RWKV-Curve, its intervals and S90 come from the same
+  small model (SM63) as with Small. RWKV-Instant's state is about 26% smaller per
+  card and note at the default storage precision (2.6 KB instead of 3.5 KB; 31%
+  at int8), and its Instant LogLoss is 0.19% higher than SM98's (722 held-out
+  users, % of the big model (1 leak-free epoch)'s normal-input Instant LogLoss);
+  it is still better than the small model (SM63) and the show-time retrain
+  (SM92) for RWKV-Instant.
+- **Big**: the big model (1 leak-free epoch) for both schedulers, as the former
+  Legacy choice.
+
+The show-time retrain of the release (SM92) stays a preserved choice for profiles
+that already hold it (Deck Options lists it only for them): it is the small
+model (SM63) retrained so that the time since a card's last review is measured the way Anki
 measures it, up to the moment the card is shown, not up to the moment it is
 answered. It only pays off once Anki schedules by querying the model at show time
 (retrievability below the desired retention). Until then the normal-input model
 is better: on normal inputs SM63 scores 0.30003 Curve / 0.27654 Instant against
-0.30024 / 0.27676 for SM92 (722 users). SM92 stays bundled and selectable.
+0.30024 / 0.27676 for SM92 (722 users). SM92 stays bundled.
 
 In the public training data, a card that was deleted before the export is
 missing from the cards table. A naive feature builder then marks its note,

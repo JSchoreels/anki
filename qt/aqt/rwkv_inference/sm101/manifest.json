@@ -1,0 +1,1031 @@
+{
+ "label": "sm101-c1-e38st-st-dec1ep32k",
+ "created": "2026-11-11 10:45:06",
+ "checkpoint": {
+  "path": "<workspace>/wt/sm101/artifacts/small-model/sm101-c1-e38st-st-dec-1ep32k-muon/run/E89-F65e-F77a/master.pth",
+  "bytes": 1398567,
+  "sha256": "d1408ae9c883e894f98bd8fe85aeb804aa5f66db7d11b02e4da5a7b834d7a149"
+ },
+ "parameters": 311786,
+ "architecture": {
+  "format": "anki-rwkv small-model export",
+  "spec_version": 1,
+  "architecture": "w64-c1",
+  "d_model": 64,
+  "card_features": 92,
+  "features_fc_dim": 128,
+  "head_fc_dim": 128,
+  "curve_head": "power_mixture",
+  "num_curves": 3,
+  "num_points": 128,
+  "ahead_residual": false,
+  "zero_features": [
+   22
+  ],
+  "layer_schedule": "interleaved",
+  "layer_steps": [
+   [
+    0,
+    0
+   ],
+   [
+    1,
+    0
+   ],
+   [
+    2,
+    0
+   ],
+   [
+    3,
+    0
+   ],
+   [
+    4,
+    0
+   ],
+   [
+    1,
+    1
+   ],
+   [
+    3,
+    1
+   ],
+   [
+    4,
+    1
+   ],
+   [
+    1,
+    2
+   ],
+   [
+    3,
+    2
+   ],
+   [
+    4,
+    2
+   ],
+   [
+    1,
+    3
+   ]
+  ],
+  "streams": [
+   {
+    "name": "card_id",
+    "n_layers": 1,
+    "n_heads": 4,
+    "head_size": 16,
+    "channel_mixer_dim": 64,
+    "decay_lora": 4,
+    "a_lora": 4,
+    "v0_mix_amt_lora": 2,
+    "gate_lora": 4,
+    "channel_mixer_stripped_layers": [],
+    "value_lora_stripped_layer0": true
+   },
+   {
+    "name": "deck_id",
+    "n_layers": 4,
+    "n_heads": 4,
+    "head_size": 16,
+    "channel_mixer_dim": 64,
+    "decay_lora": 4,
+    "a_lora": 4,
+    "v0_mix_amt_lora": 2,
+    "gate_lora": 4,
+    "channel_mixer_stripped_layers": [
+     1,
+     2
+    ],
+    "value_lora_stripped_layer0": true
+   },
+   {
+    "name": "note_id",
+    "n_layers": 1,
+    "n_heads": 4,
+    "head_size": 16,
+    "channel_mixer_dim": 64,
+    "decay_lora": 4,
+    "a_lora": 4,
+    "v0_mix_amt_lora": 2,
+    "gate_lora": 4,
+    "channel_mixer_stripped_layers": [],
+    "value_lora_stripped_layer0": true
+   },
+   {
+    "name": "preset_id",
+    "n_layers": 3,
+    "n_heads": 4,
+    "head_size": 16,
+    "channel_mixer_dim": 64,
+    "decay_lora": 4,
+    "a_lora": 4,
+    "v0_mix_amt_lora": 2,
+    "gate_lora": 4,
+    "channel_mixer_stripped_layers": [
+     0,
+     1,
+     2
+    ],
+    "value_lora_stripped_layer0": true
+   },
+   {
+    "name": "user_id",
+    "n_layers": 3,
+    "n_heads": 4,
+    "head_size": 16,
+    "channel_mixer_dim": 64,
+    "decay_lora": 4,
+    "a_lora": 4,
+    "v0_mix_amt_lora": 2,
+    "gate_lora": 4,
+    "channel_mixer_stripped_layers": [
+     0,
+     1,
+     2
+    ],
+    "value_lora_stripped_layer0": true
+   }
+  ],
+  "constants": {
+   "layer_norm_eps": 1e-05,
+   "group_norm_eps": 0.00064,
+   "normalize_eps": 1e-12,
+   "softplus_threshold": 20.0,
+   "prob_clamp": 1e-05,
+   "s_point_spread": 18.5,
+   "s_max": 22.0,
+   "s_min": 0.1,
+   "curve_base": 0.9,
+   "point_spread": 18.5,
+   "max_e": 21.0,
+   "point_min": 0.5,
+   "power_clamp": 25.0,
+   "power_s_eps": 1e-07,
+   "min_elapsed_seconds": 1.0
+  },
+  "inputs": {
+   "streams_order": [
+    "card_id",
+    "deck_id",
+    "note_id",
+    "preset_id",
+    "user_id"
+   ],
+   "features": "92 card features of rwkv.prepare_batch / rwkv.data_processing (the same input layout and normalization the fork's 2.76M model uses: rslib/src/rwkv/mod.rs CARD_FEATURES)",
+   "label_elapsed_seconds": "curve query time in seconds (labels[..., 0])"
+  },
+  "outputs": {
+   "p_curve": "recall probability at the queried elapsed time (ahead / curve head)",
+   "p_imm": "1 - P(again) of the 4-rating head (instant head), clamped to [1e-5, 1 - 1e-5]",
+   "p_rating": "softmax over again/hard/good/easy"
+  }
+ },
+ "training": {
+  "checkpoint_folder_result": {
+   "model": "rwkv-small",
+   "track": "E89-F65e-F77a",
+   "options": {
+    "prefetch_users": true,
+    "preparation_workers": 5,
+    "gpu_packed_features": true,
+    "packed_ipc": true,
+    "async_transfer": true,
+    "batched_id_encodings": true,
+    "grouped_sync": true,
+    "main_threads": 1,
+    "bulk_transfer": true,
+    "parallel_evaluation": true,
+    "exact_shift": true,
+    "batch_chunks": 1,
+    "gpu_memory_fraction": 0.8,
+    "fast_samples": true,
+    "prestart_pool": true,
+    "deferred_reads": true,
+    "shared_shift_orders": true,
+    "stream_launches": true,
+    "sync_free_loss": true,
+    "columnar_samples": true,
+    "skip_uninitialized_fill": true,
+    "host_placement": "physical",
+    "process_qos": true,
+    "deferred_read_depth": 2,
+    "bookkeeping_stride": 8,
+    "lean_step_reset": true,
+    "wddm_flush": true,
+    "architecture": "w64-c1",
+    "distillation": {
+     "teacher": "<workspace>/wt/sm72/artifacts/small-model/sm72-big-leakfree-1ep/run/big-leakfree-1ep/master.pth",
+     "alpha": 0.9,
+     "decay_alpha": 0.5,
+     "kd_source": "replay",
+     "replay": "<workspace>/anki-rwkv/artifacts/cache/kd-replay/big-leakfree-1ep-final8k-neighbour"
+    },
+    "chunk_reviews": 32768,
+    "state_carry": {
+     "lanes": "strided"
+    },
+    "training_seed": 2025,
+    "optimizer": "muon-iter53",
+    "curve_loss_weight": 0.0,
+    "show_time_intervals": true
+   },
+   "config": {
+    "MODEL": "rwkv-small",
+    "DTYPE": "bfloat16",
+    "WKV_BACKEND": "nvrtc",
+    "SEED": 2025,
+    "BATCH_CHUNKS": 1,
+    "CHUNK_REVIEWS": 32768,
+    "PREFETCH_WORKERS": 5,
+    "PREFETCH_BATCHES": 10,
+    "CPU_THREADS": 4,
+    "EPOCHS": 1,
+    "DATA_PATH": "<workspace>/anki-rwkv/data/anki-revlogs-10k-original-20261011",
+    "DATASET_REVISION": "75299740cff05894ef42d7ad990666691efdd2da",
+    "GPU_MEMORY_FRACTION": 0.8,
+    "PEAK_LR": 0.0007,
+    "WARMUP_STEPS": 5
+   },
+   "torch": "2.9.1+cu128",
+   "cuda": "12.8",
+   "gpu": "NVIDIA GeForce RTX 5080",
+   "training_dropout": "enabled",
+   "device_used_at_start_mib": 1290.75,
+   "master_dtype": "float32",
+   "float32_matmul_precision": "highest",
+   "cuda_matmul_allow_tf32": false,
+   "rss_sampling": "process tree at user transitions; sampled maximum, not continuous peak",
+   "provenance": {
+    "captured_utc": "2026-11-11T00:58:42.550175+00:00",
+    "git_commit": "fb1ea82a762e1235c9288a5928976f4de8615ff5",
+    "git_dirty": true,
+    "git_status_porcelain_z": " M artifacts/small-model/sm101/gpu/check.out\u0000 M artifacts/small-model/sm101/gpu/prepare.out\u0000",
+    "source_tree_sha256": "624d667dcf82340df2fc89ad8b90f25a8eb011f3c1df3c02df03f7cca992215d",
+    "source_archive": "artifacts/sources/experiment-sources/624d667dcf82340df2fc89ad8b90f25a8eb011f3c1df3c02df03f7cca992215d/source.zip",
+    "source_paths": [
+     "rwkv",
+     "rwkv-small",
+     "scripts",
+     "configs",
+     "pyproject.toml",
+     "uv.lock",
+     "justfile",
+     "upstream.json"
+    ]
+   },
+   "status": "complete",
+   "smoke_only": false,
+   "implementation_sha256": "34a4af357daedad7cda4ffb62589a5a7675c8053adbf47b9b0dbcf051092ac97",
+   "started_utc": "2026-11-11T00:58:44.340317+00:00",
+   "training_users": 3906,
+   "evaluation_users": 0,
+   "progress_users": 3906,
+   "updates": 10981,
+   "review_presentations": 291028216,
+   "training_curve_labels": 253614457,
+   "training_instant_labels": 253614457,
+   "hierarchical_padded_positions": 3868619758,
+   "peak_process_tree_rss_mib": 7504.375,
+   "gpu_copy_milliseconds": 21640.035583496094,
+   "gpu_copy_overlap_training_milliseconds": 242.7366943359375,
+   "initial_parameter_sha256": "8ef63f96ab03bd21f265ae4498676985e98aac44268c1a51821da3fcbcf88456",
+   "curve_loss_weight": 0.0,
+   "catch_up": {
+    "keys": [
+     "architecture",
+     "distillation",
+     "optimizer"
+    ],
+    "architecture": {
+     "name": "w64-c1",
+     "parameters": 311786
+    },
+    "lr_schedule": {
+     "decay_start": 0.0,
+     "decay_end": 1.0,
+     "shape": "one_minus_sin",
+     "final": 0.0,
+     "total_reviews": 581942724
+    },
+    "optimizer": "muon-iter53",
+    "deleted_cards": "neighbour",
+    "distillation": {
+     "teacher": "<workspace>/wt/sm72/artifacts/small-model/sm72-big-leakfree-1ep/run/big-leakfree-1ep/master.pth",
+     "teacher_sha256": "ac7f0d8a96cbc086eb17307ee13c67cf8e4a68e9b3d70dd5657eaa9957d9d240",
+     "teacher_parameters": null,
+     "alpha": 0.9,
+     "decay_alpha": 0.5,
+     "kd_source": "replay",
+     "replay": "<workspace>/anki-rwkv/artifacts/cache/kd-replay/big-leakfree-1ep-final8k-neighbour",
+     "replay_manifest_sha256": "c81d6968ee4475fbf8bcf25167ba808dc90fb79cfd49e3511ed100aed05bfcd6",
+     "replay_teacher_precision": "float32 weights, float32 state (compress_quant fork path, state_bits 0)"
+    },
+    "state_carry": {
+     "precision": "deploy",
+     "carry": true,
+     "lanes": "strided",
+     "mode": "strided lanes (v2): update u holds window u of every lane; lane starts from zero",
+     "stats": {
+      "users": 3906,
+      "updates": 10981,
+      "streams_calls": 10981,
+      "peak_table_bytes": 365952768
+     }
+    }
+   },
+   "discarded_primer_seconds": 4.40451800000001,
+   "model_setup_seconds": 7.099664399999995,
+   "warmup_job_workers": 1,
+   "prestarted_worker_pids": [
+    10516,
+    13956,
+    25252,
+    27960,
+    28528
+   ],
+   "prestarted_workers": 5,
+   "pool_ready_wait_seconds": 0.0003358999999960588,
+   "pool_prestart_seconds": 4.454857800000013,
+   "host_placement": {
+    "mode": "physical",
+    "main_process_cpus": [
+     2,
+     3,
+     6,
+     7,
+     10,
+     11
+    ],
+    "worker_cpus": [
+     0,
+     4,
+     8,
+     14,
+     12
+    ],
+    "workers": 5,
+    "physical_cores": 8,
+    "main_core_scheduling_classes": [
+     6,
+     6,
+     5
+    ],
+    "restored_main_process_cpus": 16
+   },
+   "process_qos": {
+    "mode": "above_normal_unthrottled",
+    "processes": [
+     {
+      "pid": 32652,
+      "role": "main",
+      "previous_throttling": {
+       "control_mask": 0,
+       "state_mask": 0
+      },
+      "previous_priority_class": 32,
+      "priority_class": 32768
+     },
+     {
+      "pid": 10516,
+      "role": "worker",
+      "previous_throttling": {
+       "control_mask": 0,
+       "state_mask": 0
+      },
+      "previous_priority_class": 32,
+      "priority_class": 32768
+     },
+     {
+      "pid": 13956,
+      "role": "worker",
+      "previous_throttling": {
+       "control_mask": 0,
+       "state_mask": 0
+      },
+      "previous_priority_class": 32,
+      "priority_class": 32768
+     },
+     {
+      "pid": 25252,
+      "role": "worker",
+      "previous_throttling": {
+       "control_mask": 0,
+       "state_mask": 0
+      },
+      "previous_priority_class": 32,
+      "priority_class": 32768
+     },
+     {
+      "pid": 27960,
+      "role": "worker",
+      "previous_throttling": {
+       "control_mask": 0,
+       "state_mask": 0
+      },
+      "previous_priority_class": 32,
+      "priority_class": 32768
+     },
+     {
+      "pid": 28528,
+      "role": "worker",
+      "previous_throttling": {
+       "control_mask": 0,
+       "state_mask": 0
+      },
+      "previous_priority_class": 32,
+      "priority_class": 32768
+     }
+    ],
+    "timer_resolution_100ns": {
+     "coarsest": 156250,
+     "finest": 5000,
+     "current": 5000
+    }
+   },
+   "training_started_utc": "2026-11-11T00:58:52.318214+00:00",
+   "nvrtc_max_timesteps": 131072,
+   "deferred_read_depth": 2,
+   "lean_step_reset": {
+    "master_parameters": 390,
+    "child_parameters": 390
+   },
+   "bookkeeping_stride": 8,
+   "rss_sampling_skipped_processes": 0,
+   "training_elapsed_seconds": 13960.0742995,
+   "latest_snapshot": {
+    "reason": "periodic",
+    "utc": "2026-11-11T04:33:09.375445+00:00",
+    "progress_users": 3600,
+    "folder": "<workspace>/wt/sm101/artifacts/small-model/sm101-c1-e38st-st-dec-1ep32k-muon/run/E89-F65e-F77a/snapshots/users-03600"
+   },
+   "training_seconds": 13965.4458392,
+   "training_gc": {
+    "generation_0": {
+     "collections": 40573,
+     "seconds": 2.9379557998983046
+    },
+    "generation_1": {
+     "collections": 3689,
+     "seconds": 1.3610658999866985
+    },
+    "generation_2": {
+     "collections": 93,
+     "seconds": 7.917358999999237
+    }
+   },
+   "cold_training_seconds": 13965.4458392,
+   "reviews_per_second": 20839.163987382686,
+   "cold_reviews_per_second": 20839.163987382686,
+   "coverage": "<3906 entries omitted>",
+   "peak_allocated_mib": 6617.1083984375,
+   "peak_reserved_mib": 12686.0,
+   "allocator_stats": {
+    "num_alloc_retries": 0,
+    "num_ooms": 0,
+    "num_device_alloc": 680,
+    "num_device_free": 57
+   },
+   "trained_parameter_sha256": "558b5d7d1c36b619430b79997cfb3fde2ab85c475b6d0731f7c03eac64093914",
+   "update_offset_end": 861042,
+   "case_elapsed_seconds": 13977.2045574
+  },
+  "decay_dir": "<workspace>/wt/sm101/artifacts/small-model/sm101-c1-e38st-st-dec-1ep32k-muon",
+  "decay": {
+   "created_utc": "2026-11-10T16:08:28.810981+00:00",
+   "source_run": "<workspace>/wt/sm72s/artifacts/accuracy/experiments/scale-w64kd-final-sc-lanes-leakfree/run",
+   "source_epoch": 25,
+   "source_case": "<workspace>/wt/sm101/artifacts/small-model/sm101-c1-e38-st/run/E89-F65e-F77a",
+   "source_update_offset_end": 838964,
+   "model": "rwkv-small",
+   "track": "E89-F65e-F77a",
+   "options": {
+    "prefetch_users": true,
+    "preparation_workers": 5,
+    "gpu_packed_features": true,
+    "packed_ipc": true,
+    "async_transfer": true,
+    "batched_id_encodings": true,
+    "grouped_sync": true,
+    "main_threads": 1,
+    "bulk_transfer": true,
+    "parallel_evaluation": true,
+    "exact_shift": true,
+    "batch_chunks": 1,
+    "gpu_memory_fraction": 0.8,
+    "fast_samples": true,
+    "prestart_pool": true,
+    "deferred_reads": true,
+    "shared_shift_orders": true,
+    "stream_launches": true,
+    "sync_free_loss": true,
+    "columnar_samples": true,
+    "skip_uninitialized_fill": true,
+    "host_placement": "physical",
+    "process_qos": true,
+    "deferred_read_depth": 2,
+    "bookkeeping_stride": 8,
+    "lean_step_reset": true,
+    "wddm_flush": true,
+    "architecture": "w64-c1",
+    "distillation": {
+     "teacher": "<workspace>/wt/sm72/artifacts/small-model/sm72-big-leakfree-1ep/run/big-leakfree-1ep/master.pth",
+     "alpha": 0.9,
+     "decay_alpha": 0.5,
+     "kd_source": "replay",
+     "replay": "<workspace>/anki-rwkv/artifacts/cache/kd-replay/big-leakfree-1ep-final8k-neighbour"
+    },
+    "chunk_reviews": 32768,
+    "state_carry": {
+     "lanes": "strided"
+    },
+    "training_seed": 2025,
+    "optimizer": "muon-iter53",
+    "curve_loss_weight": 0.0,
+    "show_time_intervals": true
+   },
+   "dropped_width32_options": [
+    "exact_group_norm",
+    "exact_index",
+    "native_glue",
+    "native_group_norm",
+    "native_index",
+    "native_wkv",
+    "prefetch_rows",
+    "row_tiles_exact",
+    "skip_padding_sources",
+    "wkv_tile"
+   ],
+   "fraction_of_epoch_reviews": 1.0,
+   "training_users": 8000,
+   "training_reviews": 581942738,
+   "train_users_from": "tier final (artifacts/accuracy/tiers.json)",
+   "shuffle_seed": 1,
+   "lr": "7e-4 -> 0, shape one_minus_sin, over all 581,942,738 reviews",
+   "evaluation_set": "none",
+   "evaluation_users": 0,
+   "control": "epoch-25 scores of the same users in <workspace>/wt/sm72s/artifacts/accuracy/experiments/scale-w64kd-final-sc-lanes-leakfree/run/epoch-25/run/E89-F65e-F77a/result.json",
+   "start": "<workspace>/wt/sm101/artifacts/small-model/sm101-c1-e38-st",
+   "start_master_sha256": "e6ea69124af00a3dcf2325047ae34580aaf96051d963ff6130dd06bde02d396c",
+   "architecture": "w64-c1",
+   "sm77": "users / order / schedule from run epoch 25; start weights <workspace>/wt/sm101/artifacts/small-model/sm101-c1-e38-st/run/E89-F65e-F77a",
+   "trimmed_unlabelled_tails": [
+    {
+     "user_id": 5599,
+     "from": 32782,
+     "to": 32768,
+     "dropped_reviews": 14
+    }
+   ],
+   "training_reviews_after_trims": 581942724
+  },
+  "decay_protocol_full_run": {
+   "epoch": 25,
+   "evaluate": false,
+   "init_master": "<workspace>/wt/sm101/artifacts/small-model/sm101-c1-e38st-st-dec-1ep32k-muon/attempts/attempt-2/run/E89-F65e-F77a/snapshots/users-01200/master.pth",
+   "update_offset": 850061,
+   "lr_schedule": {
+    "decay_start": 0.0,
+    "decay_end": 1.0,
+    "shape": "one_minus_sin",
+    "final": 0.0
+   },
+   "benchmark_db": "<workspace>/wt/sm72s/artifacts/accuracy/experiments/scale-w64kd-final-sc-lanes-leakfree/run/label-db",
+   "evaluation_set": "none",
+   "snapshot_users": 400,
+   "control_dir": "<workspace>/wt/sm101/artifacts/small-model/sm101-c1-e38st-st-dec-1ep32k-muon/control",
+   "optimizer_state": "snapshot",
+   "init_optimizer": "<workspace>/wt/sm101/artifacts/small-model/sm101-c1-e38st-st-dec-1ep32k-muon/attempts/attempt-2/run/E89-F65e-F77a/snapshots/users-01200/optimizer.pth",
+   "lr_resume": {
+    "total_reviews": 581942724,
+    "reviews_offset": 290914508
+   },
+   "resumed": {
+    "done_users": 4094,
+    "from": "<workspace>/wt/sm101/artifacts/small-model/sm101-c1-e38st-st-dec-1ep32k-muon/attempts/attempt-2/run/E89-F65e-F77a/snapshots/users-01200",
+    "attempts": [
+     "attempt-1",
+     "attempt-2"
+    ]
+   }
+  }
+ },
+ "evaluation": {
+  "scoring": "leak-free inputs (deleted cards: neighbour), int8 per-channel weights + int8 card/note state (w8+s8), review-weighted LogLoss, paired user bootstrap 2,000 resamples seed 0, 95% intervals",
+  "inputs": {
+   "e2s-query": "show-time intervals: every query asked before the answer uses the interval from the card's previous answer to the moment the card is shown (what the Anki fork queries)",
+   "normal": "the published answer-to-answer intervals on every row"
+  },
+  "stage": "the show-time instant-only model, stage 2 (SM98)'s epoch 35 cut to one card layer (w64-c1) + 3 constant-LR instant-only epochs (36-38) on show-time inputs + the release's one-epoch 32k Muon cool-down on show-time inputs (curve_loss_weight 0.0)",
+  "rule_pool_722": {
+   "unit": "points = % of the big model (1 leak-free epoch) normal-input instant LogLoss 0.275757, 722 users of the 732 set",
+   "rule": "go = A (new - big, normal inputs, instant: 95% CI upper end <= +0.40 points) AND B (new - SM92, show-time inputs, instant: 95% CI below 0 and points <= -0.05)",
+   "verdict": "go",
+   "A new - the big model (1 leak-free epoch), normal inputs": {
+    "instant": {
+     "new": 0.276578,
+     "ref": 0.275757,
+     "delta": 0.000821,
+     "delta_ci": [
+      0.000731,
+      0.000911
+     ],
+     "points": 0.298,
+     "points_ci": [
+      0.268,
+      0.329
+     ],
+     "users_better": 117,
+     "users_worse": 604
+    }
+   },
+   "B new - the show-time retrain of the release (SM92), show-time inputs": {
+    "instant": {
+     "new": 0.27672,
+     "ref": 0.276876,
+     "delta": -0.000156,
+     "delta_ci": [
+      -0.000218,
+      -9.4e-05
+     ],
+     "points": -0.057,
+     "points_ci": [
+      -0.079,
+      -0.034
+     ],
+     "users_better": 460,
+     "users_worse": 261
+    }
+   },
+   "new - the show-time instant-only small model (SM96), show-time inputs": {
+    "instant": {
+     "new": 0.27672,
+     "ref": 0.276287,
+     "delta": 0.000433,
+     "delta_ci": [
+      0.000377,
+      0.000488
+     ],
+     "points": 0.157,
+     "points_ci": [
+      0.137,
+      0.178
+     ],
+     "users_better": 140,
+     "users_worse": 580
+    }
+   },
+   "new - the show-time instant-only model, stage 2 (SM98), show-time inputs": {
+    "instant": {
+     "new": 0.27672,
+     "ref": 0.276191,
+     "delta": 0.000529,
+     "delta_ci": [
+      0.000469,
+      0.000589
+     ],
+     "points": 0.192,
+     "points_ci": [
+      0.171,
+      0.215
+     ],
+     "users_better": 114,
+     "users_worse": 607
+    }
+   },
+   "new - the release (SM63, sm72e25), show-time inputs": {
+    "instant": {
+     "new": 0.27672,
+     "ref": 0.277718,
+     "delta": -0.000999,
+     "delta_ci": [
+      -0.001294,
+      -0.000766
+     ],
+     "points": -0.362,
+     "points_ci": [
+      -0.463,
+      -0.284
+     ],
+     "users_better": 574,
+     "users_worse": 148
+    }
+   },
+   "new - the show-time instant-only small model (SM96), normal inputs": {
+    "instant": {
+     "new": 0.276578,
+     "ref": 0.276134,
+     "delta": 0.000444,
+     "delta_ci": [
+      0.000388,
+      0.0005
+     ],
+     "points": 0.161,
+     "points_ci": [
+      0.141,
+      0.182
+     ],
+     "users_better": 140,
+     "users_worse": 582
+    }
+   },
+   "new - the show-time instant-only model, stage 2 (SM98), normal inputs": {
+    "instant": {
+     "new": 0.276578,
+     "ref": 0.27606,
+     "delta": 0.000518,
+     "delta_ci": [
+      0.000459,
+      0.000579
+     ],
+     "points": 0.188,
+     "points_ci": [
+      0.167,
+      0.211
+     ],
+     "users_better": 119,
+     "users_worse": 603
+    }
+   },
+   "new - the show-time retrain of the release (SM92), normal inputs": {
+    "instant": {
+     "new": 0.276578,
+     "ref": 0.276757,
+     "delta": -0.000178,
+     "delta_ci": [
+      -0.000242,
+      -0.000115
+     ],
+     "points": -0.065,
+     "points_ci": [
+      -0.088,
+      -0.042
+     ],
+     "users_better": 472,
+     "users_worse": 249
+    }
+   },
+   "new on show-time inputs - the big model (1 leak-free epoch) on normal inputs": {
+    "instant": {
+     "new": 0.27672,
+     "ref": 0.275757,
+     "delta": 0.000962,
+     "delta_ci": [
+      0.000855,
+      0.001072
+     ],
+     "points": 0.349,
+     "points_ci": [
+      0.314,
+      0.387
+     ],
+     "users_better": 108,
+     "users_worse": 614
+    }
+   },
+   "the new model's show-time cost (show-time minus normal inputs)": {
+    "instant": {
+     "new": 0.27672,
+     "ref": 0.276578,
+     "delta": 0.000142,
+     "delta_ci": [
+      0.000107,
+      0.000181
+     ],
+     "points": 0.051,
+     "points_ci": [
+      0.039,
+      0.065
+     ],
+     "users_better": 186,
+     "users_worse": 511
+    }
+   }
+  },
+  "validation_1500": {
+   "unit": "% of the reference's LogLoss on the same users, show-time inputs",
+   "users": 1487,
+   "new - the release (SM63, sm72e25)": {
+    "instant": {
+     "new": 0.279693,
+     "ref": 0.2806,
+     "delta": -0.000906,
+     "delta_ci": [
+      -0.001062,
+      -0.000776
+     ],
+     "points": -0.323,
+     "points_ci": [
+      -0.374,
+      -0.282
+     ],
+     "users_better": 1216,
+     "users_worse": 271
+    }
+   },
+   "new - SM96": {
+    "instant": {
+     "new": 0.279693,
+     "ref": 0.279249,
+     "delta": 0.000444,
+     "delta_ci": [
+      0.000391,
+      0.000502
+     ],
+     "points": 0.158,
+     "points_ci": [
+      0.14,
+      0.179
+     ],
+     "users_better": 333,
+     "users_worse": 1152
+    }
+   },
+   "new - SM98": {
+    "instant": {
+     "new": 0.279693,
+     "ref": 0.279162,
+     "delta": 0.000531,
+     "delta_ci": [
+      0.000475,
+      0.000592
+     ],
+     "points": 0.189,
+     "points_ci": [
+      0.17,
+      0.211
+     ],
+     "users_better": 244,
+     "users_worse": 1240
+    }
+   }
+  },
+  "curve_head": "untrained (every curve loss term at weight 0; curve LogLoss +59.992% of the release's on the 1,500 validation users): never use p_curve, intervals or S90 from this model"
+ },
+ "parity": {
+  "checkpoint": "<workspace>/wt/sm101/artifacts/small-model/sm101-c1-e38st-st-dec-1ep32k-muon/run/E89-F65e-F77a/master.pth",
+  "users": [
+   4676,
+   1745,
+   516
+  ],
+  "dtype": "float32",
+  "variants": {
+   "fp32": {
+    "max_abs_dp_labelled": {
+     "p_curve": 2.980232238769531e-07,
+     "p_imm": 1.1920928955078125e-06,
+     "p_rating": 1.2814998626708984e-06
+    },
+    "per_user": [
+     {
+      "user": 4676,
+      "reviews": 3716,
+      "labelled": 5676,
+      "torch_seconds": 2.29,
+      "numpy_seconds": 1.96,
+      "p_curve": 2.980232238769531e-07,
+      "p_curve_all_positions": 2.980232238769531e-07,
+      "p_imm": 4.172325134277344e-07,
+      "p_imm_all_positions": 4.172325134277344e-07,
+      "p_rating": 1.0132789611816406e-06,
+      "p_rating_all_positions": 1.0132789611816406e-06
+     },
+     {
+      "user": 1745,
+      "reviews": 4144,
+      "labelled": 7410,
+      "torch_seconds": 3.38,
+      "numpy_seconds": 2.01,
+      "p_curve": 2.384185791015625e-07,
+      "p_curve_all_positions": 2.384185791015625e-07,
+      "p_imm": 6.556510925292969e-07,
+      "p_imm_all_positions": 6.556510925292969e-07,
+      "p_rating": 7.152557373046875e-07,
+      "p_rating_all_positions": 7.152557373046875e-07
+     },
+     {
+      "user": 516,
+      "reviews": 4601,
+      "labelled": 6498,
+      "torch_seconds": 2.69,
+      "numpy_seconds": 1.94,
+      "p_curve": 2.980232238769531e-07,
+      "p_curve_all_positions": 2.980232238769531e-07,
+      "p_imm": 1.1920928955078125e-06,
+      "p_imm_all_positions": 1.1920928955078125e-06,
+      "p_rating": 1.2814998626708984e-06,
+      "p_rating_all_positions": 1.2814998626708984e-06
+     }
+    ],
+    "pass_1e-5": true
+   },
+   "w8": {
+    "max_abs_dp_labelled": {
+     "p_curve": 2.980232238769531e-07,
+     "p_imm": 1.0132789611816406e-06,
+     "p_rating": 1.0132789611816406e-06
+    },
+    "per_user": [
+     {
+      "user": 4676,
+      "reviews": 3716,
+      "labelled": 5676,
+      "torch_seconds": 2.88,
+      "numpy_seconds": 1.91,
+      "p_curve": 2.384185791015625e-07,
+      "p_curve_all_positions": 2.384185791015625e-07,
+      "p_imm": 3.5762786865234375e-07,
+      "p_imm_all_positions": 3.5762786865234375e-07,
+      "p_rating": 7.152557373046875e-07,
+      "p_rating_all_positions": 7.152557373046875e-07
+     },
+     {
+      "user": 1745,
+      "reviews": 4144,
+      "labelled": 7410,
+      "torch_seconds": 3.27,
+      "numpy_seconds": 2.01,
+      "p_curve": 2.384185791015625e-07,
+      "p_curve_all_positions": 2.384185791015625e-07,
+      "p_imm": 5.960464477539062e-07,
+      "p_imm_all_positions": 5.960464477539062e-07,
+      "p_rating": 7.152557373046875e-07,
+      "p_rating_all_positions": 7.152557373046875e-07
+     },
+     {
+      "user": 516,
+      "reviews": 4601,
+      "labelled": 6498,
+      "torch_seconds": 2.53,
+      "numpy_seconds": 1.72,
+      "p_curve": 2.980232238769531e-07,
+      "p_curve_all_positions": 2.980232238769531e-07,
+      "p_imm": 1.0132789611816406e-06,
+      "p_imm_all_positions": 1.0132789611816406e-06,
+      "p_rating": 1.0132789611816406e-06,
+      "p_rating_all_positions": 1.0132789611816406e-06
+     }
+    ],
+    "pass_1e-5": true
+   }
+  }
+ },
+ "files": {
+  "architecture.json": {
+   "bytes": 15038,
+   "sha256": "49650457329d43ff7f3f04f68926e371d49060699142cfec9497cb759ac7a75f"
+  },
+  "master.pth": {
+   "bytes": 1398567,
+   "sha256": "d1408ae9c883e894f98bd8fe85aeb804aa5f66db7d11b02e4da5a7b834d7a149"
+  },
+  "parity.json": {
+   "bytes": 3171,
+   "sha256": "47dd64fab0422922047c74e402046ad1db8a836d6817a23eb048b1bb20b78cf9"
+  },
+  "weights.f32.bin": {
+   "bytes": 1270749,
+   "sha256": "2faacb5b913bcfbdc0e363532d533e3bcff6872c8358f1ef753ca87f9d2a60fd"
+  },
+  "weights.int8.bin": {
+   "bytes": 409483,
+   "sha256": "77703dd2f2a21a1bcadaedfed1cec93ee0fd6fd6d3c840be221e72b5e1c05066"
+  }
+ },
+ "provenance": {
+  "captured_utc": "2026-11-11T09:45:09.183851+00:00",
+  "git_commit": "faf07fdf2e39e23e3a1115ecca499627c8c0bdb8",
+  "git_dirty": false,
+  "git_status_porcelain_z": "",
+  "source_tree_sha256": "294861fa6af22dfb3fdd1ad17c85d45ace45625223a57907998e9d3e198c9a80",
+  "source_archive": "artifacts/sources/experiment-sources/294861fa6af22dfb3fdd1ad17c85d45ace45625223a57907998e9d3e198c9a80/source.zip",
+  "source_paths": [
+   "rwkv",
+   "rwkv-small",
+   "scripts",
+   "configs",
+   "pyproject.toml",
+   "uv.lock",
+   "justfile",
+   "upstream.json"
+  ]
+ },
+ "use": {
+  "heads": [
+   "instant",
+   "rating"
+  ],
+  "rule": "instant-only model: trained with curve_loss_weight 0.0 and show_time_intervals from the show-time instant-only model, stage 2 (SM98)'s epoch 35 cut to one card layer (epochs 36-38 + the release's one-epoch 32k Muon cool-down). Its instant / rating head (p_imm, p_rating) is the product; its curve head was never trained and must not schedule. In the Anki fork it is the 'Tiny' RWKV-Instant model: alone without RWKV-Curve, or beside the release (sm72e25), which keeps the curve, intervals, S90 and the answer-time head.",
+  "architecture": "w64-c1: the small model (w64) with 1 card layer instead of 2 (stream card_id n_layers 1, layer_steps without (0, 1)); every other stream and dimension unchanged"
+ },
+ "inputs": {
+  "show_time_intervals": true,
+  "rule": "trained with the track option show_time_intervals: the instant query row of review j and the curve query for review j use floor(max(elapsed_seconds_j - duration_j / 1000, 0)) seconds (previous answer to the moment review j is shown), its sin / cos, and the cumulative interval = the card's earlier answer-to-answer intervals + that show-time interval; update rows keep the answer-to-answer interval and the cumulative interval including it. The test vectors are built this way (testvectors/make_testvectors.py, the held-out scorer's --inputs e2s-query rows), as for sm92 and sm98.",
+  "leak_free": "RWKV_DELETED_CARDS=neighbour: missing-ID flags (features 13-15) always 0 (INTEGRATION.md 6.9)"
+ }
+}

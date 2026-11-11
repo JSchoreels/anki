@@ -29,6 +29,13 @@ import { fsrsParamDiagnostics } from "./fsrs-param-diagnostics";
 
 export type DeckOptionsId = bigint;
 
+/** RWKV model sizes, stored in the profile's model key (qt/aqt/rwkv_model.py). */
+export const RWKV_MODEL_BIG = "legacy";
+export const RWKV_MODEL_SMALL = "sm72e25";
+export const RWKV_MODEL_TINY = "tiny";
+/** Older small models: still run until a save, which stores Small instead. */
+export const RWKV_OLDER_SMALL_MODELS = ["sm40", "sm36", "sm55", "sm56", "sm72", "sm72e20"];
+
 export interface ConfigWithCount {
     config: DeckConfig;
     useCount: number;
@@ -123,7 +130,7 @@ export class DeckOptionsState {
         this.currentDeck = data.currentDeck!;
         this.rwkvProfileSettings = writable(
             data.rwkvProfileSettings ?? new RwkvProfileSettings({
-                model: "sm72e25",
+                model: RWKV_MODEL_SMALL,
                 statePrecision: "cards_int4_notes_int8",
             }),
         );
@@ -394,9 +401,9 @@ export class DeckOptionsState {
         const rwkvProfileSettings = new RwkvProfileSettings(get(this.rwkvProfileSettings));
         if (
             mode !== UpdateDeckConfigsMode.COMPUTE_ALL_PARAMS
-            && ["sm40", "sm36", "sm55", "sm56", "sm72", "sm72e20"].includes(rwkvProfileSettings.model)
+            && RWKV_OLDER_SMALL_MODELS.includes(rwkvProfileSettings.model)
         ) {
-            rwkvProfileSettings.model = "sm72e25";
+            rwkvProfileSettings.model = RWKV_MODEL_SMALL;
         }
         return {
             targetDeckId: this.targetDeckId,

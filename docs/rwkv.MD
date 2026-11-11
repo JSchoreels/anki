@@ -64,29 +64,44 @@ it is turned off again.
 
 ## Bundled RWKV Models
 
-Deck Options → RWKV → **Advanced** offers **Use Smaller Model** for the entire
-local profile. The Legacy big model (2,762,884 parameters; since 2026-11-10 the big
-model (1 leak-free epoch), see below) and the
-331,511-parameter small models SM40, SM36 Muon, SM55, SM56, the small model,
-leak-free (SM72, cool-down from epoch 15, from epoch 20 and from epoch 25) and the
-show-time retrain of the release (SM92) are bundled. Only the selected model and its state are loaded.
+Deck Options → RWKV → **Advanced** offers three model sizes for the entire
+local profile (since 2026-11-11, replacing the **Use Smaller Model** switch):
 
-The switch is on by default and selects **New - Smaller Model**, the small model,
-leak-free, cool-down from epoch 25 (SM63, profile key `sm72e25`), when on and
-**Legacy - Bigger Model** when off. An explicitly saved Legacy selection loads
-with the switch off. SM40, SM36, SM55, SM56 and the three SM72 cool-downs are no
-longer offered in the UI.
-An inline legend directly below the switch explains both choices, their
-profile-wide scope and how to apply changes. It is visible whenever Advanced is open.
+| Size | Profile value | RWKV-Curve, intervals, S90, answer time | RWKV-Instant |
+| --- | --- | --- | --- |
+| **Big** | `legacy` | the big model (1 leak-free epoch) | the same model |
+| **Small** (default) | `sm72e25` | the default small model (SM63) | the show-time instant-only model, stage 2 (SM98), see below |
+| **Tiny** | `tiny` | the default small model (SM63) | the smaller instant-only model (SM101, one card layer), see below |
+
+Tiny only shrinks RWKV-Instant's state: it is Small with the smaller instant-only
+model (SM101) in the place of the show-time instant-only model, stage 2 (SM98), so
+RWKV-Curve, the intervals, S90, the workload simulation and the answer-time
+estimate are exactly Small's. The big model (2,762,884 parameters; since 2026-11-10
+the big model (1 leak-free epoch), see below), the 331,511-parameter small models
+SM40, SM36 Muon, SM55, SM56, the small model, leak-free (SM72, cool-down from epoch
+15, from epoch 20 and from epoch 25), the show-time retrain of the release (SM92),
+the instant-only models SM57 and SM98 and the 311,786-parameter smaller
+instant-only model (SM101) are bundled. Only the models the size and the presets'
+schedulers need, and their states, are loaded.
+
+Each size is a radio button with a one-line description; SM40, SM36, SM55, SM56
+and the three SM72 cool-downs are not offered and show as Small (they switch to
+Small on save). A profile that holds the show-time retrain of the release (SM92)
+sees it as a fourth, preserved choice until it picks a size.
+The legend below the choices explains the one-model opt-out, the profile-wide
+scope and how to apply changes. It is visible whenever Advanced is open.
 Its links open the upstream [Model Factory results](https://jschoreels.github.io/anki-rwkv/factory.html)
 and the matched five-model backup comparison in the SM56 report, which uses f32 compute and mixed
 INT4-card/INT8-note storage.
 
-The profile key is `rwkvModel`, with `legacy`, `sm40`, `sm36`, `sm55`, `sm56`, `sm72`, `sm72e20`, `sm72e25` and `sm92` as
-supported values. Missing or unsupported values resolve to `sm72e25` in existing and new profiles.
+The profile key is `rwkvModel`, with `legacy`, `sm40`, `sm36`, `sm55`, `sm56`, `sm72`, `sm72e20`, `sm72e25`, `sm92` and `tiny` as
+supported values (`RWKV_MODELS`; the three sizes are `RWKV_MODEL_SIZES`). Big and Small keep the values earlier
+builds stored, so existing profiles keep their choice with no migration step; an earlier build reads `tiny` as
+unknown and falls back to Small. Missing or unsupported values (including the model keys `sm57`, `sm98` and `sm101`,
+which are never a profile value) resolve to `sm72e25` in existing and new profiles.
 Opening Deck Options does not change a saved choice. On a successful ordinary
-Deck Options save, older `sm40`, `sm36`, `sm55`, `sm56`, `sm72` and `sm72e20` choices switch to `sm72e25`; `legacy`,
-`sm72e25` and `sm92` are preserved. The older models remain supported by the runtime. Profile
+Deck Options save, older `sm40`, `sm36`, `sm55`, `sm56`, `sm72` and `sm72e20` choices switch to `sm72e25` (Small); `legacy`,
+`sm72e25`, `tiny` and `sm92` are preserved. Until that save the older models keep running alone as before. The older models remain supported by the runtime. Profile
 creation explicitly stores `sm72e25`. Neither model choice nor state precision is synced.
 The model control has moved from Preferences into Advanced in the RWKV card.
 Storage precision is hidden and keeps its saved value. Use Save to keep model
@@ -138,14 +153,21 @@ resident compute representation.
 
 The native runtime compiles the shared `rslib/src/rwkv/engine.rs` source for both
 fixed architectures and dispatches at its public operation boundary. Tensor loops
-retain their model-specific constant dimensions. `rwkv-sm40` selects the primary
+retain their model-specific constant dimensions. The small engine also runs the
+smaller instant-only model (SM101): its weights have no `rwkv_modules.0.blocks.1.`
+tensor, so the loaded model takes the tiny layer plan (`TINY_MODULE_LAYERS`
+1/4/1/3/3 and `TINY_LAYER_STEPS`, the 13 small-model steps without card layer 1)
+instead of the engine's; every width, head and kernel is the small model's, and only
+the per-model step list differs (a `&'static` slice on the model instead of the
+constant). `ModelKind` checks the card layers of the weights it loads (`sm101`: 1,
+every other small key: 2) and refuses a mismatch. `rwkv-sm40` selects the primary
 engine used by the offline benchmark API, and `--no-default-features` selects
-Legacy for those comparisons; all nine models are available at runtime in
-either build. SM40, SM36, SM55, SM56, the three SM72 cool-downs and SM92 share the small architecture's specialization;
+Legacy for those comparisons; all bundled models are available at runtime in
+either build. All non-Legacy models share the small architecture's specialization;
 only two engines are compiled. The standard format/check targets also cover the
 included engine source.
 
-SM40, SM36, SM55, SM56, the three SM72 cool-downs and SM92 have width 64, four 16-wide heads and card/deck/note/preset/user depths
+SM40, SM36, SM55, SM56, the three SM72 cool-downs, SM92, SM57 and SM98 have width 64, four 16-wide heads and card/deck/note/preset/user depths
 2/4/1/3/3. Its 13 layer steps are interleaved, each stream carries its own
 layer-zero value residual, and only four layers retain channel mixers. Its input
 feature 22 is zeroed in every inference path. The feature builder's timing,
@@ -244,6 +266,25 @@ integration report](rwkv-sm98-2026-11-10.MD) and the [instant model for RWKV-Ins
 (SM93) integration report](rwkv-sm93-2026-11-07.MD) for the state layouts, tests and
 the memory and CPU measurements (paired: about 2× state and answer-replay CPU, queue
 scoring unchanged).
+
+### Tiny: the Smaller Instant-Only Model (SM101)
+
+Since 2026-11-11 the **Tiny** size runs RWKV-Instant on the smaller instant-only
+model (SM101, folder `qt/aqt/rwkv_inference/sm101/`, model kind `sm101`, never a
+profile's `rwkvModel` value) exactly where Small runs the show-time instant-only
+model, stage 2 (SM98): alone when no preset uses RWKV-Curve, beside the small model
+(SM63) when presets use both. The table above applies with SM101 in SM98's place;
+RWKV-Curve, intervals, S90, the workload simulation and the answer-time estimate are
+Small's. SM101 is SM98's epoch 35 cut to one card layer (the small architecture with
+card depth 1, 311,786 parameters), three more instant-only epochs and the release's
+one-epoch 32k Muon cool-down, all on show-time inputs; its curve head is untrained.
+Its card state is one layer: at the default storage precision 2,622 B per card and
+note instead of SM98's 3,530 B (int8: 3,134 B instead of 4,554 B). Upstream instant
+LogLoss on show-time inputs (722 users of the 732-user set, % of the big model (1
+leak-free epoch)'s normal-input instant LogLoss): SM101 minus SM98 +0.192% [+0.171,
++0.215], minus the show-time retrain (SM92) −0.057% [−0.079, −0.034]. The replay
+keys of SM101 alone (`model` `sm101`) and of its pair (`instantModel` `sm101`) are
+their own. See the [Big / Small / Tiny integration report](rwkv-sm101-2026-11-11.MD).
 
 ### Show-Time Retrain of the Release (SM92)
 

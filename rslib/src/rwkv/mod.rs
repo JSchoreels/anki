@@ -28,6 +28,8 @@ mod checkpoint_compression_bench;
 #[cfg(all(test, not(feature = "rwkv-sm40")))]
 #[path = "legacy_tests.rs"]
 mod legacy_tests;
+#[cfg(test)]
+mod model_size_bench;
 #[cfg(all(test, feature = "rwkv-sm40"))]
 #[path = "sm40_tests.rs"]
 mod sm40_tests;

@@ -14,14 +14,24 @@ from aqt.rwkv_model import (
     RWKV_INSTANT_MODEL,
     RWKV_INSTANT_ONLY_MODEL,
     RWKV_INSTANT_ONLY_MODELS,
+    RWKV_MODEL_BIG,
     RWKV_MODEL_FILES,
+    RWKV_MODEL_SIZES,
+    RWKV_MODEL_SMALL,
+    RWKV_MODEL_TINY,
     RWKV_MODELS,
     RWKV_SPECIALIZED_INSTANT_MODEL,
+    RWKV_TINY_INSTANT_MODEL,
     RwkvRuntimeModels,
+    curve_model_for_choice,
     model_for_profile,
     runtime_models,
     single_model_for_profile,
 )
+
+# Profile values that are also one runtime model key (every choice but Tiny,
+# which runtime_models() resolves to the default small model and SM101).
+RUNTIME_MODEL_KEYS = tuple(model for model in RWKV_MODELS if model != RWKV_MODEL_TINY)
 
 
 @pytest.mark.parametrize(
@@ -41,6 +51,10 @@ from aqt.rwkv_model import (
         ({"rwkvModel": "sm72e20"}, "sm72e20"),
         ({"rwkvModel": "sm72e25"}, "sm72e25"),
         ({"rwkvModel": "sm92"}, "sm92"),
+        ({"rwkvModel": "tiny"}, "tiny"),
+        # Model keys that are never a profile choice fall back to Small.
+        ({"rwkvModel": "sm98"}, "sm72e25"),
+        ({"rwkvModel": "sm101"}, "sm72e25"),
     ],
 )
 def test_model_for_profile_defaults_to_sm72e25_and_preserves_explicit_choices(
@@ -191,7 +205,7 @@ def test_new_profiles_save_sm72e25_without_rewriting_existing_profiles():
     manager.db.execute.assert_not_called()
 
 
-@pytest.mark.parametrize("active_model", RWKV_MODELS)
+@pytest.mark.parametrize("active_model", RUNTIME_MODEL_KEYS)
 @pytest.mark.parametrize(
     "saved_model,filename",
     [
@@ -204,6 +218,8 @@ def test_new_profiles_save_sm72e25_without_rewriting_existing_profiles():
         ("sm72e20", "sm72e20/weights.f32.bin"),
         ("sm72e25", "sm72e25/weights.f32.bin"),
         ("sm92", "sm92/weights.f32.bin"),
+        # Tiny without RWKV-Instant in use: the default small model alone.
+        ("tiny", "sm72e25/weights.f32.bin"),
     ],
 )
 def test_model_choice_waits_for_profile_reopen_and_keeps_precision_independent(
@@ -221,7 +237,7 @@ def test_model_choice_waits_for_profile_reopen_and_keeps_precision_independent(
     assert rwkv_scheduler._rwkv_model() == active_model
     assert rwkv_scheduler._rwkv_state_precision() == "f32"
     monkeypatch.setattr(rwkv_scheduler, "_reviewer_backend", None)
-    assert rwkv_scheduler._rwkv_model() == saved_model
+    assert rwkv_scheduler._rwkv_model() == curve_model_for_choice(saved_model)
     assert rwkv_scheduler._rwkv_state_precision() == "int8"
     root = Path(rwkv_scheduler.__file__).parent / "rwkv_inference"
     assert rwkv_scheduler.embedded_rwkv_model_path() == root / filename
@@ -240,9 +256,10 @@ def test_model_choice_waits_for_profile_reopen_and_keeps_precision_independent(
         ("sm72e20", "sm72e20"),
         ("sm72e25", "sm72e25"),
         ("sm92", "sm92"),
+        ("tiny", "sm72e25"),
     ],
 )
-@pytest.mark.parametrize("active_model", RWKV_MODELS)
+@pytest.mark.parametrize("active_model", RUNTIME_MODEL_KEYS)
 @pytest.mark.parametrize(
     "saved_precision, replace_for_precision",
     [
@@ -320,14 +337,15 @@ def test_profile_model_and_precision_reach_the_native_backend(
     )
     assert rwkv_scheduler.configure_reviewer_backend_from_environment()
     backend = rwkv_scheduler._reviewer_backend
-    assert backend.model_name == (model or "sm72e25")
+    # No preset uses RWKV-Instant here: Tiny runs the default small model.
+    assert backend.model_name == curve_model_for_choice(model or "sm72e25")
     assert backend.state_precision == (
         precision if precision not in (None, "int4") else "cards_int4_notes_int8"
     )
 
 
-@pytest.mark.parametrize("active_model", RWKV_MODELS)
-@pytest.mark.parametrize("saved_model", RWKV_MODELS)
+@pytest.mark.parametrize("active_model", RUNTIME_MODEL_KEYS)
+@pytest.mark.parametrize("saved_model", RUNTIME_MODEL_KEYS)
 def test_cache_replay_identity_tracks_active_model_until_profile_reopen(
     monkeypatch, active_model, saved_model
 ):
@@ -418,6 +436,141 @@ def test_instant_only_model_stays_selectable():
     assert RwkvRuntimeModels("sm72e25", "sm57").curve_model == "sm72e25"
 
 
+def test_tiny_instant_model_is_sm101_and_instant_only():
+    # The smaller instant-only model (SM101): bundled, never a profile's model
+    # key (the profile stores "tiny"), alone it serves no curve.
+    assert RWKV_TINY_INSTANT_MODEL == "sm101"
+    assert RWKV_TINY_INSTANT_MODEL in RWKV_INSTANT_ONLY_MODELS
+    assert RWKV_MODEL_FILES["sm101"] == Path("sm101/weights.f32.bin")
+    assert "sm101" not in RWKV_MODELS
+    assert RwkvRuntimeModels("sm101").curve_model is None
+    assert RwkvRuntimeModels("sm72e25", "sm101").curve_model == "sm72e25"
+    assert RwkvRuntimeModels("sm72e25", "sm101").instant_scheduler_model == "sm101"
+    root = Path(rwkv_scheduler.__file__).parent / "rwkv_inference"
+    assert (root / RWKV_MODEL_FILES["sm101"]).exists()
+    assert (root / "sm101" / "architecture.json").exists()
+
+
+def test_model_sizes_are_big_small_tiny():
+    # Big and Small keep the values earlier builds stored.
+    assert RWKV_MODEL_SIZES == ("legacy", "sm72e25", "tiny")
+    assert (RWKV_MODEL_BIG, RWKV_MODEL_SMALL, RWKV_MODEL_TINY) == RWKV_MODEL_SIZES
+    assert set(RWKV_MODEL_SIZES) <= set(RWKV_MODELS)
+    # Only Tiny is not itself a model key.
+    assert [curve_model_for_choice(m) for m in RWKV_MODEL_SIZES] == [
+        "legacy",
+        "sm72e25",
+        "sm72e25",
+    ]
+    assert all(curve_model_for_choice(m) == m for m in RUNTIME_MODEL_KEYS)
+
+
+# The three sizes x the schedulers in use x the one-model opt-out.
+_SIZE_RUNTIMES = {
+    # Big: the big model alone, always.
+    "legacy": {
+        "instant only": ("legacy", None),
+        "both": ("legacy", None),
+        "curve only": ("legacy", None),
+        "neither": ("legacy", None),
+        "both, opt-out": ("legacy", None),
+        "instant only, opt-out": ("legacy", None),
+    },
+    # Small: SM98 alone for RWKV-Instant without RWKV-Curve, the pair for
+    # both, the small model (SM63) alone otherwise and with the opt-out.
+    "sm72e25": {
+        "instant only": ("sm98", None),
+        "both": ("sm72e25", "sm98"),
+        "curve only": ("sm72e25", None),
+        "neither": ("sm72e25", None),
+        "both, opt-out": ("sm72e25", None),
+        "instant only, opt-out": ("sm98", None),
+    },
+    # Tiny: the same with SM101 in SM98's place; the curve stays on SM63.
+    "tiny": {
+        "instant only": ("sm101", None),
+        "both": ("sm72e25", "sm101"),
+        "curve only": ("sm72e25", None),
+        "neither": ("sm72e25", None),
+        "both, opt-out": ("sm72e25", None),
+        "instant only, opt-out": ("sm101", None),
+    },
+}
+_USE_CASES = {
+    "instant only": (True, False, False),
+    "both": (True, True, False),
+    "curve only": (False, True, False),
+    "neither": (False, False, False),
+    "both, opt-out": (True, True, True),
+    "instant only, opt-out": (True, False, True),
+}
+
+
+@pytest.mark.parametrize("size", RWKV_MODEL_SIZES)
+@pytest.mark.parametrize("case", list(_USE_CASES))
+def test_model_sizes_pick_their_runtime_models(size, case):
+    instant_used, curve_used, single = _USE_CASES[case]
+    models = runtime_models(
+        size, instant_used=instant_used, curve_used=curve_used, single_model=single
+    )
+    assert models == RwkvRuntimeModels(*_SIZE_RUNTIMES[size][case])
+    # The curve never comes from an instant-only model, and there is one
+    # exactly when a preset uses RWKV-Curve or nothing uses RWKV-Instant.
+    if size != "legacy" and instant_used and not curve_used:
+        assert models.curve_model is None
+    else:
+        assert models.curve_model == curve_model_for_choice(size)
+    # Tiny differs from Small only in RWKV-Instant's model.
+    small = runtime_models(
+        "sm72e25",
+        instant_used=instant_used,
+        curve_used=curve_used,
+        single_model=single,
+    )
+    if size == "tiny":
+        assert models.curve_model == small.curve_model
+        assert (models == small) == (models.instant_scheduler_model == "sm72e25")
+
+
+@pytest.mark.parametrize(
+    "stored,choice,runtime_both",
+    [
+        # Big keeps the big model (1 leak-free epoch) alone.
+        ("legacy", "legacy", ("legacy", None)),
+        # Unset, the old default key and unknown values: Small.
+        (None, "sm72e25", ("sm72e25", "sm98")),
+        ("sm72e25", "sm72e25", ("sm72e25", "sm98")),
+        ("unknown", "sm72e25", ("sm72e25", "sm98")),
+        ("tiny", "tiny", ("sm72e25", "sm101")),
+        # Older small models keep running alone until a Deck Options save
+        # stores Small (ts/routes/deck-options/lib.ts); SM92 is preserved.
+        ("sm40", "sm40", ("sm40", None)),
+        ("sm36", "sm36", ("sm36", None)),
+        ("sm55", "sm55", ("sm55", None)),
+        ("sm56", "sm56", ("sm56", None)),
+        ("sm72", "sm72", ("sm72", None)),
+        ("sm72e20", "sm72e20", ("sm72e20", None)),
+        ("sm92", "sm92", ("sm92", None)),
+    ],
+)
+def test_existing_profiles_migrate_to_the_model_sizes(stored, choice, runtime_both):
+    profile = {} if stored is None else {"rwkvModel": stored}
+    assert model_for_profile(profile) == choice
+    owner = _config_owner(_deck_configs(curve=True, instant=True), profile)
+    assert rwkv_scheduler._rwkv_runtime_models_for_profile(owner) == (
+        RwkvRuntimeModels(*runtime_both)
+    )
+
+
+@pytest.mark.parametrize("size", RWKV_MODEL_SIZES)
+def test_custom_model_path_replaces_the_choice_full_model(monkeypatch, size):
+    monkeypatch.setenv("ANKI_RWKV_MODEL_PATH", "custom.bin")
+    owner = _config_owner(_deck_configs(curve=True, instant=True), {"rwkvModel": size})
+    assert rwkv_scheduler._rwkv_runtime_models_for_profile(owner) == (
+        RwkvRuntimeModels(curve_model_for_choice(size))
+    )
+
+
 def test_specialized_instant_model_is_sm98_and_instant_only():
     # The show-time instant-only model, stage 2 (SM98): bundled, never a
     # profile's model choice, and alone it serves no curve.
@@ -429,11 +582,13 @@ def test_specialized_instant_model_is_sm98_and_instant_only():
     assert RwkvRuntimeModels("sm72e25", "sm98").curve_model == "sm72e25"
 
 
-@pytest.mark.parametrize("model", [m for m in RWKV_MODELS if m != "sm72e25"])
+@pytest.mark.parametrize(
+    "model", [m for m in RWKV_MODELS if m not in ("sm72e25", "tiny")]
+)
 @pytest.mark.parametrize("instant_used", [False, True])
 @pytest.mark.parametrize("curve_used", [False, True])
 def test_runtime_models_keep_other_models_shared(model, instant_used, curve_used):
-    # SM92, Legacy and the older small models serve both schedulers alone.
+    # SM92, Big and the older small models serve both schedulers alone.
     assert runtime_models(
         model,
         instant_used=instant_used,
@@ -546,9 +701,12 @@ def test_curve_as_instant_fallback_counts_as_curve_used(configs, curve_enabled):
         (False, False, False, False, ("sm72e25", None)),
     ],
 )
+@pytest.mark.parametrize("size,instant_model", [("sm72e25", "sm98"), ("tiny", "sm101")])
 def test_profile_presets_and_opt_out_reach_the_native_backend(
-    monkeypatch, curve, instant, fallback_curve, single, expected
+    monkeypatch, curve, instant, fallback_curve, single, expected, size, instant_model
 ):
+    # The rows are Small's; Tiny runs SM101 wherever Small runs SM98.
+    expected = tuple(instant_model if m == "sm98" else m for m in expected)
     import aqt
     from aqt import rwkv_srs_benchmark
 
@@ -561,7 +719,7 @@ def test_profile_presets_and_opt_out_reach_the_native_backend(
         SimpleNamespace(
             pm=SimpleNamespace(
                 profile={
-                    "rwkvModel": "sm72e25",
+                    "rwkvModel": size,
                     "rwkvSingleModel": single,
                 }
             ),
@@ -592,12 +750,12 @@ def test_profile_presets_and_opt_out_reach_the_native_backend(
     if expected[1] is None:
         assert created["instant_model_path"] is None
     else:
-        assert Path(created["instant_model_path"]).parent.name == "sm98"
+        assert Path(created["instant_model_path"]).parent.name == instant_model
     # The cache identity follows the runtime models until the next profile open.
     assert rwkv_scheduler._rwkv_runtime_models() == RwkvRuntimeModels(*expected)
-    # Workload simulation needs a curve model: not with SM98 alone.
+    # Workload simulation needs a curve model: not with SM98 or SM101 alone.
     assert rwkv_scheduler.rwkv_workload_simulation_available() == (
-        expected[0] != "sm98"
+        expected[0] != instant_model
     )
 
 
@@ -618,9 +776,13 @@ def test_paired_runtime_gets_its_own_replay_identity(monkeypatch):
         ("sm72e25", "sm57"),
         ("sm72e25", "sm92"),
         ("sm72e25", "sm98"),
-        # The show-time instant-only model, stage 2 (SM98) alone, and the
-        # show-time retrain (SM92) alone.
+        # Tiny's pair: the smaller instant-only model (SM101) beside the
+        # release.
+        ("sm72e25", "sm101"),
+        # The show-time instant-only model, stage 2 (SM98) alone, SM101
+        # alone, and the show-time retrain (SM92) alone.
         ("sm98", None),
+        ("sm101", None),
         ("sm92", None),
     ):
         monkeypatch.setattr(
@@ -640,9 +802,10 @@ def test_paired_runtime_gets_its_own_replay_identity(monkeypatch):
                 ),
             )
         )
-    # Single, SM98 alone and paired with SM57, SM92 or SM98 states never
-    # share a key: a switch between the pair and SM98 alone rebuilds once.
-    assert len(set(keys)) == 6
+    # Single, SM98 alone, SM101 alone and paired with SM57, SM92, SM98 or
+    # SM101 states never share a key: a switch between the sizes, or between
+    # a pair and its instant model alone, rebuilds once.
+    assert len(set(keys)) == 8
 
 
 def _embedded_backend(model, instant_model=None):
@@ -673,6 +836,10 @@ def _embedded_backend(model, instant_model=None):
         # Runtimes with a curve wait for the next profile open as before.
         (("sm72e25", "sm98"), _deck_configs(curve=False, instant=True), False, False),
         (("sm72e25", None), _deck_configs(curve=True, instant=True), False, False),
+        # Tiny: SM101 alone, the same rule.
+        (("sm101", None), _deck_configs(curve=True, instant=True), False, True),
+        (("sm101", None), _deck_configs(curve=False, instant=True), False, False),
+        (("sm72e25", "sm101"), _deck_configs(curve=False, instant=True), False, False),
     ],
 )
 def test_instant_only_runtime_reopens_once_a_preset_uses_curve(
@@ -683,7 +850,8 @@ def test_instant_only_runtime_reopens_once_a_preset_uses_curve(
     monkeypatch.setattr(rwkv_scheduler, "_reviewer_backend", backend)
     replace = MagicMock()
     monkeypatch.setattr(rwkv_scheduler, "set_reviewer_backend", replace)
-    owner = _config_owner(configs, {"rwkvModel": "sm72e25", "rwkvSingleModel": single})
+    size = "tiny" if "sm101" in resident else "sm72e25"
+    owner = _config_owner(configs, {"rwkvModel": size, "rwkvSingleModel": single})
     assert (
         rwkv_scheduler.refresh_rwkv_runtime_models_after_preset_change(owner) is dropped
     )
@@ -759,7 +927,9 @@ def test_workload_start_reports_missing_curve_model_before_starting(monkeypatch)
     "resident,available",
     [
         (("sm98", None), False),
+        (("sm101", None), False),
         (("sm72e25", "sm98"), True),
+        (("sm72e25", "sm101"), True),
         (("sm72e25", None), True),
         (("sm92", None), True),
         (("legacy", None), True),
