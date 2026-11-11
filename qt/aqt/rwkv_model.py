@@ -71,12 +71,13 @@ RWKV_CHOICE_INSTANT_MODELS = {
 RWKV_CHOICE_CURVE_MODELS = {RWKV_MODEL_TINY: RWKV_MODEL_SMALL}
 # The show-time retrain of the release (SM92), a full model (curve, intervals,
 # S90 and answer time). It stays bundled and selectable as a profile model,
-# but is no longer picked automatically for RWKV-Instant (until 2026-11-10 it
-# ran alone with the opt-out and no RWKV-Curve).
+# and runtime_models() picks it for Small and Tiny with the one-model opt-out
+# when presets use both RWKV-Instant and RWKV-Curve.
 RWKV_INSTANT_MODEL = "sm92"
 RWKV_INSTANT_MODEL_RELEASES = tuple(RWKV_CHOICE_INSTANT_MODELS)
 # Profile opt-out (default off): one model for both schedulers instead of the
-# pair, about half the memory with slightly worse RWKV-Instant predictions.
+# pair, about half the memory with slightly worse RWKV-Instant predictions
+# (Small and Tiny then run the show-time retrain (SM92) alone).
 # Only matters when presets use both RWKV-Instant and RWKV-Curve.
 RWKV_SINGLE_MODEL_KEY = "rwkvSingleModel"
 # The former opt-in toggle (until 2026-11-10), whose values meant the
@@ -177,7 +178,11 @@ def runtime_models(
         release (two model states). The instant model gives RWKV-Instant's
         recall and button probabilities; the release keeps the curve,
         intervals, S90 and the answer time.
-      - RWKV-Instant and RWKV-Curve with the opt-out: the release alone.
+      - RWKV-Instant and RWKV-Curve with the opt-out: the show-time retrain of
+        the release (SM92, RWKV_INSTANT_MODEL) alone, a full model serving
+        both schedulers (one model state). Against the release (SM63) on
+        show-time inputs it ties on the curve and predicts RWKV-Instant
+        better; it differs from the release, so the state is rebuilt once.
     RWKV-Curve only, or neither: the release alone (for Small and Tiny
     alike, so that switch keeps the same state).
     """
@@ -189,4 +194,4 @@ def runtime_models(
         return RwkvRuntimeModels(instant_model)
     if not single_model:
         return RwkvRuntimeModels(curve_model, instant_model)
-    return RwkvRuntimeModels(curve_model)
+    return RwkvRuntimeModels(RWKV_INSTANT_MODEL)
