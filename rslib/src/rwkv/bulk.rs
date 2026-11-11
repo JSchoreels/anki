@@ -405,7 +405,7 @@ fn run_interleaved(
     let mut v0: [Vec<f32>; 5] = std::array::from_fn(|_| vec![0.0; rows * D_MODEL]);
     let mut v0_query: [Option<Vec<f32>>; 5] =
         std::array::from_fn(|_| x_query.as_ref().map(|_| vec![0.0; rows * D_MODEL]));
-    for &(id, layer_id) in LAYER_STEPS {
+    for &(id, layer_id) in model.layer_plan.steps {
         run_layer_chunks(LayerChunks {
             layer: &model.modules[id].layers[layer_id],
             layer_id,

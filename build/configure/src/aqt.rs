@@ -113,6 +113,7 @@ fn build_generated_sources(build: &mut Build) -> Result<()> {
     )?;
     for model in [
         "sm40v2", "sm36", "sm55", "sm56", "sm72", "sm72e20", "sm72e25", "sm92", "sm57", "sm98",
+        "sm101",
     ] {
         for name in ["weights.f32.bin", "architecture.json", "manifest.json"] {
             let output = format!("qt/_aqt/rwkv_inference/{model}/{name}");

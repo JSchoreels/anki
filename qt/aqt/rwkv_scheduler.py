@@ -20937,6 +20937,7 @@ def _rwkv_runtime_models_for_profile(mw: object) -> RwkvRuntimeModels:
     swaps it at once (refresh_rwkv_runtime_models_after_preset_change()).
     """
     from aqt.rwkv_model import (
+        curve_model_for_choice,
         model_for_profile,
         runtime_models,
         single_model_for_profile,
@@ -20945,8 +20946,9 @@ def _rwkv_runtime_models_for_profile(mw: object) -> RwkvRuntimeModels:
     profile = getattr(getattr(mw, "pm", None), "profile", None)
     model = model_for_profile(profile)
     if os.environ.get("ANKI_RWKV_MODEL_PATH"):
-        # A custom checkpoint serves both schedulers.
-        return RwkvRuntimeModels(model)
+        # A custom checkpoint serves both schedulers, in place of the
+        # choice's full model (Tiny's is the default small model).
+        return RwkvRuntimeModels(curve_model_for_choice(model))
     config_state = _rwkv_collection_config_state(SimpleNamespace(mw=mw))
     return runtime_models(
         model,
