@@ -59,7 +59,8 @@ impl ModelKind {
 
     /// Checkpoints trained without the deleted-card signal: their missing
     /// note, deck and preset flags (inputs 13..15) are always zero. Legacy is
-    /// the big model (1 leak-free epoch) since 2026-11-10.
+    /// the big model (1 leak-free epoch) since 2026-11-10 and the show-time
+    /// big model (SM91s2), trained from it, since 2026-11-11.
     pub fn leak_free_inputs(self) -> bool {
         matches!(
             self,
