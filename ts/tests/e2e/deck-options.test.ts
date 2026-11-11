@@ -306,15 +306,18 @@ test(
         await expect(group.getByRole("button", { name: "About prediction models", exact: true })).toHaveCount(0);
         await expect(group.getByText("Use Smaller Model", { exact: true })).toHaveCount(0);
         await expect(big).toHaveAccessibleDescription(/19\.6 KB per card and note/);
-        await expect(small).toHaveAccessibleDescription(/7\.1 KB.*64% less than Big.*3\.5 KB.*82% less/);
+        await expect(small).toHaveAccessibleDescription(
+            /3\.5 KB with Instant only.*82% less than Big.*7\.1 KB.*64% less/,
+        );
         await expect(small).toHaveAccessibleDescription(/Curve 0\.28% higher, Instant 0\.35% lower/);
         await expect(tiny).toHaveAccessibleDescription(
-            /6\.2 KB.*68% less than Big, 13% less than Small.*2\.6 KB.*87% less than Big, 26% less than Small/,
+            /2\.6 KB with Instant only.*26% less than Small, 87% less than Big.*6\.2 KB.*13% less than Small, 68% less than Big/,
         );
         await expect(tiny).toHaveAccessibleDescription(
             /Curve 0\.28% higher, Instant 0\.16% lower \(0\.19% higher than Small\)/,
         );
         await expect(group).toContainText("With both schedulers, comparisons assume separate models");
+        await expect(group).toContainText("default precision (INT4 cards + INT8 notes)");
         await expect(group).toContainText("Factory LogLoss is from 722 users; lower is better");
         // Short descriptions without internal model IDs.
         for (const description of await group.locator(".size-description").allTextContents()) {
