@@ -22,8 +22,9 @@ License: GNU AGPL, version 3 or later; http://www.gnu.org/licenses/agpl.html
     const settings = state.rwkvProfileSettings;
 
     // The three sizes, stored under the profile's model key: Big is the big
-    // model alone, Small the default small model with its own RWKV-Instant
-    // model, Tiny the same with a smaller RWKV-Instant model.
+    // model with its own big RWKV-Instant model, Small the default small
+    // model with its own RWKV-Instant model, Tiny the same with a smaller
+    // RWKV-Instant model.
     const sizes = [
         {
             value: RWKV_MODEL_BIG,
@@ -54,12 +55,15 @@ License: GNU AGPL, version 3 or later; http://www.gnu.org/licenses/agpl.html
         ? RWKV_MODEL_SMALL
         : $settings.model;
     $: choices = selected === keptChoice.value ? [...sizes, keptChoice] : sizes;
-    // Small and Tiny run RWKV-Instant on its own model: beside the curve
+    // Every size runs RWKV-Instant on its own model: beside the curve
     // model when presets use both RWKV-Instant and RWKV-Curve, alone
     // otherwise. The opt-out only matters for both; its description says so,
     // since the runtime follows every preset's scheduler at profile open,
     // not just this one's.
-    $: hasInstantModel = selected === RWKV_MODEL_SMALL || selected === RWKV_MODEL_TINY;
+    $: hasInstantModel =
+        selected === RWKV_MODEL_BIG ||
+        selected === RWKV_MODEL_SMALL ||
+        selected === RWKV_MODEL_TINY;
 
     function changeSingleModel(event: Event): void {
         $settings.singleModel = (event.target as HTMLInputElement).checked;

@@ -11,6 +11,8 @@ import pytest
 from aqt import rwkv_scheduler
 from aqt.profiles import ProfileManager, profileConf
 from aqt.rwkv_model import (
+    RWKV_BIG_INSTANT_MODEL,
+    RWKV_CHOICE_INSTANT_MODELS,
     RWKV_INSTANT_MODEL,
     RWKV_INSTANT_ONLY_MODEL,
     RWKV_INSTANT_ONLY_MODELS,
@@ -454,6 +456,30 @@ def test_tiny_instant_model_is_sm101_and_instant_only():
     assert (root / "sm101" / "architecture.json").exists()
 
 
+def test_big_instant_model_is_sm99_and_instant_only():
+    # The show-time instant-only big model (SM99): bundled, never a profile's
+    # model key (the profile stores "legacy"), alone it serves no curve.
+    assert RWKV_BIG_INSTANT_MODEL == "sm99"
+    assert RWKV_BIG_INSTANT_MODEL in RWKV_INSTANT_ONLY_MODELS
+    assert RWKV_CHOICE_INSTANT_MODELS[RWKV_MODEL_BIG] == "sm99"
+    assert RWKV_MODEL_FILES["sm99"] == Path("sm99/weights.f32.bin")
+    assert "sm99" not in RWKV_MODELS
+    assert RwkvRuntimeModels("sm99").curve_model is None
+    assert RwkvRuntimeModels("legacy", "sm99").curve_model == "legacy"
+    assert RwkvRuntimeModels("legacy", "sm99").instant_scheduler_model == "sm99"
+    root = Path(rwkv_scheduler.__file__).parent / "rwkv_inference"
+    assert (root / RWKV_MODEL_FILES["sm99"]).exists()
+    assert (root / "sm99" / "architecture.json").exists()
+    assert (root / "sm99" / "manifest.json").exists()
+    # The same format as the Big file: the fork's ARWKVWEIGHTS1 container.
+    for name in ("legacy", "sm99"):
+        with open(root / RWKV_MODEL_FILES[name], "rb") as file:
+            assert file.read(13) == b"ARWKVWEIGHTS1"
+    assert (root / RWKV_MODEL_FILES["sm99"]).stat().st_size == (
+        root / RWKV_MODEL_FILES["legacy"]
+    ).stat().st_size
+
+
 def test_model_sizes_are_big_small_tiny():
     # Big and Small keep the values earlier builds stored.
     assert RWKV_MODEL_SIZES == ("legacy", "sm72e25", "tiny")
@@ -470,14 +496,16 @@ def test_model_sizes_are_big_small_tiny():
 
 # The three sizes x the schedulers in use x the one-model opt-out.
 _SIZE_RUNTIMES = {
-    # Big: the big model alone, always.
+    # Big: the show-time instant-only big model (SM99) alone for
+    # RWKV-Instant without RWKV-Curve, the pair for both, the show-time big
+    # model (SM91s2) alone otherwise and with the opt-out.
     "legacy": {
-        "instant only": ("legacy", None),
-        "both": ("legacy", None),
+        "instant only": ("sm99", None),
+        "both": ("legacy", "sm99"),
         "curve only": ("legacy", None),
         "neither": ("legacy", None),
         "both, opt-out": ("legacy", None),
-        "instant only, opt-out": ("legacy", None),
+        "instant only, opt-out": ("sm99", None),
     },
     # Small: SM98 alone for RWKV-Instant without RWKV-Curve, the pair for
     # both, the small model (SM63) alone otherwise and with the opt-out.
@@ -519,7 +547,7 @@ def test_model_sizes_pick_their_runtime_models(size, case):
     assert models == RwkvRuntimeModels(*_SIZE_RUNTIMES[size][case])
     # The curve never comes from an instant-only model, and there is one
     # exactly when a preset uses RWKV-Curve or nothing uses RWKV-Instant.
-    if size != "legacy" and instant_used and not curve_used:
+    if instant_used and not curve_used:
         assert models.curve_model is None
     elif size != "legacy" and instant_used and single:
         # The opt-out with both schedulers: the show-time retrain (SM92).
@@ -544,8 +572,9 @@ def test_model_sizes_pick_their_runtime_models(size, case):
 @pytest.mark.parametrize(
     "stored,choice,runtime_both",
     [
-        # Big keeps the show-time big model (SM91s2) alone.
-        ("legacy", "legacy", ("legacy", None)),
+        # Big pairs the show-time big model (SM91s2) with the show-time
+        # instant-only big model (SM99).
+        ("legacy", "legacy", ("legacy", "sm99")),
         # Unset, the old default key and unknown values: Small.
         (None, "sm72e25", ("sm72e25", "sm98")),
         ("sm72e25", "sm72e25", ("sm72e25", "sm98")),
@@ -591,13 +620,11 @@ def test_specialized_instant_model_is_sm98_and_instant_only():
     assert RwkvRuntimeModels("sm72e25", "sm98").curve_model == "sm72e25"
 
 
-@pytest.mark.parametrize(
-    "model", [m for m in RWKV_MODELS if m not in ("sm72e25", "tiny")]
-)
+@pytest.mark.parametrize("model", [m for m in RWKV_MODELS if m not in RWKV_MODEL_SIZES])
 @pytest.mark.parametrize("instant_used", [False, True])
 @pytest.mark.parametrize("curve_used", [False, True])
 def test_runtime_models_keep_other_models_shared(model, instant_used, curve_used):
-    # SM92, Big and the older small models serve both schedulers alone.
+    # SM92 and the older small models serve both schedulers alone.
     assert runtime_models(
         model,
         instant_used=instant_used,
@@ -722,6 +749,24 @@ def test_instant_with_curve_fallback_counts_as_curve_used_but_fsrs_fallback_does
         assert rwkv_scheduler._rwkv_runtime_models_for_profile(
             fsrs_fallback.mw
         ) == RwkvRuntimeModels(instant_model)
+    # Big: the show-time big model (SM91s2) keeps the curve beside SM99, and
+    # runs alone with the opt-out.
+    profile = {"rwkvModel": "legacy"}
+    curve_fallback.mw.pm.profile = profile
+    fsrs_fallback.mw.pm.profile = profile
+    assert rwkv_scheduler._rwkv_runtime_models_for_profile(
+        curve_fallback.mw
+    ) == RwkvRuntimeModels("legacy", "sm99")
+    assert rwkv_scheduler._rwkv_runtime_models_for_profile(
+        fsrs_fallback.mw
+    ) == RwkvRuntimeModels("sm99")
+    profile["rwkvSingleModel"] = True
+    assert rwkv_scheduler._rwkv_runtime_models_for_profile(
+        curve_fallback.mw
+    ) == RwkvRuntimeModels("legacy")
+    assert rwkv_scheduler._rwkv_runtime_models_for_profile(
+        fsrs_fallback.mw
+    ) == RwkvRuntimeModels("sm99")
 
 
 @pytest.mark.parametrize(
@@ -742,12 +787,20 @@ def test_instant_with_curve_fallback_counts_as_curve_used_but_fsrs_fallback_does
         (False, False, False, False, ("sm72e25", None)),
     ],
 )
-@pytest.mark.parametrize("size,instant_model", [("sm72e25", "sm98"), ("tiny", "sm101")])
+@pytest.mark.parametrize(
+    "size,instant_model", [("sm72e25", "sm98"), ("tiny", "sm101"), ("legacy", "sm99")]
+)
 def test_profile_presets_and_opt_out_reach_the_native_backend(
     monkeypatch, curve, instant, fallback_curve, single, expected, size, instant_model
 ):
-    # The rows are Small's; Tiny runs SM101 wherever Small runs SM98.
-    expected = tuple(instant_model if m == "sm98" else m for m in expected)
+    # The rows are Small's; Tiny runs SM101 wherever Small runs SM98. Big
+    # runs SM99 there, and the show-time big model (SM91s2) where Small runs
+    # the release (SM63) or, with the opt-out, the show-time retrain (SM92).
+    if size == "legacy":
+        big = {"sm98": "sm99", "sm72e25": "legacy", "sm92": "legacy"}
+        expected = tuple(big.get(m, m) for m in expected)
+    else:
+        expected = tuple(instant_model if m == "sm98" else m for m in expected)
     import aqt
     from aqt import rwkv_srs_benchmark
 
@@ -787,14 +840,18 @@ def test_profile_presets_and_opt_out_reach_the_native_backend(
     backend = rwkv_scheduler._reviewer_backend
     assert (backend.model_name, backend.instant_model_name) == expected
     assert (created["model"], created["instant_model"]) == expected
-    assert Path(created["model_path"]).parent.name == expected[0]
+    if expected[0] == "legacy":
+        assert Path(created["model_path"]).name == "RWKV_trained_on_5000_10000.bin"
+    else:
+        assert Path(created["model_path"]).parent.name == expected[0]
     if expected[1] is None:
         assert created["instant_model_path"] is None
     else:
         assert Path(created["instant_model_path"]).parent.name == instant_model
     # The cache identity follows the runtime models until the next profile open.
     assert rwkv_scheduler._rwkv_runtime_models() == RwkvRuntimeModels(*expected)
-    # Workload simulation needs a curve model: not with SM98 or SM101 alone.
+    # Workload simulation needs a curve model: not with SM98, SM101 or SM99
+    # alone.
     assert rwkv_scheduler.rwkv_workload_simulation_available() == (
         expected[0] != instant_model
     )
@@ -825,6 +882,11 @@ def test_paired_runtime_gets_its_own_replay_identity(monkeypatch):
         ("sm98", None),
         ("sm101", None),
         ("sm92", None),
+        # Big alone, Big's pair (the show-time instant-only big model (SM99)
+        # beside the show-time big model (SM91s2)) and SM99 alone.
+        ("legacy", None),
+        ("legacy", "sm99"),
+        ("sm99", None),
     ):
         monkeypatch.setattr(
             rwkv_scheduler,
@@ -843,10 +905,10 @@ def test_paired_runtime_gets_its_own_replay_identity(monkeypatch):
                 ),
             )
         )
-    # Single, SM98 alone, SM101 alone and paired with SM57, SM92, SM98 or
-    # SM101 states never share a key: a switch between the sizes, or between
-    # a pair and its instant model alone, rebuilds once.
-    assert len(set(keys)) == 8
+    # Single, SM98 alone, SM101 alone, SM99 alone and paired with SM57, SM92,
+    # SM98, SM101 or SM99 states never share a key: a switch between the
+    # sizes, or between a pair and its instant model alone, rebuilds once.
+    assert len(set(keys)) == 11
 
 
 def _embedded_backend(model, instant_model=None):
@@ -881,6 +943,11 @@ def _embedded_backend(model, instant_model=None):
         (("sm101", None), _deck_configs(curve=True, instant=True), False, True),
         (("sm101", None), _deck_configs(curve=False, instant=True), False, False),
         (("sm72e25", "sm101"), _deck_configs(curve=False, instant=True), False, False),
+        # Big: SM99 alone, the same rule.
+        (("sm99", None), _deck_configs(curve=True, instant=True), False, True),
+        (("sm99", None), _deck_configs(curve=True, instant=True), True, True),
+        (("sm99", None), _deck_configs(curve=False, instant=True), False, False),
+        (("legacy", "sm99"), _deck_configs(curve=False, instant=True), False, False),
     ],
 )
 def test_instant_only_runtime_reopens_once_a_preset_uses_curve(
@@ -891,7 +958,9 @@ def test_instant_only_runtime_reopens_once_a_preset_uses_curve(
     monkeypatch.setattr(rwkv_scheduler, "_reviewer_backend", backend)
     replace = MagicMock()
     monkeypatch.setattr(rwkv_scheduler, "set_reviewer_backend", replace)
-    size = "tiny" if "sm101" in resident else "sm72e25"
+    size = (
+        "tiny" if "sm101" in resident else "legacy" if "sm99" in resident else "sm72e25"
+    )
     owner = _config_owner(configs, {"rwkvModel": size, "rwkvSingleModel": single})
     assert (
         rwkv_scheduler.refresh_rwkv_runtime_models_after_preset_change(owner) is dropped
@@ -974,6 +1043,8 @@ def test_workload_start_reports_missing_curve_model_before_starting(monkeypatch)
         (("sm72e25", None), True),
         (("sm92", None), True),
         (("legacy", None), True),
+        (("sm99", None), False),
+        (("legacy", "sm99"), True),
     ],
 )
 def test_deck_options_learns_workload_availability(monkeypatch, resident, available):

@@ -1,0 +1,1051 @@
+{
+ "label": "sm99-big-inst-e2",
+ "created": "2026-11-12 08:25:31",
+ "checkpoint": {
+  "path": "<workspace>\\wt\\sm99\\artifacts\\small-model\\sm99-big-inst-e2\\run\\big-inst\\master.pth",
+  "bytes": 11251089,
+  "sha256": "c49e45d698194da033caa1231f598f875922a4a2a3e921714a3fd433d37e5768"
+ },
+ "parameters": 2762884,
+ "architecture": {
+  "format": "anki-rwkv small-model export",
+  "spec_version": 1,
+  "architecture": "fork",
+  "d_model": 128,
+  "card_features": 92,
+  "features_fc_dim": 512,
+  "head_fc_dim": 512,
+  "curve_head": "softmax_mixture",
+  "num_curves": 128,
+  "num_points": 128,
+  "ahead_residual": true,
+  "zero_features": [],
+  "layer_schedule": "sequential",
+  "layer_steps": [
+   [
+    0,
+    0
+   ],
+   [
+    0,
+    1
+   ],
+   [
+    0,
+    2
+   ],
+   [
+    1,
+    0
+   ],
+   [
+    1,
+    1
+   ],
+   [
+    1,
+    2
+   ],
+   [
+    1,
+    3
+   ],
+   [
+    2,
+    0
+   ],
+   [
+    2,
+    1
+   ],
+   [
+    3,
+    0
+   ],
+   [
+    3,
+    1
+   ],
+   [
+    3,
+    2
+   ],
+   [
+    4,
+    0
+   ],
+   [
+    4,
+    1
+   ],
+   [
+    4,
+    2
+   ],
+   [
+    4,
+    3
+   ]
+  ],
+  "streams": [
+   {
+    "name": "card_id",
+    "n_layers": 3,
+    "n_heads": 4,
+    "head_size": 32,
+    "channel_mixer_dim": 192,
+    "decay_lora": 16,
+    "a_lora": 16,
+    "v0_mix_amt_lora": 8,
+    "gate_lora": 16,
+    "channel_mixer_stripped_layers": [],
+    "value_lora_stripped_layer0": false
+   },
+   {
+    "name": "deck_id",
+    "n_layers": 4,
+    "n_heads": 4,
+    "head_size": 32,
+    "channel_mixer_dim": 256,
+    "decay_lora": 16,
+    "a_lora": 16,
+    "v0_mix_amt_lora": 8,
+    "gate_lora": 16,
+    "channel_mixer_stripped_layers": [],
+    "value_lora_stripped_layer0": false
+   },
+   {
+    "name": "note_id",
+    "n_layers": 2,
+    "n_heads": 4,
+    "head_size": 32,
+    "channel_mixer_dim": 192,
+    "decay_lora": 16,
+    "a_lora": 16,
+    "v0_mix_amt_lora": 8,
+    "gate_lora": 16,
+    "channel_mixer_stripped_layers": [],
+    "value_lora_stripped_layer0": false
+   },
+   {
+    "name": "preset_id",
+    "n_layers": 3,
+    "n_heads": 4,
+    "head_size": 32,
+    "channel_mixer_dim": 256,
+    "decay_lora": 16,
+    "a_lora": 16,
+    "v0_mix_amt_lora": 8,
+    "gate_lora": 16,
+    "channel_mixer_stripped_layers": [],
+    "value_lora_stripped_layer0": false
+   },
+   {
+    "name": "user_id",
+    "n_layers": 4,
+    "n_heads": 4,
+    "head_size": 32,
+    "channel_mixer_dim": 256,
+    "decay_lora": 16,
+    "a_lora": 16,
+    "v0_mix_amt_lora": 8,
+    "gate_lora": 16,
+    "channel_mixer_stripped_layers": [],
+    "value_lora_stripped_layer0": false
+   }
+  ],
+  "constants": {
+   "layer_norm_eps": 1e-05,
+   "group_norm_eps": 0.00064,
+   "normalize_eps": 1e-12,
+   "softplus_threshold": 20.0,
+   "prob_clamp": 1e-05,
+   "s_point_spread": 18.5,
+   "s_max": 22.0,
+   "s_min": 0.1,
+   "curve_base": 0.9,
+   "point_spread": 18.5,
+   "max_e": 21.0,
+   "point_min": 0.5,
+   "power_clamp": 25.0,
+   "power_s_eps": 1e-07,
+   "min_elapsed_seconds": 1.0
+  },
+  "inputs": {
+   "streams_order": [
+    "card_id",
+    "deck_id",
+    "note_id",
+    "preset_id",
+    "user_id"
+   ],
+   "features": "92 card features of rwkv.prepare_batch / rwkv.data_processing (the same input layout and normalization the fork's 2.76M model uses: rslib/src/rwkv/mod.rs CARD_FEATURES)",
+   "label_elapsed_seconds": "curve query time in seconds (labels[..., 0])"
+  },
+  "outputs": {
+   "p_curve": "recall probability at the queried elapsed time (ahead / curve head)",
+   "p_imm": "1 - P(again) of the 4-rating head (instant head), clamped to [1e-5, 1 - 1e-5]",
+   "p_rating": "softmax over again/hard/good/easy"
+  }
+ },
+ "training": {
+  "checkpoint_folder_result": {
+   "model": "rwkv-big",
+   "track": "big-inst",
+   "options": {
+    "prefetch_users": true,
+    "preparation_workers": 5,
+    "gpu_packed_features": true,
+    "packed_ipc": true,
+    "async_transfer": true,
+    "batched_id_encodings": true,
+    "grouped_sync": true,
+    "main_threads": 1,
+    "bulk_transfer": true,
+    "parallel_evaluation": true,
+    "exact_shift": true,
+    "batch_chunks": 2,
+    "gpu_memory_fraction": 0.8,
+    "fast_samples": true,
+    "prestart_pool": true,
+    "deferred_reads": true,
+    "shared_shift_orders": true,
+    "stream_launches": true,
+    "sync_free_loss": true,
+    "columnar_samples": true,
+    "skip_uninitialized_fill": true,
+    "host_placement": "physical",
+    "process_qos": true,
+    "deferred_read_depth": 2,
+    "bookkeeping_stride": 8,
+    "lean_step_reset": true,
+    "wddm_flush": true,
+    "architecture": "fork",
+    "chunk_reviews": 8192,
+    "state_carry": {
+     "lanes": "strided",
+     "table_gpu_mib": 768
+    },
+    "training_seed": 2025,
+    "show_time_intervals": true,
+    "curve_loss_weight": 0.0
+   },
+   "config": {
+    "MODEL": "rwkv-big",
+    "DTYPE": "bfloat16",
+    "WKV_BACKEND": "nvrtc",
+    "SEED": 2025,
+    "BATCH_CHUNKS": 2,
+    "CHUNK_REVIEWS": 8192,
+    "PREFETCH_WORKERS": 5,
+    "PREFETCH_BATCHES": 10,
+    "CPU_THREADS": 4,
+    "EPOCHS": 1,
+    "DATA_PATH": "<workspace>\\anki-rwkv\\data\\anki-revlogs-10k-original-20261011",
+    "DATASET_REVISION": "75299740cff05894ef42d7ad990666691efdd2da",
+    "GPU_MEMORY_FRACTION": 0.8,
+    "PEAK_LR": 0.0007,
+    "WARMUP_STEPS": 5
+   },
+   "torch": "2.9.1+cu128",
+   "cuda": "12.8",
+   "gpu": "NVIDIA GeForce RTX 5080",
+   "training_dropout": "enabled",
+   "device_used_at_start_mib": 1290.75,
+   "master_dtype": "float32",
+   "float32_matmul_precision": "highest",
+   "cuda_matmul_allow_tf32": false,
+   "rss_sampling": "process tree at user transitions; sampled maximum, not continuous peak",
+   "provenance": {
+    "captured_utc": "2026-11-12T00:02:13.539952+00:00",
+    "git_commit": "726f992288f80614bdf18039fd5fc8ad292cab6d",
+    "git_dirty": true,
+    "git_status_porcelain_z": " M artifacts/small-model/sm99/gpu/check.out\u0000 M artifacts/small-model/sm99/gpu/launch-sm99.log\u0000",
+    "source_tree_sha256": "fb20af16c52b622bf851610310d247029effa81a88f9dc55bac9da3bc631e3ac",
+    "source_archive": "artifacts/sources/experiment-sources/fb20af16c52b622bf851610310d247029effa81a88f9dc55bac9da3bc631e3ac/source.zip",
+    "source_paths": [
+     "rwkv",
+     "rwkv-big",
+     "scripts",
+     "configs",
+     "pyproject.toml",
+     "uv.lock",
+     "justfile",
+     "upstream.json"
+    ]
+   },
+   "status": "complete",
+   "smoke_only": false,
+   "implementation_sha256": "34a4af357daedad7cda4ffb62589a5a7675c8053adbf47b9b0dbcf051092ac97",
+   "started_utc": "2026-11-12T00:02:15.239010+00:00",
+   "training_users": 3071,
+   "evaluation_users": 0,
+   "progress_users": 3071,
+   "updates": 15377,
+   "review_presentations": 227371580,
+   "training_curve_labels": 197960166,
+   "training_instant_labels": 197960166,
+   "hierarchical_padded_positions": 3145526066,
+   "peak_process_tree_rss_mib": 9110.68359375,
+   "gpu_copy_milliseconds": 9421.265533447266,
+   "gpu_copy_overlap_training_milliseconds": 191.791015625,
+   "initial_parameter_sha256": "2c8c0ae1819495b44585b60e3cb33ba3daaa1ab10c425c3617c3dff1cbb252a7",
+   "curve_loss_weight": 0.0,
+   "run_catch_up": {
+    "keys": [
+     "architecture"
+    ],
+    "architecture": {
+     "name": "fork",
+     "parameters": 2762884
+    },
+    "lr_schedule": {
+     "peak": 0.00035,
+     "warmup_updates": 200,
+     "decay_start": 0.0,
+     "decay_end": 1.0,
+     "shape": "one_minus_sin",
+     "final": 0.0,
+     "total_reviews": 370292439
+    },
+    "deleted_cards": "neighbour",
+    "state_carry": {
+     "precision": "deploy",
+     "carry": true,
+     "lanes": "strided",
+     "table_gpu_mib": 768,
+     "mode": "strided lanes (v2): update u holds window u of every lane; lane starts from zero",
+     "stats": {
+      "users": 3071,
+      "updates": 15377,
+      "streams_calls": 15377,
+      "peak_table_bytes": 5728463750,
+      "host_table_users": 184
+     }
+    }
+   },
+   "discarded_primer_seconds": 4.070108400001118,
+   "model_setup_seconds": 7.137152499999502,
+   "warmup_job_workers": 2,
+   "prestarted_worker_pids": [
+    17904,
+    18152,
+    18440,
+    21708,
+    34404
+   ],
+   "prestarted_workers": 5,
+   "pool_ready_wait_seconds": 0.00031689999923401047,
+   "pool_prestart_seconds": 4.1353878999998415,
+   "host_placement": {
+    "mode": "physical",
+    "main_process_cpus": [
+     2,
+     3,
+     6,
+     7,
+     10,
+     11
+    ],
+    "worker_cpus": [
+     0,
+     4,
+     8,
+     14,
+     12
+    ],
+    "workers": 5,
+    "physical_cores": 8,
+    "main_core_scheduling_classes": [
+     6,
+     6,
+     5
+    ],
+    "restored_main_process_cpus": 16
+   },
+   "process_qos": {
+    "mode": "above_normal_unthrottled",
+    "processes": [
+     {
+      "pid": 20036,
+      "role": "main",
+      "previous_throttling": {
+       "control_mask": 0,
+       "state_mask": 0
+      },
+      "previous_priority_class": 32,
+      "priority_class": 32768
+     },
+     {
+      "pid": 17904,
+      "role": "worker",
+      "previous_throttling": {
+       "control_mask": 0,
+       "state_mask": 0
+      },
+      "previous_priority_class": 32,
+      "priority_class": 32768
+     },
+     {
+      "pid": 18152,
+      "role": "worker",
+      "previous_throttling": {
+       "control_mask": 0,
+       "state_mask": 0
+      },
+      "previous_priority_class": 32,
+      "priority_class": 32768
+     },
+     {
+      "pid": 18440,
+      "role": "worker",
+      "previous_throttling": {
+       "control_mask": 0,
+       "state_mask": 0
+      },
+      "previous_priority_class": 32,
+      "priority_class": 32768
+     },
+     {
+      "pid": 21708,
+      "role": "worker",
+      "previous_throttling": {
+       "control_mask": 0,
+       "state_mask": 0
+      },
+      "previous_priority_class": 32,
+      "priority_class": 32768
+     },
+     {
+      "pid": 34404,
+      "role": "worker",
+      "previous_throttling": {
+       "control_mask": 0,
+       "state_mask": 0
+      },
+      "previous_priority_class": 32,
+      "priority_class": 32768
+     }
+    ],
+    "timer_resolution_100ns": {
+     "coarsest": 156250,
+     "finest": 5000,
+     "current": 5000
+    }
+   },
+   "training_started_utc": "2026-11-12T00:02:23.110880+00:00",
+   "nvrtc_max_timesteps": 32768,
+   "deferred_read_depth": 2,
+   "lean_step_reset": {
+    "master_parameters": 504,
+    "child_parameters": 504
+   },
+   "bookkeeping_stride": 8,
+   "rss_sampling_skipped_processes": 0,
+   "training_elapsed_seconds": 19346.168803,
+   "latest_snapshot": {
+    "reason": "periodic",
+    "utc": "2026-11-12T05:19:17.366378+00:00",
+    "progress_users": 3050,
+    "folder": "artifacts/small-model/sm99-big-inst-e2/run/big-inst/snapshots/users-03050"
+   },
+   "training_seconds": 19372.491744,
+   "training_gc": {
+    "generation_0": {
+     "collections": 85814,
+     "seconds": 4.77918949985542
+    },
+    "generation_1": {
+     "collections": 7801,
+     "seconds": 2.2826092999584944
+    },
+    "generation_2": {
+     "collections": 177,
+     "seconds": 15.206008200037104
+    }
+   },
+   "cold_training_seconds": 19372.491744,
+   "reviews_per_second": 11736.826785352534,
+   "cold_reviews_per_second": 11736.826785352534,
+   "coverage": "<3071 entries omitted>",
+   "peak_allocated_mib": 10961.072265625,
+   "peak_reserved_mib": 13020.0,
+   "allocator_stats": {
+    "num_alloc_retries": 120,
+    "num_ooms": 0,
+    "num_device_alloc": 1377243,
+    "num_device_free": 1376741
+   },
+   "trained_parameter_sha256": "1c413d7fa48804d75a3a3d414adb3e528bab5813c12270adf89df1d8366545db",
+   "update_offset_end": 25038,
+   "case_elapsed_seconds": 19384.0236756
+  },
+  "decay_dir": "<workspace>\\wt\\sm99\\artifacts\\small-model\\sm99-big-inst-e2",
+  "decay": {
+   "created_utc": "2026-11-11T15:25:09.365001+00:00",
+   "kind": "sm72-big-leakfree-epoch",
+   "source_case": "<workspace>\\wt\\sm99\\artifacts\\small-model\\sm99-big-inst-e1\\run\\big-inst\\master.pth",
+   "source_sha256": "bbd33bd2b932fd0bb9baa2d33a0d08d90636bdfbe78929ea6c196a2fe98a3cf6",
+   "model": "rwkv-big",
+   "track": "big-inst",
+   "options": {
+    "prefetch_users": true,
+    "preparation_workers": 5,
+    "gpu_packed_features": true,
+    "packed_ipc": true,
+    "async_transfer": true,
+    "batched_id_encodings": true,
+    "grouped_sync": true,
+    "main_threads": 1,
+    "bulk_transfer": true,
+    "parallel_evaluation": true,
+    "exact_shift": true,
+    "batch_chunks": 2,
+    "gpu_memory_fraction": 0.8,
+    "fast_samples": true,
+    "prestart_pool": true,
+    "deferred_reads": true,
+    "shared_shift_orders": true,
+    "stream_launches": true,
+    "sync_free_loss": true,
+    "columnar_samples": true,
+    "skip_uninitialized_fill": true,
+    "host_placement": "physical",
+    "process_qos": true,
+    "deferred_read_depth": 2,
+    "bookkeeping_stride": 8,
+    "lean_step_reset": true,
+    "wddm_flush": true,
+    "architecture": "fork",
+    "chunk_reviews": 8192,
+    "state_carry": {
+     "lanes": "strided",
+     "table_gpu_mib": 768
+    },
+    "training_seed": 2025,
+    "show_time_intervals": true,
+    "curve_loss_weight": 0.0
+   },
+   "options_dropped": [],
+   "deleted_cards": "neighbour",
+   "probe": false,
+   "training_users": 5001,
+   "training_reviews": 370299909,
+   "train_users_from": "5000-10000 (upstream train_rwkv_config.toml)",
+   "shuffle_seed": 3,
+   "lr": "0.00035 -> 0, warmup 200 updates, shape one_minus_sin, over all 370,299,909 reviews",
+   "optimizer": "fresh AdamW (rwkv.train_rwkv.get_optimizer)",
+   "batches": "2 strided lanes x 8,192-review windows per update, carried state, one user per update",
+   "extra_options": {
+    "show_time_intervals": true,
+    "curve_loss_weight": 0.0
+   },
+   "label_windows": {
+    "script": "scripts/sm72_label_windows.py",
+    "users": 5001,
+    "unlabelled_tails_trimmed": 27
+   },
+   "trimmed_unlabelled_tails": [
+    {
+     "user_id": 9547,
+     "trim_to": 180224,
+     "trimmed_reviews": 33
+    },
+    {
+     "user_id": 5588,
+     "trim_to": 16384,
+     "trimmed_reviews": 49
+    },
+    {
+     "user_id": 8551,
+     "trim_to": 98304,
+     "trimmed_reviews": 35
+    },
+    {
+     "user_id": 8534,
+     "trim_to": 32768,
+     "trimmed_reviews": 152
+    },
+    {
+     "user_id": 8736,
+     "trim_to": 131072,
+     "trimmed_reviews": 5660
+    },
+    {
+     "user_id": 8694,
+     "trim_to": 16384,
+     "trimmed_reviews": 48
+    },
+    {
+     "user_id": 6568,
+     "trim_to": 16384,
+     "trimmed_reviews": 165
+    },
+    {
+     "user_id": 8607,
+     "trim_to": 16384,
+     "trimmed_reviews": 31
+    },
+    {
+     "user_id": 7502,
+     "trim_to": 16384,
+     "trimmed_reviews": 86
+    },
+    {
+     "user_id": 6656,
+     "trim_to": 114688,
+     "trimmed_reviews": 15
+    },
+    {
+     "user_id": 5961,
+     "trim_to": 163840,
+     "trimmed_reviews": 13
+    },
+    {
+     "user_id": 8353,
+     "trim_to": 163840,
+     "trimmed_reviews": 293
+    },
+    {
+     "user_id": 6427,
+     "trim_to": 98304,
+     "trimmed_reviews": 18
+    },
+    {
+     "user_id": 7712,
+     "trim_to": 180224,
+     "trimmed_reviews": 288
+    },
+    {
+     "user_id": 9597,
+     "trim_to": 16384,
+     "trimmed_reviews": 65
+    },
+    {
+     "user_id": 9366,
+     "trim_to": 81920,
+     "trimmed_reviews": 92
+    },
+    {
+     "user_id": 5488,
+     "trim_to": 81920,
+     "trimmed_reviews": 2
+    },
+    {
+     "user_id": 8745,
+     "trim_to": 65536,
+     "trimmed_reviews": 24
+    },
+    {
+     "user_id": 8022,
+     "trim_to": 32768,
+     "trimmed_reviews": 27
+    },
+    {
+     "user_id": 8742,
+     "trim_to": 147456,
+     "trimmed_reviews": 12
+    },
+    {
+     "user_id": 5599,
+     "trim_to": 32768,
+     "trimmed_reviews": 14
+    },
+    {
+     "user_id": 6007,
+     "trim_to": 573440,
+     "trimmed_reviews": 9
+    },
+    {
+     "user_id": 7196,
+     "trim_to": 98304,
+     "trimmed_reviews": 22
+    },
+    {
+     "user_id": 8279,
+     "trim_to": 16384,
+     "trimmed_reviews": 3
+    },
+    {
+     "user_id": 9991,
+     "trim_to": 16384,
+     "trimmed_reviews": 4
+    },
+    {
+     "user_id": 6729,
+     "trim_to": 442368,
+     "trimmed_reviews": 4
+    },
+    {
+     "user_id": 8902,
+     "trim_to": 2834432,
+     "trimmed_reviews": 306
+    }
+   ],
+   "training_reviews_after_trims": 370292439
+  },
+  "decay_protocol_full_run": {
+   "epoch": 0,
+   "evaluate": false,
+   "init_master": "artifacts/small-model/sm99-big-inst-e2/attempts/attempt-1/run/big-inst/snapshots/users-01930/master.pth",
+   "update_offset": 9661,
+   "lr_schedule": {
+    "peak": 0.00035,
+    "warmup_updates": 200,
+    "decay_start": 0.0,
+    "decay_end": 1.0,
+    "shape": "one_minus_sin",
+    "final": 0.0
+   },
+   "evaluation_set": "none",
+   "snapshot_users": 50,
+   "optimizer_state": "snapshot",
+   "control_dir": "artifacts/small-model/sm99-big-inst-e2/control",
+   "init_optimizer": "artifacts/small-model/sm99-big-inst-e2/attempts/attempt-1/run/big-inst/snapshots/users-01930/optimizer.pth",
+   "lr_resume": {
+    "total_reviews": 370292439,
+    "reviews_offset": 142920859
+   },
+   "resumed": {
+    "done_users": 1930,
+    "from": "artifacts/small-model/sm99-big-inst-e2/attempts/attempt-1/run/big-inst/snapshots/users-01930",
+    "attempts": [
+     "attempt-1"
+    ]
+   }
+  }
+ },
+ "parity": {
+  "checkpoint": "master.pth (this folder)",
+  "users": [
+   4676,
+   1745,
+   516
+  ],
+  "dtype": "float32",
+  "variants": {
+   "fp32": {
+    "max_abs_dp_labelled": {
+     "p_curve": 9.5367431640625e-07,
+     "p_imm": 1.1920928955078125e-06,
+     "p_rating": 1.1920928955078125e-06
+    },
+    "per_user": [
+     {
+      "user": 4676,
+      "reviews": 3716,
+      "labelled": 5676,
+      "torch_seconds": 4.22,
+      "numpy_seconds": 4.8,
+      "p_curve": 5.960464477539062e-07,
+      "p_curve_all_positions": 5.960464477539062e-07,
+      "p_imm": 3.5762786865234375e-07,
+      "p_imm_all_positions": 4.172325134277344e-07,
+      "p_rating": 8.046627044677734e-07,
+      "p_rating_all_positions": 8.046627044677734e-07
+     },
+     {
+      "user": 1745,
+      "reviews": 4144,
+      "labelled": 7410,
+      "torch_seconds": 5.43,
+      "numpy_seconds": 4.81,
+      "p_curve": 9.5367431640625e-07,
+      "p_curve_all_positions": 9.5367431640625e-07,
+      "p_imm": 1.1920928955078125e-06,
+      "p_imm_all_positions": 1.1920928955078125e-06,
+      "p_rating": 1.1920928955078125e-06,
+      "p_rating_all_positions": 1.1920928955078125e-06
+     },
+     {
+      "user": 516,
+      "reviews": 4601,
+      "labelled": 6498,
+      "torch_seconds": 4.71,
+      "numpy_seconds": 5.43,
+      "p_curve": 6.556510925292969e-07,
+      "p_curve_all_positions": 6.854534149169922e-07,
+      "p_imm": 7.748603820800781e-07,
+      "p_imm_all_positions": 7.748603820800781e-07,
+      "p_rating": 1.0132789611816406e-06,
+      "p_rating_all_positions": 1.3709068298339844e-06
+     }
+    ],
+    "pass_1e-5": true
+   },
+   "w8": {
+    "max_abs_dp_labelled": {
+     "p_curve": 9.5367431640625e-07,
+     "p_imm": 9.5367431640625e-07,
+     "p_rating": 1.5497207641601562e-06
+    },
+    "per_user": [
+     {
+      "user": 4676,
+      "reviews": 3716,
+      "labelled": 5676,
+      "torch_seconds": 4.55,
+      "numpy_seconds": 4.33,
+      "p_curve": 5.960464477539062e-07,
+      "p_curve_all_positions": 5.960464477539062e-07,
+      "p_imm": 3.5762786865234375e-07,
+      "p_imm_all_positions": 3.5762786865234375e-07,
+      "p_rating": 7.748603820800781e-07,
+      "p_rating_all_positions": 7.748603820800781e-07
+     },
+     {
+      "user": 1745,
+      "reviews": 4144,
+      "labelled": 7410,
+      "torch_seconds": 5.26,
+      "numpy_seconds": 4.74,
+      "p_curve": 9.5367431640625e-07,
+      "p_curve_all_positions": 9.5367431640625e-07,
+      "p_imm": 8.344650268554688e-07,
+      "p_imm_all_positions": 8.344650268554688e-07,
+      "p_rating": 9.5367431640625e-07,
+      "p_rating_all_positions": 9.5367431640625e-07
+     },
+     {
+      "user": 516,
+      "reviews": 4601,
+      "labelled": 6498,
+      "torch_seconds": 4.58,
+      "numpy_seconds": 5.9,
+      "p_curve": 8.344650268554688e-07,
+      "p_curve_all_positions": 9.5367431640625e-07,
+      "p_imm": 9.5367431640625e-07,
+      "p_imm_all_positions": 9.5367431640625e-07,
+      "p_rating": 1.5497207641601562e-06,
+      "p_rating_all_positions": 1.5497207641601562e-06
+     }
+    ],
+    "pass_1e-5": true
+   }
+  }
+ },
+ "files": {
+  "architecture.json": {
+   "bytes": 18928,
+   "sha256": "5c15decc492f7a03e2ff35d9c28ba7484906a0f3fd57c6583f2db11ed2668ddc"
+  },
+  "master.pth": {
+   "bytes": 11251089,
+   "sha256": "c49e45d698194da033caa1231f598f875922a4a2a3e921714a3fd433d37e5768"
+  },
+  "parity.json": {
+   "bytes": 2954,
+   "sha256": "dbb38197ac2a799b6e0391e7673c66fc78dcba2d1e62d3ec9df21913031db384"
+  },
+  "weights.f32.bin": {
+   "bytes": 11082637,
+   "sha256": "682ba1ff207c51af7de5e2abeb25593362aa706b292cbcc338a1591fad0d935c"
+  },
+  "weights.int8.bin": {
+   "bytes": 3027096,
+   "sha256": "0076501c230db7d1a1cd6444b1cabd59118c473261e0bf3c148c77cf99b1f8b8"
+  }
+ },
+ "provenance": {
+  "captured_utc": "2026-11-12T07:25:32.104603+00:00",
+  "git_commit": "5a480ed8b6717354d30e606a3d8a6cacb71a9b67",
+  "git_dirty": false,
+  "git_status_porcelain_z": "",
+  "source_tree_sha256": "113f6822ffd23d5f995eeb82f3b0a2478bf66b1e8d218ed9d2b3a6705f69b498",
+  "source_archive": "artifacts/sources/experiment-sources/113f6822ffd23d5f995eeb82f3b0a2478bf66b1e8d218ed9d2b3a6705f69b498/source.zip",
+  "source_paths": [
+   "rwkv",
+   "rwkv-big",
+   "scripts",
+   "configs",
+   "pyproject.toml",
+   "uv.lock",
+   "justfile",
+   "upstream.json"
+  ]
+ },
+ "evaluation_rows": {
+  "heldout": "artifacts\\small-model\\sm99\\gpu\\sm99-rows.jsonl",
+  "reference": "fork/w8+s8",
+  "labels": {
+   "sm99-big-inst-e2/w8+s8": {
+    "checkpoint": "<workspace>/wt/sm99/artifacts/small-model/sm99-big-inst-e2/run/big-inst/master.pth",
+    "alone": {
+     "users": 726,
+     "ahead": {
+      "users": 726,
+      "reviews": 31740750,
+      "LogLoss": {
+       "weighted": 0.3094882857999574,
+       "user_average": 0.30631759366391187
+      },
+      "RMSE(bins)": {
+       "weighted": 0.052757246296637604,
+       "user_average": 0.06525928925619835
+      },
+      "AUC": {
+       "weighted": 0.7971021462246969,
+       "user_average": 0.7962155517241378
+      },
+      "RMSE": {
+       "weighted": 0.29551834758252404,
+       "user_average": 0.291792
+      }
+     },
+     "instant": {
+      "users": 726,
+      "reviews": 31740750,
+      "LogLoss": {
+       "weighted": 0.27849479958397333,
+       "user_average": 0.27001946969696966
+      },
+      "RMSE(bins)": {
+       "weighted": 0.02145356798390082,
+       "user_average": 0.032796920110192834
+      },
+      "AUC": {
+       "weighted": 0.8376936918086757,
+       "user_average": 0.8455017765517243
+      },
+      "RMSE": {
+       "weighted": 0.2789381218666856,
+       "user_average": 0.2723362231404958
+      }
+     }
+    }
+   },
+   "sm99-big-inst-e2/w8+s8@e2s-query": {
+    "checkpoint": "<workspace>/wt/sm99/artifacts/small-model/sm99-big-inst-e2/run/big-inst/master.pth",
+    "alone": {
+     "users": 726,
+     "ahead": {
+      "users": 726,
+      "reviews": 31740750,
+      "LogLoss": {
+       "weighted": 0.30965370413522053,
+       "user_average": 0.30649722451790634
+      },
+      "RMSE(bins)": {
+       "weighted": 0.053059925278545715,
+       "user_average": 0.06553894214876033
+      },
+      "AUC": {
+       "weighted": 0.7969103174794383,
+       "user_average": 0.7959761393103447
+      },
+      "RMSE": {
+       "weighted": 0.2956028219479691,
+       "user_average": 0.2918810867768595
+      }
+     },
+     "instant": {
+      "users": 726,
+      "reviews": 31740750,
+      "LogLoss": {
+       "weighted": 0.27863646944574405,
+       "user_average": 0.2701909779614325
+      },
+      "RMSE(bins)": {
+       "weighted": 0.02140431919393839,
+       "user_average": 0.0327426391184573
+      },
+      "AUC": {
+       "weighted": 0.837500797686621,
+       "user_average": 0.8452499089655173
+      },
+      "RMSE": {
+       "weighted": 0.27900862354875045,
+       "user_average": 0.272416870523416
+      }
+     }
+    }
+   }
+  },
+  "heldout_report_rows": []
+ },
+ "evaluation": {
+  "scoring": "722 users of the 732-user held-out set, leak-free inputs (deleted cards: neighbour), int8 per-channel weights + int8 card/note state (w8+s8), review-weighted LogLoss, paired user bootstrap 2,000 resamples seed 0, 95% intervals; % = change against the reference's own LogLoss",
+  "source": "anki-rwkv branch sm99, artifacts/small-model/sm99/sm99-decision.md and sm99-result.md",
+  "verdict": "ceiling above the show-time instant-only model, stage 2 (SM98)",
+  "instant_show_time": {
+   "logloss": 0.275894,
+   "vs_the_show_time_big_model_SM91s2": {
+    "ref": 0.276183,
+    "pct": -0.105,
+    "ci95_pct": [
+     -0.118,
+     -0.093
+    ],
+    "users_better_worse": [
+     578,
+     143
+    ]
+   },
+   "vs_the_show_time_instant_only_model_stage_2_SM98": {
+    "ref": 0.276191,
+    "pct": -0.108,
+    "ci95_pct": [
+     -0.133,
+     -0.084
+    ],
+    "users_better_worse": [
+     492,
+     230
+    ]
+   },
+   "vs_the_show_time_retrain_SM92": {
+    "ref": 0.276876,
+    "pct": -0.356,
+    "ci95_pct": [
+     -0.392,
+     -0.322
+    ]
+   },
+   "vs_the_release_SM63": {
+    "ref": 0.277718,
+    "pct": -0.662,
+    "ci95_pct": [
+     -0.765,
+     -0.577
+    ]
+   }
+  },
+  "instant_normal_inputs": {
+   "logloss": 0.275748,
+   "vs_the_big_model_1_leak_free_epoch": {
+    "ref": 0.275757,
+    "pct": -0.004,
+    "ci95_pct": [
+     -0.024,
+     0.016
+    ]
+   }
+  },
+  "pool_1500_show_time": {
+   "users": 1487,
+   "logloss": 0.278406,
+   "vs_the_show_time_big_model_SM91s2": {
+    "ref": 0.278727,
+    "pct": -0.115,
+    "ci95_pct": [
+     -0.124,
+     -0.107
+    ]
+   }
+  },
+  "curve": "untrained (curve loss weight 0): not scored for use"
+ },
+ "training_summary": "the show-time big model (SM91s2) trained two more big-model epochs on show-time inputs with the curve loss off (users 5000-10000, fresh AdamW, warmup 200, LR 3.5e-4 -> 0 per epoch, 2 x 8,192 carried lanes, no teacher, shuffle seeds 2 and 3); final model: epoch 2",
+ "use": {
+  "heads": [
+   "instant",
+   "rating"
+  ],
+  "rule": "instant-only model: trained with curve_loss_weight 0.0. Its instant / rating head (p_imm, p_rating) is the product; its curve head was never trained, so never use p_curve, intervals or the 90% stability from it (the curve outputs in the test vectors only check the arithmetic). In the Anki fork it is the Big size's RWKV-Instant model (key sm99): beside the show-time big model (SM91s2), which keeps the curve, intervals and the 90% stability, or alone when presets use RWKV-Instant without RWKV-Curve; never as a full model."
+ },
+ "inputs": {
+  "show_time_intervals": true,
+  "rule": "trained with show-time intervals: the instant query row of review j and the curve query for review j use floor(max(elapsed_seconds_j - duration_j / 1000, 0)) seconds (previous answer to the moment review j is shown), its sin / cos, and the cumulative interval = the card's earlier answer-to-answer intervals + that show-time interval; update rows keep the answer-to-answer interval and the cumulative interval including it. The test vectors are built this way (testvectors/make_testvectors.py, the held-out scorer's --inputs e2s-query rows).",
+  "leak_free": "RWKV_DELETED_CARDS=neighbour: missing-ID flags (features 13-15) always 0 (INTEGRATION.md 6.9)"
+ }
+}
