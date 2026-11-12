@@ -3,8 +3,10 @@
 
 //! The bundled big model (the Big size, profile key `legacy`): the show-time
 //! big model (SM91s2) since 2026-11-11 (before: the big model (1 leak-free
-//! epoch)), checked on the big engine against vectors from the training code.
-//! Compiled into whichever engine module runs the big architecture.
+//! epoch)), checked on the big engine against vectors from the training code,
+//! and the Big choice's RWKV-Instant model, the show-time instant-only big
+//! model (SM99), checked the same way. Compiled into whichever engine module
+//! runs the big architecture.
 
 use std::io::Read;
 
@@ -35,11 +37,28 @@ struct Vectors {
 /// `ANKI_RWKV_LEGACY_VECTORS` points the test at full vectors (show-time or
 /// normal inputs).
 fn legacy_vectors() -> Vec<Vectors> {
-    let data = if let Ok(path) = std::env::var("ANKI_RWKV_LEGACY_VECTORS") {
+    read_vectors(
+        "ANKI_RWKV_LEGACY_VECTORS",
+        include_bytes!("testdata/legacy-vectors.json.gz"),
+    )
+}
+
+/// PyTorch outputs of the show-time instant-only big model (SM99), made the
+/// same way (show-time inputs, first 500 rows per user); `ANKI_RWKV_SM99_VECTORS`
+/// points the test at full vectors.
+fn sm99_vectors() -> Vec<Vectors> {
+    read_vectors(
+        "ANKI_RWKV_SM99_VECTORS",
+        include_bytes!("testdata/sm99-vectors.json.gz"),
+    )
+}
+
+fn read_vectors(variable: &str, bundled: &[u8]) -> Vec<Vectors> {
+    let data = if let Ok(path) = std::env::var(variable) {
         fs::read(path).unwrap()
     } else {
         let mut data = Vec::new();
-        flate2::read::GzDecoder::new(&include_bytes!("testdata/legacy-vectors.json.gz")[..])
+        flate2::read::GzDecoder::new(bundled)
             .read_to_end(&mut data)
             .unwrap();
         data
@@ -47,14 +66,23 @@ fn legacy_vectors() -> Vec<Vectors> {
     serde_json::from_slice(&data).unwrap()
 }
 
-fn legacy_model() -> SrsModel {
+fn big_model(file: &str, kind: ModelKind) -> SrsModel {
     let mut model = SrsModel::load(
         &PathBuf::from(env!("CARGO_MANIFEST_DIR"))
-            .join("../qt/aqt/rwkv_inference/RWKV_trained_on_5000_10000.bin"),
+            .join("../qt/aqt/rwkv_inference")
+            .join(file),
     )
     .unwrap();
-    model.leak_free_inputs = ModelKind::Legacy.leak_free_inputs();
+    model.leak_free_inputs = kind.leak_free_inputs();
     model
+}
+
+fn legacy_model() -> SrsModel {
+    big_model("RWKV_trained_on_5000_10000.bin", ModelKind::Legacy)
+}
+
+fn sm99_model() -> SrsModel {
+    big_model("sm99/weights.f32.bin", ModelKind::Sm99)
 }
 
 fn vector_input(row: &VectorRow) -> ReviewInput {
@@ -81,10 +109,29 @@ fn vector_input(row: &VectorRow) -> ReviewInput {
 /// "ahead" logit residual (`predict_curve`).
 #[test]
 fn rwkv_legacy_matches_published_vectors() {
-    let model = legacy_model();
+    let (rows, maximum, _) = check_published_vectors(&legacy_model(), legacy_vectors());
+    println!("legacy published vectors: {rows} rows, maximum absolute probability error {maximum}");
+}
+
+/// The show-time instant-only big model (SM99) on the big engine: instant
+/// recall and the four button probabilities (the outputs it serves) and the
+/// untrained curve (never served, checked as engine parity only).
+#[test]
+fn rwkv_sm99_matches_published_vectors() {
+    assert!(ModelKind::Sm99.instant_only());
+    let (rows, maximum, instant) = check_published_vectors(&sm99_model(), sm99_vectors());
+    println!(
+        "sm99 published vectors: {rows} rows, maximum absolute probability error {maximum} (instant recall and buttons {instant})"
+    );
+}
+
+/// `(rows, maximum error over every output, maximum over instant recall and
+/// the four button probabilities)`.
+fn check_published_vectors(model: &SrsModel, vectors: Vec<Vectors>) -> (usize, f32, f32) {
     let mut maximum = 0.0_f32;
+    let mut instant = 0.0_f32;
     let mut rows = 0;
-    for user in legacy_vectors() {
+    for user in vectors {
         let mut states = ReviewStateMaps::default();
         for (index, row) in user.rows.iter().enumerate() {
             let input = vector_input(row);
@@ -100,6 +147,9 @@ fn rwkv_legacy_matches_published_vectors() {
             assert_eq!(actual.len(), row.fp32.len());
             for (head, (&a, &b)) in actual.iter().zip(&row.fp32).enumerate() {
                 maximum = maximum.max((a - b).abs());
+                if head < 5 {
+                    instant = instant.max((a - b).abs());
+                }
                 assert!(
                     (a - b).abs() <= 1e-5,
                     "{} row {index} head {head}: {a} != {b}",
@@ -112,7 +162,7 @@ fn rwkv_legacy_matches_published_vectors() {
             rows += 1;
         }
     }
-    println!("legacy published vectors: {rows} rows, maximum absolute probability error {maximum}");
+    (rows, maximum, instant)
 }
 
 /// The show-time big model (SM91s2), like the big model (1 leak-free epoch) it
@@ -122,8 +172,17 @@ fn rwkv_legacy_matches_published_vectors() {
 #[test]
 fn rwkv_legacy_ignores_missing_id_flags() {
     assert!(ModelKind::Legacy.leak_free_inputs());
-    let model = legacy_model();
-    let user = legacy_vectors().remove(0);
+    check_ignores_missing_id_flags(&legacy_model(), legacy_vectors().remove(0));
+}
+
+/// The show-time instant-only big model (SM99) has the same input rule.
+#[test]
+fn rwkv_sm99_ignores_missing_id_flags() {
+    assert!(ModelKind::Sm99.leak_free_inputs());
+    check_ignores_missing_id_flags(&sm99_model(), sm99_vectors().remove(0));
+}
+
+fn check_ignores_missing_id_flags(model: &SrsModel, user: Vectors) {
     let mut states = ReviewStateMaps::default();
     for row in user.rows.iter().take(200) {
         assert!(row.features[13..16].iter().all(|&flag| flag == 0.0));
