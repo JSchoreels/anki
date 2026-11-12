@@ -67,17 +67,18 @@ it is turned off again.
 Deck Options → RWKV → **Advanced** offers three model sizes for the entire
 local profile (since 2026-11-11, replacing the **Use Smaller Model** switch):
 
-| Size | Profile value | RWKV-Curve, intervals, S90, answer time | RWKV-Instant |
+| Size | Profile value | RWKV-Curve, intervals, S90 | RWKV-Instant |
 | --- | --- | --- | --- |
-| **Big** | `legacy` | the show-time big model (SM91s2) | the same model |
+| **Big** | `legacy` | the show-time big model (SM91s2) | the show-time instant-only big model (SM99), see below |
 | **Small** (default) | `sm72e25` | the default small model (SM63) | the show-time instant-only model, stage 2 (SM98), see below |
 | **Tiny** | `tiny` | the default small model (SM63) | the smaller instant-only model (SM101, one card layer), see below |
 
 Tiny only shrinks RWKV-Instant's state: it is Small with the smaller instant-only
 model (SM101) in the place of the show-time instant-only model, stage 2 (SM98), so
 RWKV-Curve, the intervals, S90, the workload simulation and the answer-time
-estimate are exactly Small's. The big model (2,762,884 parameters; since 2026-11-11
-the show-time big model (SM91s2), see below), the 331,511-parameter small models
+estimate are exactly Small's. Big does not have an answer-time head. The big models
+(2,762,884 parameters each: the show-time big model (SM91s2) and the show-time
+instant-only big model (SM99), see below), the 331,511-parameter small models
 SM40, SM36 Muon, SM55, SM56, the small model, leak-free (SM72, cool-down from epoch
 15, from epoch 20 and from epoch 25), the show-time retrain of the release (SM92),
 the instant-only models SM57 and SM98 and the 311,786-parameter smaller
@@ -97,7 +98,7 @@ INT4-card/INT8-note storage.
 The profile key is `rwkvModel`, with `legacy`, `sm40`, `sm36`, `sm55`, `sm56`, `sm72`, `sm72e20`, `sm72e25`, `sm92` and `tiny` as
 supported values (`RWKV_MODELS`; the three sizes are `RWKV_MODEL_SIZES`). Big and Small keep the values earlier
 builds stored, so existing profiles keep their choice with no migration step; an earlier build reads `tiny` as
-unknown and falls back to Small. Missing or unsupported values (including the model keys `sm57`, `sm98` and `sm101`,
+unknown and falls back to Small. Missing or unsupported values (including the model keys `sm57`, `sm98`, `sm99` and `sm101`,
 which are never a profile value) resolve to `sm72e25` in existing and new profiles.
 Opening Deck Options does not change a saved choice. On a successful ordinary
 Deck Options save, older `sm40`, `sm36`, `sm55`, `sm56`, `sm72` and `sm72e20` choices switch to `sm72e25` (Small); `legacy`,
@@ -127,6 +128,17 @@ leak-free epoch)'s show-time LogLoss, paired user bootstrap 95% CI) it scores Cu
 +0.12%, Instant +0.10%), but the fork gives show-time inputs. The file name and
 profile key stay; the hash changed, so Big profiles rebuild their state once. See
 the [Big on the show-time big model report](rwkv-sm107-2026-11-11.MD).
+
+Since 2026-11-12, Big runs the show-time instant-only big model (SM99) for
+RWKV-Instant: alone when no preset uses RWKV-Curve, or beside SM91s2 when both
+schedulers are in use. With both, the one-model opt-out runs SM91s2 alone;
+RWKV-Curve alone also uses SM91s2. At the default state precision, one Big model
+stores 19,554 B per card and note and the pair stores 39,146 B. SM99's curve is
+untrained, and an Instant-only profile uses the FSRS fallback for due dates and
+memory states. Changing the active layout rebuilds its state from retained review
+history. See the [Big pair integration report](rwkv-sm109-2026-11-12.MD) for the
+weights, accuracy, state layouts and verification.
+
 From 2026-11-10 to 2026-11-11 the file held the big model (1 leak-free epoch): the original big model
 (fork RWKV) trained one more epoch on leak-free inputs, same architecture and format,
 with the leak-free input rule below. On 722 users of the 732-user set (leak-free
@@ -174,8 +186,8 @@ constant). `ModelKind` checks the card layers of the weights it loads (`sm101`: 
 every other small key: 2) and refuses a mismatch. `rwkv-sm40` selects the primary
 engine used by the offline benchmark API, and `--no-default-features` selects
 Legacy for those comparisons; all bundled models are available at runtime in
-either build. All non-Legacy models share the small architecture's specialization;
-only two engines are compiled. The standard format/check targets also cover the
+either build. SM91s2 and SM99 share the big engine; the remaining bundled models
+use the small architecture's specialization. Only two engines are compiled. The standard format/check targets also cover the
 included engine source.
 
 SM40, SM36, SM55, SM56, the three SM72 cool-downs, SM92, SM57 and SM98 have width 64, four 16-wide heads and card/deck/note/preset/user depths
@@ -254,8 +266,8 @@ on the curve (a tie) and −0.305% [−0.405, −0.232] on Instant (better). The
 changes for these profiles (`model` `sm92`, no `instantModel`), so they rebuild their
 state once. Small and Tiny behave alike here.
 
-The opt-out, **Use one model for RWKV**, is shown under Advanced whenever Small or
-Tiny is selected and is stored in the profile as `rwkvSingleModel` (default off, not
+The opt-out, **Use one model for RWKV**, is shown under Advanced whenever Big, Small
+or Tiny is selected and is stored in the profile as `rwkvSingleModel` (default off, not
 synced, saved with the model choice through `rwkv_profile_settings.single_model`).
 It only matters when presets use both RWKV-Instant and RWKV-Curve, and its
 description says so (the runtime follows every preset's scheduler, not just the
@@ -270,10 +282,11 @@ update rebuilds the state from history once for every profile that now runs the
 pair, and states of other pairs are never reused. The show-time instant-only model,
 stage 2 (SM98) alone has its own replay key (`model` `sm98`, no `instantModel`), so a
 profile that switches between the pair and the show-time instant-only model, stage 2 (SM98) alone rebuilds its state once, and a
-pair's state never serves a single model or the other way round. The native paired mode accepts any distinct small model with the same
-leak-free input rule beside a full release; an instant-only model loaded alone always
-runs in the `InstantOnly` mode, never as a full model. A profile whose model is the
-show-time retrain (SM92), Legacy or an older small model serves both schedulers
+pair's state never serves a single model or the other way round. The native paired
+mode accepts a full release and a different instant model of the same architecture
+and with the same leak-free input rule; small pairs require the small-model feature.
+An instant-only model loaded alone always runs in an instant-only mode, never as a
+full model. A profile whose model is the show-time retrain (SM92) or an older small model serves both schedulers
 alone.
 
 The show-time retrain (SM92, `RWKV_INSTANT_MODEL`, still a selectable profile model,
@@ -408,7 +421,7 @@ not measured for SM72 (cool-down from epoch 25); the matched backup comparison l
 predates SM72 and does not include it.
 
 **Leak-free input rule.** When any SM72 cool-down, SM92 or Legacy (Big, the show-time
-big model (SM91s2)) is selected, and for the instant-only models SM57 and SM98, the
+big model (SM91s2)) is selected, and for the instant-only models SM57, SM98, SM99 and SM101, the
 runtime forces inputs 13, 14 and 15 to zero on every row, in the per-review, query,
 batched-query and bulk-replay paths, because those models never saw them set in
 training. The earlier small models (SM40, SM36, SM55, SM56) keep their own feature

@@ -288,11 +288,12 @@ test(
         await page.setViewportSize({ width: 1280, height: 900 });
         await openAdvanced.focus();
         await page.keyboard.press("Enter");
-        // The saved Big choice ("legacy"): one model, no opt-out.
+        // The saved Big choice ("legacy") offers its own Instant model and opt-out.
         await expect(big).toBeChecked();
         await expect(small).not.toBeChecked();
         await expect(tiny).not.toBeChecked();
-        await expect(singleModel).toHaveCount(0);
+        await expect(singleModel).toBeVisible();
+        await expect(singleModel).not.toBeChecked();
         await expect(group.getByRole("radio")).toHaveCount(3);
         await expect(group.getByText("Legacy - Bigger Model", { exact: true })).toHaveCount(0);
         await expect(compare).toBeVisible();
@@ -306,17 +307,17 @@ test(
         await expect(group.getByRole("button", { name: "About prediction models", exact: true })).toHaveCount(0);
         await expect(group.getByText("Use Smaller Model", { exact: true })).toHaveCount(0);
         await expect(big).toHaveAccessibleDescription(
-            /trained on the time since the last review.*card is shown.*19\.6 KB per card and note/,
+            /trained on the time since the last review.*card is shown.*19\.6 KB with one model.*39\.1 KB/,
         );
         await expect(small).toHaveAccessibleDescription(
-            /3\.5 KB with Instant only.*82% less than Big.*7\.1 KB.*64% less/,
+            /3\.5 KB with Instant only.*7\.1 KB.*82% less than Big in either case/,
         );
-        await expect(small).toHaveAccessibleDescription(/Curve 0\.33% higher, Instant about the same/);
+        await expect(small).toHaveAccessibleDescription(/Curve 0\.33% higher, Instant 0\.11% higher/);
         await expect(tiny).toHaveAccessibleDescription(
-            /2\.6 KB with Instant only.*26% less than Small, 87% less than Big.*6\.2 KB.*13% less than Small, 68% less than Big/,
+            /2\.6 KB with Instant only.*26% less than Small, 87% less than Big.*6\.2 KB.*13% less than Small, 84% less than Big/,
         );
         await expect(tiny).toHaveAccessibleDescription(
-            /Curve 0\.33% higher, Instant 0\.19% higher \(0\.19% higher than Small\)/,
+            /Curve 0\.33% higher, Instant 0\.30% higher \(0\.19% higher than Small\)/,
         );
         await expect(group).toContainText("With both schedulers, comparisons assume separate models");
         await expect(group).toContainText("default precision (INT4 cards + INT8 notes)");
@@ -349,22 +350,30 @@ test(
         await expect(model).toBeChecked();
         // Big -> Small -> Tiny -> Big, each saved and reloaded.
         for (
-            const [radio, value, opt_out] of [
-                [small, "sm72e25", true],
-                [tiny, "tiny", true],
-                [big, "legacy", false],
+            const [radio, value] of [
+                [small, "sm72e25"],
+                [tiny, "tiny"],
+                [big, "legacy"],
             ] as const
         ) {
             await radio.check();
+            const singleModelEnabled = value === "legacy";
+            await singleModel.setChecked(singleModelEnabled);
             await page.getByRole("button", { name: "Save", exact: true }).click();
             await expect.poll(() => saved?.rwkvProfileSettings).toMatchObject({
                 model: value,
                 statePrecision: "int8",
+                singleModel: singleModelEnabled,
             });
             await page.reload();
             await openAdvanced.click();
             await expect(radio).toBeChecked();
-            await expect(singleModel).toHaveCount(opt_out ? 1 : 0);
+            await expect(singleModel).toBeVisible();
+            if (singleModelEnabled) {
+                await expect(singleModel).toBeChecked();
+            } else {
+                await expect(singleModel).not.toBeChecked();
+            }
         }
     },
 );
