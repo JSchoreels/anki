@@ -36,8 +36,10 @@ fn weights(folder: &str) -> PathBuf {
 }
 
 /// `(name, main model, instant model beside it)`.
-const RUNTIMES: [(&str, &str, Option<&str>); 6] = [
+const RUNTIMES: [(&str, &str, Option<&str>); 8] = [
     ("big", "legacy", None),
+    ("big-pair", "legacy", Some("sm99")),
+    ("big-instant", "sm99", None),
     ("small", "sm72e25", None),
     ("small-pair", "sm72e25", Some("sm98")),
     ("small-instant", "sm98", None),

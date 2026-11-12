@@ -617,6 +617,11 @@ def _load_rsbridge_runtime(
         # card layer): alone only as instant-only, and beside the release.
         ("sm101", "sm101/weights.f32.bin"),
         ("sm72e25+sm101", "sm72e25/weights.f32.bin"),
+        # Big's RWKV-Instant model, the show-time instant-only big model
+        # (SM99): alone only as instant-only, and beside the show-time big
+        # model (SM91s2) on the big engine.
+        ("sm99", "sm99/weights.f32.bin"),
+        ("legacy+sm99", "RWKV_trained_on_5000_10000.bin"),
     ],
 )
 @pytest.mark.parametrize("state_precision", ["f32", "int8", "cards_int4_notes_int8"])
@@ -1191,6 +1196,58 @@ def test_rsbridge_rwkv_instant_model_serves_instant_and_release_keeps_curve(
     assert paired_r == instant.predict_retrievability_many_from_warm_up([query])
     assert paired_r != release.predict_retrievability_many_from_warm_up([query])
     # Snapshots and caches never cross between paired and single runtimes.
+    with pytest.raises(Exception):
+        release.restore_cache_state(paired.cache_state())
+    with pytest.raises(Exception):
+        paired.restore_cache_state(release.cache_state())
+
+
+def test_rsbridge_rwkv_big_pair_serves_sm99_instant_and_big_model_keeps_curve() -> None:
+    # The Big pair: the show-time instant-only big model (SM99) gives
+    # RWKV-Instant's recall, the show-time big model (SM91s2) the curve.
+    root = Path(__file__).resolve().parents[2]
+    rsbridge = _import_rsbridge(root)
+
+    def load(model_name: str, filename: str):
+        return _load_rsbridge_runtime(rsbridge, root, model_name, filename, "f32")
+
+    release = load("legacy", "RWKV_trained_on_5000_10000.bin")
+    instant = load("sm99", "sm99/weights.f32.bin")
+    paired = load("legacy+sm99", "RWKV_trained_on_5000_10000.bin")
+    assert paired.is_paired() and not release.is_paired() and not instant.is_paired()
+    assert not paired.has_answer_time_head() and not instant.has_answer_time_head()
+    with pytest.raises(Exception):
+        # A big model never pairs with a small one.
+        rsbridge.RwkvInference(
+            str(root / "qt/aqt/rwkv_inference/RWKV_trained_on_5000_10000.bin"),
+            0.9,
+            36500,
+            model="legacy",
+            instant_model_path=str(root / "qt/aqt/rwkv_inference/sm98/weights.f32.bin"),
+            instant_model="sm98",
+        )
+
+    def args(review: dict[str, int], is_query: bool) -> tuple[object, ...]:
+        return (
+            *_rwkv_review_args(
+                review,
+                is_query=is_query,
+                card_state=None,
+                note_state=None,
+                deck_state=None,
+                preset_state=None,
+                global_state=None,
+            )[:15],
+            True,
+        )
+
+    reviews = [args(review, False) for review in _RWKV_REVIEWS[:3]]
+    query = args(dict(_RWKV_REVIEWS[3], elapsed_days=3, elapsed_seconds=259200), True)
+    for runtime in (release, instant, paired):
+        runtime.warm_up_reviews(reviews, False)
+    paired_r = paired.predict_retrievability_many_from_warm_up([query])
+    assert paired_r == instant.predict_retrievability_many_from_warm_up([query])
+    assert paired_r != release.predict_retrievability_many_from_warm_up([query])
     with pytest.raises(Exception):
         release.restore_cache_state(paired.cache_state())
     with pytest.raises(Exception):
