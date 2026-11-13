@@ -225,47 +225,56 @@ impl Collection {
             }
         }
 
-        // Match the queue's ancestor minimums while keeping cards and counts
-        // restricted to the selected subtree.
-        if self.get_config_bool(BoolKey::ApplyAllParentLimits) {
-            for parent in self.storage.parent_decks(root_deck)? {
-                decks.insert(0, parent);
-            }
-        }
-        let mut minimums =
-            LimitTreeMap::build(&decks, context.configs, context.timing.days_elapsed, false);
+        // Counts are uncapped by ancestors here; the deck-tree aggregation
+        // applies ancestor limits after calculating this study scope.
+        let mut minimums = LimitTreeMap::build(
+            &decks,
+            context.configs,
+            context.timing.days_elapsed,
+            false,
+            score_deck_id,
+        );
         for &(original_deck_id, count) in context.filtered_review_counts {
             minimums.reserve_rwkv_reviews_if_present(original_deck_id, count);
         }
-        for deck in &decks {
-            if deck.is_filtered() {
-                continue;
-            }
-            if let Some(count) = counts.get(&deck.id) {
-                minimums.reserve_rwkv_reviews(
-                    deck.id,
-                    count
-                        .review
-                        .saturating_sub(count.review_limit_exempt)
-                        .saturating_add(
-                            count
-                                .interday_learning
-                                .saturating_sub(count.interday_learning_limit_exempt),
-                        ),
-                )?;
+        // Interday learning reserves capacity before ordinary reviews in the
+        // queue. Reviews blocked by a subdeck maximum cannot meet a minimum.
+        for interday in [true, false] {
+            for deck in &decks {
+                if deck.is_filtered() {
+                    continue;
+                }
+                if let Some(count) = counts.get(&deck.id) {
+                    let count = if interday {
+                        count
+                            .interday_learning
+                            .saturating_sub(count.interday_learning_limit_exempt)
+                    } else {
+                        count.review.saturating_sub(count.review_limit_exempt)
+                    };
+                    minimums.reserve_counted_rwkv_reviews(deck.id, count)?;
+                }
             }
         }
 
         pull_candidates.sort_unstable_by(|(card_a, score_a, _), (card_b, score_b, _)| {
             score_a.total_cmp(score_b).then_with(|| card_a.cmp(card_b))
         });
-        for (_, _, deck_id) in pull_candidates {
-            if !minimums.rwkv_review_minimum_remaining(deck_id)? {
-                continue;
-            }
-            if let Some(counts) = counts.get_mut(&deck_id) {
-                counts.review = counts.review.saturating_add(1);
-                minimums.reserve_rwkv_reviews(deck_id, 1)?;
+        let mut selected = HashSet::new();
+        for depth in minimums.rwkv_review_minimum_depths() {
+            for &(card_id, _, deck_id) in &pull_candidates {
+                if selected.contains(&card_id)
+                    || !minimums.rwkv_review_minimum_remaining_at_depth(deck_id, depth)?
+                {
+                    continue;
+                }
+                if let Some(counts) = counts.get_mut(&deck_id) {
+                    if minimums.reserve_counted_rwkv_reviews(deck_id, 1)? == 0 {
+                        continue;
+                    }
+                    counts.review = counts.review.saturating_add(1);
+                    selected.insert(card_id);
+                }
             }
         }
 

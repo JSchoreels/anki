@@ -309,9 +309,13 @@ many cards are gathered. The current code does not solve for a requested daily
 cap by automatically changing desired retention or rewriting intervals.
 
 The RWKV-specific `minimum_reviews_per_day` setting is a floor used by Instant
-ordering, not a maximum. Same-day-review exemptions and the option that lets
-new cards ignore the review limit can also make the final count differ from a
-simple cap.
+ordering, not a maximum. It applies to the selected deck and its subdecks as one
+group, pulling the lowest-retrievability cards if needed. Enable **Also honor
+subdeck minimums** on a deck to enforce its direct subdecks' own minimums;
+each subdeck independently decides whether to include its children. This option
+is deck-specific and can be applied to all subdecks when saving. Same-day-review
+exemptions and the option that lets new cards ignore the review limit can also
+make the final count differ from a simple cap.
 
 ### Can RWKV-Instant repeat a card when same-day reviews are disabled?
 

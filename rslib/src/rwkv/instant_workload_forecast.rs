@@ -23,6 +23,7 @@ use super::workload_forecast::ForecastPath;
 use super::*;
 use crate::deckconfig::DeckConfig;
 use crate::decks::Deck;
+use crate::decks::DeckId;
 use crate::scheduler::answering::PreviewDelays;
 use crate::scheduler::fsrs::memory_state::fsrs_memory_state_for_params;
 use crate::scheduler::fsrs::simulator::normalized_fsrs_parameters;
@@ -914,6 +915,7 @@ impl RwkvInference {
                 review_candidates.clear();
                 review_candidates.extend(queue_members[2].iter().map(|&index| candidate(index)));
                 let policy = InstantReviewPolicy {
+                    study_deck_id: DeckId(config.study_deck_id),
                     same_day_allowed: config.same_day_allowed,
                     min_intervening: config.min_intervening_reviews,
                     min_elapsed_seconds: config.min_elapsed_secs,

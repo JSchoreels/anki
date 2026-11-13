@@ -414,12 +414,18 @@ deck-config-rwkv-review-instant-order-tooltip =
 deck-config-rwkv-review-minimum-reviews-per-day = Minimum reviews per day
 deck-config-rwkv-review-minimum-reviews-per-day-tooltip =
     If RWKV-Instant finds fewer reviews than this daily target, pull forward the
-    lowest-retrievability review cards until the target is met. Reviews already
-    completed today count toward the target, including reviews completed in
-    subdecks when this deck is studied. Subdeck targets are also respected when
-    studying a parent deck. The normal maximum review limits and same-day repeat
-    safeguards still apply. Set this to 0 to let RWKV alone decide how many
-    reviews are ready.
+    lowest-retrievability review cards from this deck and its subdecks until the
+    target is met. Reviews already completed today count toward the target. The
+    normal maximum review limits and same-day repeat safeguards still apply.
+deck-config-rwkv-review-respect-subdeck-minimums = Also honor subdeck minimums
+deck-config-rwkv-apply-respect-subdeck-minimums-to-children = Apply this setting to all subdecks on save
+deck-config-rwkv-review-respect-subdeck-minimums-tooltip =
+    When studying this deck, also meet the minimum reviews set on its direct
+    subdecks. A subdeck can also honor its own subdecks' minimums by enabling
+    this option. Reviews selected for subdeck minimums count toward this deck's
+    minimum, but may add reviews beyond it. Turn this off to use this deck's
+    minimum across its whole tree. This option belongs to the deck, not its
+    preset; you can apply it to all subdecks when saving.
 deck-config-rwkv-review-candidate-refresh = Use faster, approximate queue updates
 deck-config-rwkv-review-candidate-refresh-tooltip =
     After the first full update, RWKV rechecks only the cards most likely to

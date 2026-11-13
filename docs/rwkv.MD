@@ -1062,22 +1062,36 @@ answered during the current scheduler day remains available after the maximum
 review limit is reached. It does not reserve review-limit capacity, and
 answering it again does not increment the deck's completed-review counter.
 
-`rwkv_review_minimum_reviews_per_day` sets a floor for the number of reviews
-RWKV-Instant offers in a scheduler day. Normally eligible review and interday
-learning cards, plus reviews already completed today, count toward the floor.
-If the floor has not been met, RWKV pulls forward scored review cards above
-their target-retention threshold, starting with the lowest retrievability.
-Ordinary maximum review limits, sibling burying, and same-day/repeat-spacing
-guards still take precedence. Limit-exempt same-day repeats may bypass the
-maximum, but do not satisfy the minimum. A deck's completed and queued reviews
-also count toward every ancestor deck's floor; when a parent deck is studied,
-unmet subdeck floors are enforced within their respective subtrees. When
-**Limits start from top** is enabled, studying a subdeck also applies its
-ancestors' unmet floors, using cards from the selected subtree. Deck browser
-counts include these inherited minimums, just like the review queue. Cards
-currently in a filtered deck's review or interday-learning queue count toward
-the floor of their original deck and its ancestors. This accounting is
-transient and does not mark those cards as reviewed today.
+`rwkv_review_minimum_reviews_per_day` sets the selected deck's floor for a
+scheduler day. Normally eligible review and interday learning cards, plus
+reviews already completed today in the selected deck and its subdecks, count
+toward it. If more reviews are needed, RWKV pulls forward scored review cards
+from the selected subtree in ascending retrievability, independently of the
+configured display order. Ordinary maximum review limits, sibling burying, and
+same-day/repeat-spacing guards still take precedence. Limit-exempt same-day
+repeats may bypass the maximum, but do not satisfy the minimum.
+
+The deck-specific **Also honor subdeck minimums** option is off by default.
+When enabled, the selected deck also enforces the minimum of each direct
+subdeck. Each of those subdecks independently decides whether to enforce its own
+direct children's minimums, allowing some branches to remain pooled while
+others are subdivided. The minimum amounts come from each deck's preset; the
+option itself belongs to the deck. **Apply this setting to all subdecks on
+save** copies only the option to every descendant without changing their
+presets or their other settings. More specific minimums are satisfied first,
+so those reviews also count toward their ancestors' minimums before the
+remaining parent-wide target is filled. This can add reviews beyond the parent
+minimum when the subdeck minimums together require more.
+
+Ancestor maximums still apply when **Limits start from top** is enabled, but
+ancestor minimums do not apply while studying a subdeck. Deck browser counts
+and Instant forecasts use the same selected-deck and recursive minimum rules.
+Cards currently in a filtered deck's review or interday-learning queue count
+toward their original deck's applicable minimums. This accounting is transient
+and does not mark those cards as reviewed today. The deck-specific option is
+stored in the deck's `other` metadata under
+`jschoreels.rwkv.respect_subdeck_minimums`, which preserves it through legacy
+deck serialization without changing shared presets.
 
 Due review cards without an RWKV score remain eligible through the normal
 due-card path. When the new-card gather order is `Ascending
@@ -1583,11 +1597,12 @@ sessions after the queue has emptied.
 
 Instant review eligibility uses the model's current prediction and target,
 including future-due cards and the daily minimum's pull-forward rule; the
-untrained Instant-only curve head is not used. Each real deck's review minimum
-and maximum, today's counts, and the new-card limit and **New cards ignore
-review limit** setting are applied through Anki's limit tree. A selected deck's
-ancestors participate when **Limits start from top** is enabled. A search
-spanning independent deck trees applies each tree's limits separately. Cards in
+untrained Instant-only curve head is not used. The selected study deck's review
+minimum, its recursively enabled subdeck minimums, each deck's maximum, today's
+counts, and the new-card limit and **New cards ignore review limit** setting
+are applied through Anki's limit tree. A selected deck's ancestor maximums
+participate when **Limits start from top** is enabled. A search spanning
+independent deck trees applies each tree's maximums separately. Cards in
 non-Instant trees retain normal due-date eligibility. For a search spanning
 trees, cards in Instant-enabled subdecks use Instant eligibility even if their
 top-level deck uses another preset. The selected study deck sets the queue
