@@ -708,6 +708,8 @@ def get_deck_configs_for_update() -> bytes:
     output.rwkv_profile_settings.single_model = single_model_for_profile(
         aqt.mw.pm.profile
     )
+    output.rwkv_collection_counts.cards = aqt.mw.col.card_count()
+    output.rwkv_collection_counts.notes = aqt.mw.col.note_count()
     return output.SerializeToString()
 
 

@@ -108,6 +108,19 @@ function startingState(): DeckOptionsState {
     return new DeckOptionsState(123n, new DeckConfigsForUpdate(exampleData));
 }
 
+test("RWKV usage includes every preset and follows unsaved scheduler changes", () => {
+    const data = new DeckConfigsForUpdate(exampleData);
+    data.allConfig[0].config!.config!.rwkvReviewEnabled = true;
+    data.allConfig[1].config!.config!.rwkvReviewInstantOrderEnabled = true;
+    const state = new DeckOptionsState(123n, data);
+    expect(get(state.rwkvSchedulerUsage)).toEqual({ curve: true, instant: true });
+    state.currentConfig.update((config) => {
+        config.rwkvReviewInstantOrderEnabled = false;
+        return config;
+    });
+    expect(get(state.rwkvSchedulerUsage)).toEqual({ curve: true, instant: false });
+});
+
 test.each([
     ["legacy", "legacy"],
     ["sm40", "sm72e25"],

@@ -77,9 +77,7 @@ def test_saved_model_change_prompts_and_builds_without_reopening(
     owner._rwkv_state_cache_loading = previous_operation  # type: ignore[attr-defined]
     owner.show()
     monkeypatch.setattr(aqt, "mw", owner)
-    monkeypatch.setattr(
-        rwkv_scheduler, "_reviewer_backend", _backend("sm92", "sm98")
-    )
+    monkeypatch.setattr(rwkv_scheduler, "_reviewer_backend", _backend("sm92", "sm98"))
     builds: list[tuple[RwkvRuntimeModels, bool, bool]] = []
 
     def build(_owner: object, **kwargs: object) -> None:
@@ -213,9 +211,7 @@ def test_postponed_model_rebuild_does_not_start_automatic_recovery(
 ) -> None:
     owner = _owner(app, curve=True, instant=True)
     monkeypatch.setattr(aqt, "mw", owner)
-    monkeypatch.setattr(
-        rwkv_scheduler, "_reviewer_backend", _backend("sm92", "sm98")
-    )
+    monkeypatch.setattr(rwkv_scheduler, "_reviewer_backend", _backend("sm92", "sm98"))
     prompt = MagicMock()
     build = MagicMock()
     monkeypatch.setattr("aqt.utils.ask_user_dialog", prompt)
@@ -245,9 +241,7 @@ def test_escape_postpones_the_model_rebuild(
     owner = _owner(app, curve=True, instant=True)
     owner.show()
     monkeypatch.setattr(aqt, "mw", owner)
-    monkeypatch.setattr(
-        rwkv_scheduler, "_reviewer_backend", _backend("sm92", "sm98")
-    )
+    monkeypatch.setattr(rwkv_scheduler, "_reviewer_backend", _backend("sm92", "sm98"))
     build = MagicMock()
     monkeypatch.setattr(rwkv_scheduler, "build_rwkv_state_cache_with_progress", build)
     loop = QEventLoop()
@@ -296,9 +290,7 @@ def test_scheduled_recovery_waits_for_model_rebuild_choice(
         single_shot=lambda _delay, callback: scheduled.append(callback)
     )
     monkeypatch.setattr(aqt, "mw", owner)
-    monkeypatch.setattr(
-        rwkv_scheduler, "_reviewer_backend", _backend("sm92", "sm98")
-    )
+    monkeypatch.setattr(rwkv_scheduler, "_reviewer_backend", _backend("sm92", "sm98"))
     monkeypatch.setattr(rwkv_scheduler, "_rwkv_resident_state_ready", lambda _mw: False)
     prompt = MagicMock()
     build = MagicMock()
@@ -324,9 +316,7 @@ def test_model_rebuild_waits_for_an_existing_cache_operation(
     owner = _owner(app, curve=True, instant=True)
     owner._rwkv_state_cache_loading = True  # type: ignore[attr-defined]
     monkeypatch.setattr(aqt, "mw", owner)
-    monkeypatch.setattr(
-        rwkv_scheduler, "_reviewer_backend", _backend("sm92", "sm98")
-    )
+    monkeypatch.setattr(rwkv_scheduler, "_reviewer_backend", _backend("sm92", "sm98"))
     prompt = MagicMock()
     build = MagicMock()
     monkeypatch.setattr("aqt.utils.ask_user_dialog", prompt)
@@ -351,9 +341,7 @@ def test_postponing_model_rebuild_keeps_existing_operation_loading(
     owner = _owner(app, curve=True, instant=True)
     owner._rwkv_state_cache_loading = True  # type: ignore[attr-defined]
     monkeypatch.setattr(aqt, "mw", owner)
-    monkeypatch.setattr(
-        rwkv_scheduler, "_reviewer_backend", _backend("sm92", "sm98")
-    )
+    monkeypatch.setattr(rwkv_scheduler, "_reviewer_backend", _backend("sm92", "sm98"))
     prompt = MagicMock()
     monkeypatch.setattr("aqt.utils.ask_user_dialog", prompt)
     try:
@@ -426,9 +414,7 @@ def test_one_model_setting_prompts_when_it_changes_the_active_models(
 ) -> None:
     owner = _owner(app, curve=True, instant=True)
     monkeypatch.setattr(aqt, "mw", owner)
-    monkeypatch.setattr(
-        rwkv_scheduler, "_reviewer_backend", _backend("sm92", "sm98")
-    )
+    monkeypatch.setattr(rwkv_scheduler, "_reviewer_backend", _backend("sm92", "sm98"))
     prompt = MagicMock()
     build = MagicMock()
     monkeypatch.setattr("aqt.utils.ask_user_dialog", prompt)
