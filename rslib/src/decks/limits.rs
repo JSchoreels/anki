@@ -128,16 +128,16 @@ impl RemainingLimits {
     }
 
     /// True if some limit was decremented to 0.
-    fn decrement(&mut self, kind: LimitKind) -> DecrementResult {
+    fn decrement(&mut self, kind: LimitKind, count: u32) -> DecrementResult {
         let before = *self;
         match kind {
             LimitKind::Review => {
-                self.review = self.review.saturating_sub(1);
+                self.review = self.review.saturating_sub(count);
                 if self.cap_new_to_review {
                     self.new = self.new.min(self.review);
                 }
             }
-            LimitKind::New => self.new = self.new.saturating_sub(1),
+            LimitKind::New => self.new = self.new.saturating_sub(count),
         }
         DecrementResult::new(&before, self)
     }
@@ -193,6 +193,8 @@ struct NodeLimits {
     limits: RemainingLimits,
     /// Reviews still needed to satisfy this deck's RWKV daily floor.
     rwkv_review_minimum: u32,
+    respect_subdeck_minimums: bool,
+    depth: usize,
 }
 
 impl NodeLimits {
@@ -201,6 +203,8 @@ impl NodeLimits {
         config: &HashMap<DeckConfigId, DeckConfig>,
         today: u32,
         new_cards_ignore_review_limit: bool,
+        minimum_enabled: bool,
+        depth: usize,
     ) -> Self {
         Self {
             limits: RemainingLimits::new(
@@ -209,11 +213,22 @@ impl NodeLimits {
                 today,
                 new_cards_ignore_review_limit,
             ),
-            rwkv_review_minimum: remaining_rwkv_review_minimum(
-                deck,
-                deck.config_id().and_then(|id| config.get(&id)),
-                today,
-            ),
+            rwkv_review_minimum: if minimum_enabled {
+                remaining_rwkv_review_minimum(
+                    deck,
+                    deck.config_id().and_then(|id| config.get(&id)),
+                    today,
+                )
+            } else {
+                0
+            },
+            respect_subdeck_minimums: minimum_enabled
+                && deck
+                    .config_id()
+                    .and_then(|id| config.get(&id))
+                    .is_some_and(|config| config.inner.rwkv_review_instant_order_enabled)
+                && deck.rwkv_respect_subdeck_minimums(),
+            depth,
         }
     }
 }
@@ -246,8 +261,16 @@ impl LimitTreeMap {
         config: &HashMap<DeckConfigId, DeckConfig>,
         today: u32,
         new_cards_ignore_review_limit: bool,
+        rwkv_minimum_deck: DeckId,
     ) -> Self {
-        let root_limits = NodeLimits::new(&decks[0], config, today, new_cards_ignore_review_limit);
+        let root_limits = NodeLimits::new(
+            &decks[0],
+            config,
+            today,
+            new_cards_ignore_review_limit,
+            decks[0].id == rwkv_minimum_deck,
+            0,
+        );
         let mut tree = Tree::new();
         let root_id = tree
             .insert(Node::new(root_limits), InsertBehavior::AsRoot)
@@ -270,12 +293,20 @@ impl LimitTreeMap {
                 }
                 parent_name = immediate_parent_name(name);
             };
+            let minimum_enabled = deck.id == rwkv_minimum_deck
+                || limits
+                    .tree
+                    .get(&parent_node_id)
+                    .unwrap()
+                    .data()
+                    .respect_subdeck_minimums;
             let child_node_id = limits.insert_child_node(
                 deck,
                 parent_node_id,
                 config,
                 today,
                 new_cards_ignore_review_limit,
+                minimum_enabled,
             );
             node_ids_by_name.insert(deck.name.as_native_str(), child_node_id);
         }
@@ -290,9 +321,17 @@ impl LimitTreeMap {
         config: &HashMap<DeckConfigId, DeckConfig>,
         today: u32,
         new_cards_ignore_review_limit: bool,
+        minimum_enabled: bool,
     ) -> NodeId {
-        let mut child_limits =
-            NodeLimits::new(child_deck, config, today, new_cards_ignore_review_limit);
+        let depth = self.tree.get(&parent_node_id).unwrap().data().depth + 1;
+        let mut child_limits = NodeLimits::new(
+            child_deck,
+            config,
+            today,
+            new_cards_ignore_review_limit,
+            minimum_enabled,
+            depth,
+        );
         child_limits
             .limits
             .cap_to(self.get_node_limits(&parent_node_id));
@@ -344,7 +383,7 @@ impl LimitTreeMap {
         kind: LimitKind,
     ) -> Result<()> {
         let node_id = self.get_node_id(deck_id)?.clone();
-        self.decrement_node_and_parent_limits(&node_id, kind);
+        self.decrement_node_and_parent_limits(&node_id, kind, 1);
         Ok(())
     }
 
@@ -354,17 +393,33 @@ impl LimitTreeMap {
         original_deck_id: DeckId,
     ) -> Result<()> {
         let node_id = self.get_node_id(deck_id)?.clone();
-        self.decrement_node_and_parent_limits(&node_id, LimitKind::Review);
+        self.decrement_node_and_parent_limits(&node_id, LimitKind::Review, 1);
         if original_deck_id.0 == 0 {
             self.decrement_rwkv_review_minimum(&node_id, 1);
         }
         Ok(())
     }
 
-    pub(crate) fn reserve_rwkv_reviews(&mut self, deck_id: DeckId, count: u32) -> Result<()> {
+    /// Reserve only reviews that fit the daily limits while estimating deck
+    /// counts.
+    pub(crate) fn reserve_counted_rwkv_reviews(
+        &mut self,
+        deck_id: DeckId,
+        count: u32,
+    ) -> Result<u32> {
         let node_id = self.get_node_id(deck_id)?.clone();
-        self.decrement_rwkv_review_minimum(&node_id, count);
-        Ok(())
+        let mut available = count;
+        let mut ancestor = Some(node_id.clone());
+        while let Some(id) = ancestor {
+            let node = self.tree.get(&id).unwrap();
+            available = available.min(node.data().limits.review);
+            ancestor = node.parent().cloned();
+        }
+        if available > 0 {
+            self.decrement_node_and_parent_limits(&node_id, LimitKind::Review, available);
+            self.decrement_rwkv_review_minimum(&node_id, available);
+        }
+        Ok(available)
     }
 
     pub(crate) fn reserve_rwkv_reviews_if_present(&mut self, deck_id: DeckId, count: u32) {
@@ -373,16 +428,46 @@ impl LimitTreeMap {
         }
     }
 
-    pub(crate) fn rwkv_review_minimum_remaining(&self, deck_id: DeckId) -> Result<bool> {
+    /// More specific subdeck floors are filled first so they also satisfy
+    /// their ancestors before the remaining parent-wide target is filled.
+    pub(crate) fn rwkv_review_minimum_depths(&self) -> Vec<usize> {
+        let mut depths = self
+            .map
+            .values()
+            .filter_map(|id| self.tree.get(id).ok())
+            .filter(|node| node.data().rwkv_review_minimum > 0)
+            .map(|node| node.data().depth)
+            .collect::<Vec<_>>();
+        depths.sort_unstable_by(|a, b| b.cmp(a));
+        depths.dedup();
+        depths
+    }
+
+    pub(crate) fn rwkv_review_minimum_remaining_at_depth(
+        &self,
+        deck_id: DeckId,
+        depth: usize,
+    ) -> Result<bool> {
         let mut node_id = Some(self.get_node_id(deck_id)?.clone());
         while let Some(current) = node_id {
             let node = self.tree.get(&current).unwrap();
-            if node.data().rwkv_review_minimum > 0 {
-                return Ok(true);
+            if node.data().depth == depth {
+                return Ok(node.data().rwkv_review_minimum > 0);
+            }
+            if node.data().depth < depth {
+                break;
             }
             node_id = node.parent().cloned();
         }
         Ok(false)
+    }
+
+    pub(crate) fn has_rwkv_review_minimum_at_depth(&self, depth: usize) -> bool {
+        self.map.values().any(|id| {
+            self.tree
+                .get(id)
+                .is_ok_and(|node| node.data().depth == depth && node.data().rwkv_review_minimum > 0)
+        })
     }
 
     pub(crate) fn any_rwkv_review_minimum_remaining(&self) -> bool {
@@ -402,18 +487,18 @@ impl LimitTreeMap {
         Ok(())
     }
 
-    fn decrement_node_and_parent_limits(&mut self, node_id: &NodeId, kind: LimitKind) {
+    fn decrement_node_and_parent_limits(&mut self, node_id: &NodeId, kind: LimitKind, count: u32) {
         let node = self.tree.get_mut(node_id).unwrap();
         let parent = node.parent().cloned();
 
         let limits = &mut node.data_mut().limits;
-        if limits.decrement(kind).count_reached_zero {
+        if limits.decrement(kind, count).count_reached_zero {
             let limits = *limits;
             self.cap_node_and_descendants(node_id, limits);
         };
 
         if let Some(parent_id) = parent {
-            self.decrement_node_and_parent_limits(&parent_id, kind)
+            self.decrement_node_and_parent_limits(&parent_id, kind, count)
         }
     }
 

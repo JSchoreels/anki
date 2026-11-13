@@ -57,6 +57,8 @@ Changes since the last normal release, [build 110](https://github.com/JSchoreels
 
 #### Fixes
 
+- **Keep Instant minimum reviews balanced across the selected deck.** The minimum now chooses the lowest-recall cards across its subdecks instead of automatically enforcing a separate minimum for each one. Enable the deck-specific **Also honor subdeck minimums** option for branches that need their own targets, and optionally apply that setting to all subdecks when saving.
+
 - **Use recall to estimate Instant review time.** Forecasted review durations now account for each card's predicted recall and answer grade, using a regression fitted from your review history while retaining variation from sampled sessions.
 
 - **Keep Instant forecast queue scores faithful to RWKV.** The higher and lower answer scenarios now use the model's actual scores to decide which reviews are due, instead of shifting every queued card's score.
@@ -96,6 +98,8 @@ Changes since the last normal release, [build 110](https://github.com/JSchoreels
 - **Faster uploads during normal sync.** When many small review or card changes are waiting to be sent, Anki combines them into fewer requests. The improvement depends on the number of changes and network latency; downloading still uses the server's batch size.
 
 ### Technical details
+
+- **Instant minimum scope:** The queue, deck counts, and Instant workload forecast use the selected deck's minimum and recursively honor child minimums only where their parent deck enables the deck-specific option. Child minimums are filled before ancestor minimums, and pull-forwards use absolute retrievability for every review order. The option is preserved in deck metadata; applying it to descendants changes neither shared presets nor other deck settings.
 
 - **Big pair (SM109):** Bundle the show-time instant-only big model (SM99), use it alone or pair it with the Big Curve model (SM91s2), and extend the paired runtime to the big engine. Both models replay answers in paired mode; the replay and cache identities distinguish each layout. At default INT4-card/INT8-note precision, a single Big state uses 19,554 B per card and note and the pair uses 39,146 B. The [integration report](docs/rwkv-sm109-2026-11-12.MD) records the upstream accuracy measurements, package provenance and native parity tests.
 

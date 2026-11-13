@@ -267,6 +267,9 @@ message DeckConfigsForUpdate {
       bool new_today_active = 6;
       // Deck-specific desired retention override
       optional float desired_retention = 7;
+      // Deck-specific RWKV option; absent when older clients save options.
+      optional bool rwkv_respect_subdeck_minimums = 8;
+      bool rwkv_apply_respect_subdeck_minimums_to_children = 9;
     }
     string name = 1;
     int64 config_id = 2;

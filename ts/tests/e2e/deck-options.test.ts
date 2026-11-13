@@ -233,6 +233,30 @@ test("RWKV comparison shows agreement for both answer models and multiple horizo
     await expect(first).toBeVisible();
 });
 
+test("RWKV subdeck minimums can be saved and applied to descendants", async ({ page }) => {
+    let saved: UpdateDeckConfigsRequest | undefined;
+    await page.route("**/_anki/getDeckConfigsForUpdate", async (route) => {
+        const response = await route.fetch();
+        const data = DeckConfigsForUpdate.fromBinary(await response.body());
+        const config = data.allConfig.find((entry) => entry.config!.id === data.currentDeck!.configId)!.config!.config!;
+        config.rwkvReviewInstantOrderEnabled = true;
+        data.currentDeck!.limits!.rwkvRespectSubdeckMinimums = false;
+        await route.fulfill({ response, body: Buffer.from(data.toBinary()) });
+    });
+    await page.route("**/_anki/updateDeckConfigsAndClose", async (route) => {
+        saved = decodeRequestBody(route.request(), UpdateDeckConfigsRequest);
+        await route.fulfill({ body: Buffer.from(new OpChanges().toBinary()) });
+    });
+    await page.goto("/deck-options/1");
+    const setting = page.getByRole("checkbox", { name: "Also honor subdeck minimums", exact: true });
+    await expect(setting).not.toBeChecked();
+    await setting.check();
+    await page.getByRole("checkbox", { name: "Apply this setting to all subdecks on save", exact: true }).check();
+    await page.getByRole("button", { name: "Save", exact: true }).click();
+    await expect.poll(() => saved?.limits?.rwkvRespectSubdeckMinimums).toBe(true);
+    expect(saved?.limits?.rwkvApplyRespectSubdeckMinimumsToChildren).toBe(true);
+});
+
 test(
     "RWKV Advanced hides model, queue and comparison controls and preserves precision on Save",
     async ({ page }, testInfo) => {

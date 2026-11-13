@@ -4,6 +4,7 @@
 //! Use the live queue's eligibility and deck-limit rules in Instant forecasts.
 
 use std::collections::HashMap;
+use std::collections::HashSet;
 use std::io;
 
 use anki_proto::deck_config::deck_config::config::ReviewCardOrder;
@@ -36,6 +37,7 @@ pub(super) struct InstantCandidate {
 
 #[derive(Clone, Copy)]
 pub(super) struct InstantReviewPolicy {
+    pub study_deck_id: DeckId,
     pub same_day_allowed: bool,
     pub min_intervening: u32,
     pub min_elapsed_seconds: u32,
@@ -86,7 +88,13 @@ pub(super) fn instant_review_candidates(
     if decks.is_empty() {
         return Err(invalid("Instant forecast has no study deck"));
     }
-    let mut limits = LimitTreeMap::build(decks, configs, today, new_cards_ignore_review_limit);
+    let mut limits = LimitTreeMap::build(
+        decks,
+        configs,
+        today,
+        new_cards_ignore_review_limit,
+        policy.study_deck_id,
+    );
     select_reviews(cards, decks, configs, &mut limits, policy)
 }
 
@@ -107,7 +115,13 @@ pub(super) fn instant_study_candidates(
     if decks.is_empty() {
         return Err(invalid("Instant forecast has no study deck"));
     }
-    let mut limits = LimitTreeMap::build(decks, configs, today, new_cards_ignore_review_limit);
+    let mut limits = LimitTreeMap::build(
+        decks,
+        configs,
+        today,
+        new_cards_ignore_review_limit,
+        policy.study_deck_id,
+    );
     // A precomputed card can remain ahead of the freshly ordered queue, but
     // the previous answer may have exhausted its deck's remaining limit.
     // Check before the queue reserves any slots for other candidates.
@@ -266,30 +280,29 @@ fn select_reviews(
         return Ok(selected);
     }
     above_target.sort_by(|left, right| {
-        let score = |card: &InstantCandidate| {
-            if policy.order == ReviewCardOrder::RelativeOverdueness {
-                card.score / card.target.max(0.0001)
-            } else {
-                card.score
-            }
-        };
-        score(&cards[*left])
-            .total_cmp(&score(&cards[*right]))
+        cards[*left]
+            .score
+            .total_cmp(&cards[*right].score)
             .then_with(|| cards[*left].card_id.cmp(&cards[*right].card_id))
     });
-    for index in above_target {
-        let card = &cards[index];
-        let deck = DeckId(card.deck_id);
-        if !ignores_review_limit(card, decks, configs)?
-            && limits
-                .rwkv_review_minimum_remaining(deck)
-                .map_err(map_error)?
-            && !limits
-                .limit_reached(deck, LimitKind::Review)
-                .map_err(map_error)?
-        {
-            selected.push(index);
-            limits.reserve_review(deck, DeckId(0)).map_err(map_error)?;
+    let mut pulled = HashSet::new();
+    for depth in limits.rwkv_review_minimum_depths() {
+        for &index in &above_target {
+            let card = &cards[index];
+            let deck = DeckId(card.deck_id);
+            if !pulled.contains(&index)
+                && !ignores_review_limit(card, decks, configs)?
+                && limits
+                    .rwkv_review_minimum_remaining_at_depth(deck, depth)
+                    .map_err(map_error)?
+                && !limits
+                    .limit_reached(deck, LimitKind::Review)
+                    .map_err(map_error)?
+            {
+                selected.push(index);
+                pulled.insert(index);
+                limits.reserve_review(deck, DeckId(0)).map_err(map_error)?;
+            }
         }
     }
     selected.sort_by(compare);
@@ -389,6 +402,7 @@ mod tests {
 
     fn policy() -> InstantReviewPolicy {
         InstantReviewPolicy {
+            study_deck_id: DeckId(1),
             same_day_allowed: false,
             min_intervening: 5,
             min_elapsed_seconds: 30,
@@ -406,6 +420,62 @@ mod tests {
         assert_eq!(
             instant_review_candidates(&cards, &decks, &configs, 0, true, policy()).unwrap(),
             vec![0, 2]
+        );
+    }
+
+    #[test]
+    fn minimum_uses_selected_deck_across_subdecks() {
+        let mut decks = [
+            deck(1, "Parent", 1),
+            deck(2, "Parent::Lower", 2),
+            deck(3, "Parent::Higher", 3),
+        ];
+        let configs = HashMap::from([
+            (DeckConfigId(1), config(1, 2, 20)),
+            (DeckConfigId(2), config(2, 1, 20)),
+            (DeckConfigId(3), config(3, 1, 20)),
+        ]);
+        let cards = [card(1, 2, 0.92), card(2, 2, 0.93), card(3, 3, 0.99)];
+        assert_eq!(
+            instant_review_candidates(&cards, &decks, &configs, 0, true, policy()).unwrap(),
+            vec![0, 1]
+        );
+        decks[0].set_rwkv_respect_subdeck_minimums(true).unwrap();
+        assert_eq!(
+            instant_review_candidates(&cards, &decks, &configs, 0, true, policy()).unwrap(),
+            vec![0, 2]
+        );
+    }
+
+    #[test]
+    fn minimum_ignores_ancestor_when_studying_child() {
+        let decks = [deck(1, "Parent", 1), deck(2, "Parent::Child", 2)];
+        let mut policy = policy();
+        policy.study_deck_id = DeckId(2);
+        let cards = [card(1, 2, 0.92), card(2, 2, 0.95)];
+        let configs = HashMap::from([
+            (DeckConfigId(1), config(1, 5, 20)),
+            (DeckConfigId(2), config(2, 1, 20)),
+        ]);
+        assert_eq!(
+            instant_review_candidates(&cards, &decks, &configs, 0, true, policy).unwrap(),
+            vec![0]
+        );
+    }
+
+    #[test]
+    fn minimum_uses_lowest_recall_with_relative_overdueness() {
+        let decks = [deck(1, "Parent", 1)];
+        let configs = HashMap::from([(DeckConfigId(1), config(1, 1, 20))]);
+        let mut lower = card(1, 1, 0.80);
+        lower.target = 0.75;
+        let mut higher = card(2, 1, 0.90);
+        higher.target = 0.89;
+        let mut policy = policy();
+        policy.order = ReviewCardOrder::RelativeOverdueness;
+        assert_eq!(
+            instant_review_candidates(&[lower, higher], &decks, &configs, 0, true, policy).unwrap(),
+            vec![0]
         );
     }
 

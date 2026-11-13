@@ -218,6 +218,7 @@ impl QueueBuilder {
             &config_map,
             timing.days_elapsed,
             new_cards_ignore_review_limit,
+            deck_id,
         );
         for (original_deck_id, count) in col.storage.filtered_review_counts_by_original_deck()? {
             limits.reserve_rwkv_reviews_if_present(original_deck_id, count);
@@ -3104,6 +3105,223 @@ mod test {
         )?;
 
         assert_eq!(col.queue_as_ids(deck.id), vec![cards[0].0, cards[1].0]);
+        Ok(())
+    }
+
+    #[test]
+    fn rwkv_minimum_uses_selected_deck_across_subdecks() -> Result<()> {
+        let mut col = Collection::new();
+        let mut parent = DeckAdder::new("parent").add(&mut col);
+        let mut lower = DeckAdder::new("parent::lower").add(&mut col);
+        let mut higher = DeckAdder::new("parent::higher").add(&mut col);
+        for deck in [&mut parent, &mut lower, &mut higher] {
+            col.set_deck_rwkv_review_order_with_desired_retention(
+                deck,
+                ReviewCardOrder::RetrievabilityAscending,
+                0.75,
+            );
+            col.set_deck_rwkv_minimum_reviews(deck.id, 2);
+        }
+        col.set_deck_rwkv_minimum_reviews(lower.id, 1);
+        col.set_deck_rwkv_minimum_reviews(higher.id, 1);
+
+        let timing = col.timing_today()?;
+        let mut add_card = |deck_id| {
+            add_memory_state_card(
+                &mut col,
+                deck_id,
+                CardQueue::Review,
+                CardType::Review,
+                timing.days_elapsed as i32 + 7,
+                2 * 86_400,
+                30.0,
+            )
+        };
+        let first = add_card(lower.id)?;
+        let second = add_card(lower.id)?;
+        let high = add_card(higher.id)?;
+        col.set_rwkv_review_queue_score_entries(
+            parent.id,
+            [(first, 0.80), (second, 0.85), (high, 0.95)]
+                .into_iter()
+                .map(|(card_id, retrievability)| {
+                    (
+                        card_id,
+                        RwkvReviewQueueScoreEntry {
+                            retrievability,
+                            target_retention: Some(0.75),
+                            intervening_reviews: None,
+                        },
+                    )
+                })
+                .collect(),
+        )?;
+
+        assert_eq!(col.queue_as_ids(parent.id), vec![first, second]);
+
+        parent.set_rwkv_respect_subdeck_minimums(true)?;
+        col.add_or_update_deck(&mut parent)?;
+        assert_eq!(col.queue_as_ids(parent.id), vec![first, high]);
+        parent.set_rwkv_respect_subdeck_minimums(false)?;
+        col.add_or_update_deck(&mut parent)?;
+
+        let usn = col.usn()?;
+        col.update_deck_stats(
+            timing.days_elapsed,
+            usn,
+            anki_proto::scheduler::UpdateStatsRequest {
+                deck_id: parent.id.0,
+                review_delta: 2,
+                ..Default::default()
+            },
+        )?;
+        assert!(col.queue_as_ids(parent.id).is_empty());
+        assert_eq!(col.queue_as_ids(higher.id), vec![high]);
+
+        col.set_deck_rwkv_minimum_reviews(higher.id, 0);
+        col.update_deck_stats(
+            timing.days_elapsed,
+            usn,
+            anki_proto::scheduler::UpdateStatsRequest {
+                deck_id: parent.id.0,
+                review_delta: -2,
+                ..Default::default()
+            },
+        )?;
+        col.set_config_bool(BoolKey::ApplyAllParentLimits, true, false)?;
+        assert!(col.queue_as_ids(higher.id).is_empty());
+        Ok(())
+    }
+
+    #[test]
+    fn rwkv_subdeck_minimums_follow_each_level_option() -> Result<()> {
+        let mut col = Collection::new();
+        let mut language = DeckAdder::new("Language").add(&mut col);
+        let mut japanese = DeckAdder::new("Language::Japanese").add(&mut col);
+        let mut english = DeckAdder::new("Language::English").add(&mut col);
+        let mut japanese_vocab = DeckAdder::new("Language::Japanese::Vocab").add(&mut col);
+        let mut japanese_sentences = DeckAdder::new("Language::Japanese::Sentences").add(&mut col);
+        let mut english_vocab = DeckAdder::new("Language::English::Vocab").add(&mut col);
+        let mut english_sentences = DeckAdder::new("Language::English::Sentences").add(&mut col);
+        for deck in [
+            &mut language,
+            &mut japanese,
+            &mut english,
+            &mut japanese_vocab,
+            &mut japanese_sentences,
+            &mut english_vocab,
+            &mut english_sentences,
+        ] {
+            col.set_deck_rwkv_review_order_with_desired_retention(
+                deck,
+                ReviewCardOrder::RetrievabilityAscending,
+                0.75,
+            );
+            col.set_deck_rwkv_minimum_reviews(deck.id, 1);
+        }
+        col.set_deck_rwkv_minimum_reviews(language.id, 2);
+        language.set_rwkv_respect_subdeck_minimums(true)?;
+        col.add_or_update_deck(&mut language)?;
+        let timing = col.timing_today()?;
+        let mut add_card = |deck_id| {
+            add_memory_state_card(
+                &mut col,
+                deck_id,
+                CardQueue::Review,
+                CardType::Review,
+                timing.days_elapsed as i32 + 7,
+                2 * 86_400,
+                30.0,
+            )
+        };
+        let japanese_low = add_card(japanese_vocab.id)?;
+        let japanese_high = add_card(japanese_sentences.id)?;
+        let english_low = add_card(english_vocab.id)?;
+        let english_high = add_card(english_sentences.id)?;
+        col.set_rwkv_review_queue_score_entries(
+            language.id,
+            [
+                (japanese_low, 0.80),
+                (japanese_high, 0.96),
+                (english_low, 0.85),
+                (english_high, 0.97),
+            ]
+            .into_iter()
+            .map(|(card_id, retrievability)| {
+                (
+                    card_id,
+                    RwkvReviewQueueScoreEntry {
+                        retrievability,
+                        target_retention: Some(0.75),
+                        intervening_reviews: None,
+                    },
+                )
+            })
+            .collect(),
+        )?;
+
+        assert_eq!(
+            col.queue_as_ids(language.id),
+            vec![japanese_low, english_low]
+        );
+
+        japanese.set_rwkv_respect_subdeck_minimums(true)?;
+        col.add_or_update_deck(&mut japanese)?;
+        assert_eq!(
+            col.queue_as_ids(language.id),
+            vec![japanese_low, english_low, japanese_high]
+        );
+        Ok(())
+    }
+
+    #[test]
+    fn rwkv_minimum_uses_lowest_recall_with_relative_overdueness() -> Result<()> {
+        let mut col = Collection::new();
+        let mut deck = DeckAdder::new("parent").add(&mut col);
+        col.set_deck_rwkv_instant_order(&mut deck, ReviewCardOrder::RelativeOverdueness);
+        col.set_deck_rwkv_minimum_reviews(deck.id, 1);
+        let timing = col.timing_today()?;
+        let lower_recall = add_memory_state_card(
+            &mut col,
+            deck.id,
+            CardQueue::Review,
+            CardType::Review,
+            timing.days_elapsed as i32 + 7,
+            2 * 86_400,
+            30.0,
+        )?;
+        let higher_recall = add_memory_state_card(
+            &mut col,
+            deck.id,
+            CardQueue::Review,
+            CardType::Review,
+            timing.days_elapsed as i32 + 7,
+            2 * 86_400,
+            30.0,
+        )?;
+        col.set_rwkv_review_queue_score_entries(
+            deck.id,
+            HashMap::from([
+                (
+                    lower_recall,
+                    RwkvReviewQueueScoreEntry {
+                        retrievability: 0.80,
+                        target_retention: Some(0.75),
+                        intervening_reviews: None,
+                    },
+                ),
+                (
+                    higher_recall,
+                    RwkvReviewQueueScoreEntry {
+                        retrievability: 0.90,
+                        target_retention: Some(0.89),
+                        intervening_reviews: None,
+                    },
+                ),
+            ]),
+        )?;
+
+        assert_eq!(col.queue_as_ids(deck.id), vec![lower_recall]);
         Ok(())
     }
 
