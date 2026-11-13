@@ -230,7 +230,7 @@ Calculator** (both set `rwkv_review_enabled`):
 
 | Presets use | Opt-out | RWKV-Instant | RWKV-Curve, intervals, S90, answer time | Model states |
 | --- | --- | --- | --- | --- |
-| RWKV-Instant, no RWKV-Curve | ignored | the Tiny Instant-Only model (SM101), alone (`InstantOnly`; SM98 until 2026-11-13) | none: FSRS fallback for due dates and memory states | one |
+| RWKV-Instant, no RWKV-Curve | ignored | the Tiny Instant-Only model (SM101), alone (`InstantOnly`; the Small Instant-Only model (SM98) until 2026-11-13) | none: FSRS fallback for due dates and memory states | one |
 | both | off (default) | the show-time instant-only model, stage 2 (SM98) | the small model (SM63) | two |
 | both | on | the show-time retrain of the release (SM92) | the show-time retrain of the release (SM92) | one |
 | RWKV-Curve only, or neither | ignored | (none) | the small model (SM63) | one |
@@ -323,25 +323,29 @@ Since 2026-11-13 (the user's decision of 2026-11-12):
 
 - **Tiny with the one-model opt-out** runs the Tiny two-head model (SM106, folder
   `qt/aqt/rwkv_inference/sm106/`, model kind `sm106`, `RWKV_TINY_SINGLE_MODEL`) alone
-  instead of the show-time retrain (SM92). SM106 is SM92's constant-LR epoch 26 cut to
-  one card layer (the tiny plan of SM101), three more epochs with both heads and the
+  instead of the show-time retrain (SM92). The Tiny two-head model (SM106) is the
+  show-time retrain (SM92)'s constant-LR epoch 26 cut to one card layer (the tiny plan
+  of the Tiny Instant-Only model (SM101)), three more epochs with both heads and the
   release's one-epoch 32k Muon cool-down, all on show-time inputs: a full model (curve,
   intervals, S90, instant recall and buttons) without an answer-time head, so Card
   Info shows no RWKV answer-time rows there. Upstream (722 users of the 732-user set,
   show-time inputs, % of the big model (1 leak-free epoch)'s LogLoss): curve 0.300676,
-  +0.37% [+0.18, +0.57]; instant 0.277369, +0.08% [−0.03, +0.16]; against SM92 curve
-  +0.11% [+0.07, +0.14] and instant +0.18% [+0.16, +0.20]. State: 2,622 B per card
-  and note at the default storage precision (SM92: 3,530 B).
+  +0.37% [+0.18, +0.57]; instant 0.277369, +0.08% [−0.03, +0.16]; against the
+  show-time retrain (SM92) curve +0.11% [+0.07, +0.14] and instant +0.18% [+0.16,
+  +0.20]. State: 2,622 B per card and note at the default storage precision (the
+  show-time retrain (SM92): 3,530 B).
 - **RWKV-Instant without RWKV-Curve** runs the Tiny Instant-Only model (SM101) alone
   for Small too (`RWKV_INSTANT_ALONE_MODEL`), not the Small Instant-Only model (SM98);
   Big keeps the show-time instant-only big model (SM99) alone
-  (`RWKV_CHOICE_INSTANT_ALONE_MODELS`). Small's pair stays SM63 + SM98. Small and Tiny
-  then run the same runtime, so switching between them keeps the state.
+  (`RWKV_CHOICE_INSTANT_ALONE_MODELS`). Small's pair stays the default small model
+  (SM63) beside the Small Instant-Only model (SM98). Small and Tiny then run the same
+  runtime, so switching between them keeps the state.
 
 The replay key holds `model` (`sm101`, `sm106`), and the model cache key the weights'
-SHA-256 (SM101 and SM106 have the same file size), so a Small RWKV-Instant-only state
-built on SM98 and a Tiny opt-out state built on SM92 rebuild once from the review
-history. See the [report](rwkv-sm112-2026-11-13.MD).
+SHA-256 (the Tiny Instant-Only model (SM101) and the Tiny two-head model (SM106) have
+the same file size), so a Small RWKV-Instant-only state built on the Small
+Instant-Only model (SM98) and a Tiny opt-out state built on the show-time retrain
+(SM92) rebuild once from the review history. See the [report](rwkv-sm112-2026-11-13.MD).
 
 ### Show-Time Retrain of the Release (SM92)
 
