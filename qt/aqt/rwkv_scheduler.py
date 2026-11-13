@@ -22563,7 +22563,7 @@ def _rwkv_runtime_models_for_profile(mw: object) -> RwkvRuntimeModels:
     model = model_for_profile(profile)
     if os.environ.get("ANKI_RWKV_MODEL_PATH"):
         # A custom checkpoint serves both schedulers, in place of the
-        # choice's full model (Tiny's is the default small model).
+        # choice's full model (a size's two-head model).
         return RwkvRuntimeModels(curve_model_for_choice(model))
     config_state = _rwkv_collection_config_state(SimpleNamespace(mw=mw))
     return runtime_models(
@@ -22603,11 +22603,12 @@ def _require_rwkv_workload_curve() -> None:
 def refresh_rwkv_runtime_models_after_preset_change(mw: object) -> bool:
     """Drop an instant-only runtime once a preset uses RWKV-Curve.
 
-    The show-time instant-only model, stage 2 (SM98) alone has no curve, so
+    A size's Instant-Only model alone (SM99, SM98 or SM101) has no curve, so
     an RWKV-Curve preset (as scheduler or as RWKV-Instant's fallback) saved
     while it runs would otherwise get FSRS intervals until the next profile
     open. The next backend use creates the runtime the profile now needs
-    (the pair, or the release alone with the opt-out), whose replay key
+    (the pair, or the size's two-head model alone with the opt-out), whose
+    replay key
     differs, so state rebuilds once. Every other change still waits for the
     next profile open. Returns whether the backend was dropped.
     """

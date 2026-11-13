@@ -33,8 +33,9 @@ export type DeckOptionsId = bigint;
 export const RWKV_MODEL_BIG = "legacy";
 export const RWKV_MODEL_SMALL = "sm72e25";
 export const RWKV_MODEL_TINY = "tiny";
-/** Older small models: still run until a save, which stores Small instead. */
-export const RWKV_OLDER_SMALL_MODELS = ["sm40", "sm36", "sm55", "sm56", "sm72", "sm72e20"];
+/** Older small models (and the default small model (SM63) by its own value):
+ * still run until a save, which stores Small instead. */
+export const RWKV_OLDER_SMALL_MODELS = ["sm40", "sm36", "sm55", "sm56", "sm72", "sm72e20", "sm63"];
 
 export interface ConfigWithCount {
     config: DeckConfig;
