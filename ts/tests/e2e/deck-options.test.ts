@@ -334,19 +334,16 @@ test(
             /trained on the time since the last review.*card is shown.*19\.6 KB with one model.*39\.1 KB/,
         );
         await expect(small).toHaveAccessibleDescription(
-            /2\.6 KB with Instant only.*87% less than Big.*7\.1 KB.*82% less/,
+            /3\.5 KB with Instant only.*82% less than Big.*7\.1 KB.*82% less/,
         );
-        await expect(small).toHaveAccessibleDescription(/Curve 0\.33% higher, Instant 0\.11% higher/);
-        await expect(small).toHaveAccessibleDescription(/With Instant only, Small uses the same model as Tiny/);
+        await expect(small).toHaveAccessibleDescription(/Curve 0\.31% higher, Instant 0\.11% higher/);
         await expect(tiny).toHaveAccessibleDescription(
-            /2\.6 KB with Instant only.*same as Small, 87% less than Big.*6\.2 KB.*13% less than Small, 84% less than Big/,
-        );
-        await expect(tiny).toHaveAccessibleDescription(
-            /Curve 0\.33% higher, Instant 0\.30% higher \(0\.19% higher than Small\)/,
+            /2\.6 KB with Instant only.*26% less than Small, 87% less than Big.*5\.3 KB.*26% less than Small, 87% less than Big/,
         );
         await expect(tiny).toHaveAccessibleDescription(
-            /With both schedulers and the one-model setting.*no answer-time estimate/,
+            /Curve 0\.42% higher, Instant 0\.30% higher \(0\.11% and 0\.19% higher than Small\)/,
         );
+        await expect(tiny).toHaveAccessibleDescription(/Tiny has no answer-time estimate/);
         await expect(group).toContainText("With both schedulers, comparisons assume separate models");
         await expect(group).toContainText("default precision (INT4 cards + INT8 notes)");
         await expect(group).toContainText("Factory LogLoss is from 722 users; lower is better");
@@ -365,9 +362,8 @@ test(
         );
         await tiny.check();
         await expect(singleModel).toBeVisible();
-        await expect(group).toContainText("Turn this on to use one model for both");
-        await expect(group).toContainText("Small and Tiny use the same Instant model; Big uses its own");
-        await expect(group).toContainText("With Tiny, Curve predictions are also slightly less accurate");
+        await expect(group).toContainText("Turn this on to use the size's Curve model for both");
+        await expect(group).toContainText("the size's Instant model always runs alone");
         await page.setViewportSize({ width: 736, height: 1000 });
         await card.screenshot({ path: testInfo.outputPath("rwkv-options-advanced.png") });
         await page.evaluate(() => document.documentElement.classList.add("night-mode"));
@@ -443,7 +439,7 @@ test("RWKV keeps a saved SM92 choice as a fourth option until another size is pi
     await expect(group.getByRole("radio")).toHaveCount(3);
 });
 
-for (const model of ["sm40", "sm36", "sm55", "sm56", "sm72", "sm72e20"]) {
+for (const model of ["sm40", "sm36", "sm55", "sm56", "sm72", "sm72e20", "sm63"]) {
     test(`saving older RWKV model ${model} chooses Small without changing hidden precision`, async ({ page }) => {
         let saved: UpdateDeckConfigsRequest | undefined;
         await page.route("**/_anki/getDeckConfigsForUpdate", async (route) => {

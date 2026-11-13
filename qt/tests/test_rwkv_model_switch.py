@@ -78,7 +78,7 @@ def test_saved_model_change_prompts_and_builds_without_reopening(
     owner.show()
     monkeypatch.setattr(aqt, "mw", owner)
     monkeypatch.setattr(
-        rwkv_scheduler, "_reviewer_backend", _backend("sm72e25", "sm98")
+        rwkv_scheduler, "_reviewer_backend", _backend("sm92", "sm98")
     )
     builds: list[tuple[RwkvRuntimeModels, bool, bool]] = []
 
@@ -126,7 +126,7 @@ def test_saved_model_change_prompts_and_builds_without_reopening(
             rwkv_scheduler._finish_rwkv_state_cache_operation(
                 owner, ready=False, prewarm_reason="previous operation"
             )
-        assert builds == [(RwkvRuntimeModels("sm72e25", "sm101"), True, calibration)]
+        assert builds == [(RwkvRuntimeModels("sm106", "sm101"), True, calibration)]
     finally:
         timer.stop()
         timeout.stop()
@@ -138,11 +138,11 @@ def test_saved_model_change_prompts_and_builds_without_reopening(
 @pytest.mark.parametrize(
     "curve,instant,models",
     [
-        (False, True, ("sm101", None)),
-        (True, False, ("sm72e25", None)),
+        (False, True, ("sm98", None)),
+        (True, False, ("sm92", None)),
     ],
 )
-def test_saved_size_change_keeps_the_same_model_state_without_prompting(
+def test_one_model_setting_keeps_the_same_state_with_one_scheduler(
     app: QApplication,
     monkeypatch: pytest.MonkeyPatch,
     curve: bool,
@@ -156,9 +156,13 @@ def test_saved_size_change_keeps_the_same_model_state_without_prompting(
     build = MagicMock()
     monkeypatch.setattr(rwkv_scheduler, "build_rwkv_state_cache_with_progress", build)
     try:
-        _save_tiny()
+        request = UpdateDeckConfigsRequest()
+        request.rwkv_profile_settings.model = "sm72e25"
+        request.rwkv_profile_settings.state_precision = "int8"
+        request.rwkv_profile_settings.single_model = True
+        mediasrv._on_update_deck_configs_success(request, close_on_success=True)
         app.processEvents()
-        assert owner.pm.profile["rwkvModel"] == "tiny"  # type: ignore[attr-defined]
+        assert owner.pm.profile["rwkvSingleModel"] is True  # type: ignore[attr-defined]
         assert rwkv_scheduler._reviewer_backend is backend
         assert not rwkv_scheduler.rwkv_state_cache_loading(owner)
         assert not [
@@ -171,13 +175,46 @@ def test_saved_size_change_keeps_the_same_model_state_without_prompting(
         owner.close()
 
 
+@pytest.mark.parametrize(
+    "curve,instant,old_models,new_models",
+    [
+        (False, True, ("sm98", None), RwkvRuntimeModels("sm101")),
+        (True, False, ("sm92", None), RwkvRuntimeModels("sm106")),
+    ],
+)
+def test_saved_size_change_prompts_with_one_scheduler(
+    app: QApplication,
+    monkeypatch: pytest.MonkeyPatch,
+    curve: bool,
+    instant: bool,
+    old_models: tuple[str, str | None],
+    new_models: RwkvRuntimeModels,
+) -> None:
+    owner = _owner(app, curve=curve, instant=instant)
+    monkeypatch.setattr(aqt, "mw", owner)
+    monkeypatch.setattr(rwkv_scheduler, "_reviewer_backend", _backend(*old_models))
+    prompt = MagicMock()
+    build = MagicMock()
+    monkeypatch.setattr("aqt.utils.ask_user_dialog", prompt)
+    monkeypatch.setattr(rwkv_scheduler, "build_rwkv_state_cache_with_progress", build)
+    try:
+        _save_tiny()
+        app.processEvents()
+        prompt.assert_called_once()
+        assert rwkv_scheduler._rwkv_runtime_models_for_profile(owner) == new_models
+        prompt.call_args.kwargs["callback"](0)
+        build.assert_called_once()
+    finally:
+        owner.close()
+
+
 def test_postponed_model_rebuild_does_not_start_automatic_recovery(
     app: QApplication, monkeypatch: pytest.MonkeyPatch
 ) -> None:
     owner = _owner(app, curve=True, instant=True)
     monkeypatch.setattr(aqt, "mw", owner)
     monkeypatch.setattr(
-        rwkv_scheduler, "_reviewer_backend", _backend("sm72e25", "sm98")
+        rwkv_scheduler, "_reviewer_backend", _backend("sm92", "sm98")
     )
     prompt = MagicMock()
     build = MagicMock()
@@ -209,7 +246,7 @@ def test_escape_postpones_the_model_rebuild(
     owner.show()
     monkeypatch.setattr(aqt, "mw", owner)
     monkeypatch.setattr(
-        rwkv_scheduler, "_reviewer_backend", _backend("sm72e25", "sm98")
+        rwkv_scheduler, "_reviewer_backend", _backend("sm92", "sm98")
     )
     build = MagicMock()
     monkeypatch.setattr(rwkv_scheduler, "build_rwkv_state_cache_with_progress", build)
@@ -260,7 +297,7 @@ def test_scheduled_recovery_waits_for_model_rebuild_choice(
     )
     monkeypatch.setattr(aqt, "mw", owner)
     monkeypatch.setattr(
-        rwkv_scheduler, "_reviewer_backend", _backend("sm72e25", "sm98")
+        rwkv_scheduler, "_reviewer_backend", _backend("sm92", "sm98")
     )
     monkeypatch.setattr(rwkv_scheduler, "_rwkv_resident_state_ready", lambda _mw: False)
     prompt = MagicMock()
@@ -288,7 +325,7 @@ def test_model_rebuild_waits_for_an_existing_cache_operation(
     owner._rwkv_state_cache_loading = True  # type: ignore[attr-defined]
     monkeypatch.setattr(aqt, "mw", owner)
     monkeypatch.setattr(
-        rwkv_scheduler, "_reviewer_backend", _backend("sm72e25", "sm98")
+        rwkv_scheduler, "_reviewer_backend", _backend("sm92", "sm98")
     )
     prompt = MagicMock()
     build = MagicMock()
@@ -315,7 +352,7 @@ def test_postponing_model_rebuild_keeps_existing_operation_loading(
     owner._rwkv_state_cache_loading = True  # type: ignore[attr-defined]
     monkeypatch.setattr(aqt, "mw", owner)
     monkeypatch.setattr(
-        rwkv_scheduler, "_reviewer_backend", _backend("sm72e25", "sm98")
+        rwkv_scheduler, "_reviewer_backend", _backend("sm92", "sm98")
     )
     prompt = MagicMock()
     monkeypatch.setattr("aqt.utils.ask_user_dialog", prompt)
@@ -390,7 +427,7 @@ def test_one_model_setting_prompts_when_it_changes_the_active_models(
     owner = _owner(app, curve=True, instant=True)
     monkeypatch.setattr(aqt, "mw", owner)
     monkeypatch.setattr(
-        rwkv_scheduler, "_reviewer_backend", _backend("sm72e25", "sm98")
+        rwkv_scheduler, "_reviewer_backend", _backend("sm92", "sm98")
     )
     prompt = MagicMock()
     build = MagicMock()

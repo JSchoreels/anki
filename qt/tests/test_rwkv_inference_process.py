@@ -620,6 +620,11 @@ def _load_rsbridge_runtime(
         # Tiny's one model under the opt-out, the Tiny two-head model (SM106,
         # one card layer, both heads): a full model alone.
         ("sm106", "sm106/weights.f32.bin"),
+        # The family pairs (SM114): Small's show-time retrain (SM92) beside the
+        # Small Instant-Only model (SM98), Tiny's two-head model (SM106)
+        # beside the Tiny Instant-Only model (SM101).
+        ("sm92+sm98", "sm92/weights.f32.bin"),
+        ("sm106+sm101", "sm106/weights.f32.bin"),
         # Big's RWKV-Instant model, the show-time instant-only big model
         # (SM99): alone only as instant-only, and beside the show-time big
         # model (SM91s2) on the big engine.
@@ -1203,6 +1208,108 @@ def test_rsbridge_rwkv_instant_model_serves_instant_and_release_keeps_curve(
         release.restore_cache_state(paired.cache_state())
     with pytest.raises(Exception):
         paired.restore_cache_state(release.cache_state())
+
+
+@pytest.mark.parametrize(
+    "two_head,instant_model", [("sm92", "sm98"), ("sm106", "sm101")]
+)
+@pytest.mark.parametrize("state_precision", ["f32", "int8", "cards_int4_notes_int8"])
+def test_rsbridge_rwkv_family_pair_serves_instant_and_two_head_keeps_curve(
+    two_head: str, instant_model: str, state_precision: str
+) -> None:
+    # The family wiring (SM114): Small pairs the show-time retrain (SM92) with
+    # the Small Instant-Only model (SM98), Tiny the Tiny two-head model
+    # (SM106) with the Tiny Instant-Only model (SM101). Instant recall and
+    # buttons come from the Instant-Only model, the curve recall, intervals
+    # and S90 from the two-head model, which also decides the answer-time
+    # head (SM92 has one, SM106 none).
+    root = Path(__file__).resolve().parents[2]
+    rsbridge = _import_rsbridge(root)
+
+    def load(model_name: str, filename: str):
+        return _load_rsbridge_runtime(
+            rsbridge, root, model_name, filename, state_precision
+        )
+
+    alone = load(two_head, f"{two_head}/weights.f32.bin")
+    instant = load(instant_model, f"{instant_model}/weights.f32.bin")
+    paired = load(f"{two_head}+{instant_model}", f"{two_head}/weights.f32.bin")
+    assert paired.is_paired() and not alone.is_paired() and not instant.is_paired()
+    assert paired.has_answer_time_head() == alone.has_answer_time_head()
+    assert alone.has_answer_time_head() == (two_head == "sm92")
+    assert not instant.has_answer_time_head()
+
+    def args(review: dict[str, int], is_query: bool) -> tuple[object, ...]:
+        return (
+            *_rwkv_review_args(
+                review,
+                is_query=is_query,
+                card_state=None,
+                note_state=None,
+                deck_state=None,
+                preset_state=None,
+                global_state=None,
+            )[:15],
+            True,
+        )
+
+    def replay_and_query(runtime) -> tuple[object, ...]:
+        """Three answers, then a query 3 days later, through `review` with the
+        runtime's own explicit states."""
+        cards: dict[int, bytes] = {}
+        notes: dict[int, bytes] = {}
+        decks: dict[int, bytes] = {}
+        presets: dict[int, bytes] = {}
+        global_state: bytes | None = None
+        reviews = [
+            *((review, False) for review in _RWKV_REVIEWS[:3]),
+            (dict(_RWKV_REVIEWS[3], elapsed_days=3, elapsed_seconds=259200), True),
+        ]
+        for review, is_query in reviews:
+            output = runtime.review(
+                *_rwkv_review_args(
+                    review,
+                    is_query=is_query,
+                    card_state=cards.get(review["card_id"]),
+                    note_state=notes.get(review["note_id"]),
+                    deck_state=decks.get(review["deck_id"]),
+                    preset_state=presets.get(review["preset_id"]),
+                    global_state=global_state,
+                )
+            )
+            if not is_query:
+                cards[review["card_id"]] = output[7]
+                notes[review["note_id"]] = output[8]
+                decks[review["deck_id"]] = output[9]
+                presets[review["preset_id"]] = output[10]
+                global_state = output[11]
+        return output
+
+    # Fresh runtimes: the warm-up checks below replay the same answers.
+    pair_out = replay_and_query(
+        load(f"{two_head}+{instant_model}", f"{two_head}/weights.f32.bin")
+    )
+    alone_out = replay_and_query(load(two_head, f"{two_head}/weights.f32.bin"))
+    instant_out = replay_and_query(
+        load(instant_model, f"{instant_model}/weights.f32.bin")
+    )
+    # Instant recall and buttons from the Instant-Only model; curve recall,
+    # current interval and S90, intervals and S90s from the two-head model.
+    assert (pair_out[0], pair_out[6]) == (instant_out[0], instant_out[6])
+    assert pair_out[1:6] == alone_out[1:6]
+    assert pair_out[1] is not None and instant_out[1] is None
+    # After replaying answers, resident recall from the Instant-Only model.
+    reviews = [args(review, False) for review in _RWKV_REVIEWS[:3]]
+    query = args(dict(_RWKV_REVIEWS[3], elapsed_days=3, elapsed_seconds=259200), True)
+    for runtime in (alone, instant, paired):
+        runtime.warm_up_reviews(reviews, False)
+    paired_r = paired.predict_retrievability_many_from_warm_up([query])
+    assert paired_r == instant.predict_retrievability_many_from_warm_up([query])
+    assert paired_r != alone.predict_retrievability_many_from_warm_up([query])
+    with pytest.raises(Exception):
+        alone.restore_cache_state(paired.cache_state())
+    with pytest.raises(Exception):
+        paired.restore_cache_state(alone.cache_state())
 
 
 def test_rsbridge_rwkv_big_pair_serves_sm99_instant_and_big_model_keeps_curve() -> None:
