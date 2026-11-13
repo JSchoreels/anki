@@ -53,7 +53,7 @@ from anki.consts import (
 from anki.decks import DeckTreeNode, FilteredDeckConfig
 from anki.scheduler.v3 import SchedulingState, SchedulingStates
 from anki.utils import ids2str
-from aqt.qt import QMessageBox, QWidget
+from aqt.qt import QMessageBox, QTimer, QWidget
 from aqt.rwkv_answer_time import (
     ANSWER_TIME_FEATURES,
     RwkvAnswerTimePrediction,
@@ -4153,8 +4153,21 @@ def _temporary_reviewer_backend_operation(
 
 
 def configure_reviewer_backend_from_environment() -> bool:
+    import aqt
+
     with _reviewer_backend_state_lock:
-        if _reviewer_backend is not None:
+        pending = getattr(aqt.mw, "_rwkv_model_change_pending", None) is not None
+        if pending or _reviewer_backend is not None:
+            return not pending and _reviewer_backend is not None
+        assignment_generation = _reviewer_backend_assignment_generation
+
+    def install_backend(backend: RwkvReviewerBackend) -> bool:
+        with _reviewer_backend_state_lock:
+            if getattr(aqt.mw, "_rwkv_model_change_pending", None) is not None:
+                return False
+            if assignment_generation != _reviewer_backend_assignment_generation:
+                return _reviewer_backend is not None
+            set_reviewer_backend(backend)
             return True
 
     start = time.monotonic()
@@ -4181,14 +4194,14 @@ def configure_reviewer_backend_from_environment() -> bool:
         if benchmark_path:
             from aqt.rwkv_srs_benchmark import SrsBenchmarkRwkvReviewerBackend
 
-            set_reviewer_backend(
-                SrsBenchmarkRwkvReviewerBackend(
-                    benchmark_path=benchmark_path,
-                    model_path=model_path,
-                    device=device,
-                    dtype=dtype,
-                )
+            benchmark_backend = SrsBenchmarkRwkvReviewerBackend(
+                benchmark_path=benchmark_path,
+                model_path=model_path,
+                device=device,
+                dtype=dtype,
             )
+            if not install_backend(benchmark_backend):
+                return False
             logger.debug(
                 "RWKV scheduler backend configured: backend=%s elapsed_ms=%.1f",
                 type(_reviewer_backend).__name__,
@@ -4234,7 +4247,8 @@ def configure_reviewer_backend_from_environment() -> bool:
                 instant_model_path=instant_model_path,
                 instant_model=runtime_models.instant_model,
             )
-        set_reviewer_backend(backend)
+        if not install_backend(backend):
+            return False
         logger.debug(
             "RWKV scheduler backend configured: backend=%s elapsed_ms=%.1f",
             type(_reviewer_backend).__name__,
@@ -12661,10 +12675,125 @@ def prepare_rwkv_state_cache_on_startup(mw: object) -> None:
     finish_rwkv_state_cache_startup(mw)
 
 
+def rwkv_profile_models_did_change(
+    mw: object, *, previous_profile: Mapping[str, object]
+) -> None:
+    """Offer to rebuild when saved profile settings select different models."""
+    from aqt.rwkv_srs_benchmark import EmbeddedRwkvReviewerBackend
+
+    target = _rwkv_runtime_models_for_profile(mw)
+    config_state = _rwkv_collection_config_state(SimpleNamespace(mw=mw))
+    with _reviewer_backend_state_lock:
+        backend = _reviewer_backend
+        if backend is not None and not isinstance(backend, EmbeddedRwkvReviewerBackend):
+            return
+        if backend is None:
+            active = _rwkv_runtime_models_for_profile(mw, profile=previous_profile)
+        else:
+            active = RwkvRuntimeModels(backend.model_name, backend.instant_model_name)
+        if active == target:
+            return
+        if not config_state.review_enabled:
+            if backend is not None:
+                set_reviewer_backend(None)
+            return
+
+        pending = object()
+        setattr(mw, "_rwkv_model_change_pending", pending)
+        set_reviewer_backend(None)
+
+    collection = _collection(SimpleNamespace(mw=mw))
+    decision_made = False
+
+    def is_current() -> bool:
+        return (
+            getattr(mw, "_rwkv_model_change_pending", None) is pending
+            and _collection(SimpleNamespace(mw=mw)) is collection
+        )
+
+    def on_choice(choice: int, *, resume: bool = False) -> None:
+        nonlocal decision_made
+        if not is_current():
+            return
+        if not resume:
+            if decision_made:
+                return
+            decision_made = True
+        if choice not in (0, 1):
+            setattr(mw, "_rwkv_model_change_pending", None)
+            mark_rwkv_state_declined(mw, source="model change prompt")
+            if not getattr(mw, "_rwkv_state_cache_loading", False):
+                _finish_rwkv_state_cache_operation(
+                    mw, ready=False, prewarm_reason="model change declined"
+                )
+            return
+        if getattr(mw, "_rwkv_state_cache_loading", False):
+            callbacks: list[Callable[[bool], None]] = getattr(
+                mw, "_rwkv_state_cache_completion_callbacks", []
+            )
+            callbacks.append(lambda _ready: on_choice(choice, resume=True))
+            setattr(mw, "_rwkv_state_cache_completion_callbacks", callbacks)
+            return
+
+        setattr(mw, "_rwkv_model_change_pending", None)
+
+        def refresh_review(ready: bool) -> None:
+            if (
+                ready
+                and getattr(mw, "state", None) == "review"
+                and _collection(SimpleNamespace(mw=mw)) is collection
+            ):
+                getattr(mw, "reviewer").op_executed(
+                    collection_pb2.OpChanges(study_queues=True), None, focused=True
+                )
+
+        build_rwkv_state_cache_with_progress(
+            mw,
+            force_rebuild=True,
+            record_retrievability_cache=choice == 1,
+            on_done=refresh_review,
+        )
+
+    def prompt() -> None:
+        if not is_current():
+            if getattr(mw, "_rwkv_model_change_pending", None) is pending:
+                setattr(mw, "_rwkv_model_change_pending", None)
+            return
+        from aqt.utils import ask_user_dialog
+
+        app = getattr(mw, "app", None)
+        active_modal = getattr(app, "activeModalWidget", lambda: None)()
+        parent = cast(QWidget, active_modal or mw)
+        dialog = ask_user_dialog(
+            "The RWKV model has changed. Build its state from review history now?\n\n"
+            "If you cancel, RWKV state will be unavailable until "
+            "you build it, for example with Build Cache in Deck Options.",
+            callback=on_choice,
+            buttons=[
+                "Build State Only",
+                "Build State + Calibration Data",
+                QMessageBox.StandardButton.Cancel,
+            ],
+            default_button=0,
+            parent=parent,
+            title="RWKV State Cache",
+        )
+        dialog.setEscapeButton(QMessageBox.StandardButton.Cancel)
+        # Button callbacks can run after finished; defer the close fallback so
+        # it does not override a selected build option.
+        dialog.finished.connect(
+            lambda _result: QTimer.singleShot(0, lambda: on_choice(2))
+        )
+
+    # The save operation must finish closing or updating Deck Options first.
+    QTimer.singleShot(0, prompt)
+
+
 def begin_rwkv_state_cache_startup(mw: object) -> None:
     """Invalidate resident state before startup sync can change the collection."""
 
     _invalidate_reviewer_backend_runtime_state_for_profile_open()
+    setattr(mw, "_rwkv_model_change_pending", None)
     from aqt.rwkv_precision import state_precision_for_profile
     from aqt.rwkv_srs_benchmark import EmbeddedRwkvReviewerBackend
 
@@ -12799,10 +12928,10 @@ def _show_rwkv_state_cache_prompt(mw: object) -> None:
 def rwkv_state_cache_loading(mw: object) -> bool:
     """Return whether count preparation must wait for RWKV state restoration."""
 
-    if getattr(mw, "_rwkv_state_cache_loading", False) or getattr(
-        mw,
-        "_rwkv_state_cache_recovery_scheduled",
-        False,
+    if (
+        getattr(mw, "_rwkv_model_change_pending", None) is not None
+        or getattr(mw, "_rwkv_state_cache_loading", False)
+        or getattr(mw, "_rwkv_state_cache_recovery_scheduled", False)
     ):
         return True
     return _reviewer_backend_warmup_pending(SimpleNamespace(mw=mw))
@@ -12846,6 +12975,8 @@ def request_rwkv_state_cache_recovery(
 ) -> bool:
     """Schedule one visible canonical recovery when resident RWKV state is cold."""
 
+    if getattr(mw, "_rwkv_model_change_pending", None) is not None:
+        return False
     reviewer = SimpleNamespace(mw=mw)
     collection = _collection(reviewer)
     if not _rwkv_collection_config_state(reviewer).review_enabled:
@@ -12894,6 +13025,8 @@ def request_rwkv_state_cache_recovery(
 
     def start_recovery() -> None:
         _set_rwkv_state_cache_recovery_scheduled(mw, False)
+        if getattr(mw, "_rwkv_model_change_pending", None) is not None:
+            return
         allowed_states: tuple[str, ...] = ("deckBrowser", "overview")
         if allow_during_review:
             allowed_states += ("review",)
@@ -22522,8 +22655,7 @@ def _rwkv_first_review_elapsed_config_key(
 
 
 def _rwkv_model() -> str:
-    # Preferences save the choice for the next profile open. Keep cache identity
-    # and background jobs on the model used by the current resident backend.
+    # Keep cache identity and background jobs on the current resident backend.
     return _rwkv_runtime_models().model
 
 
@@ -22544,13 +22676,13 @@ def _rwkv_runtime_models() -> RwkvRuntimeModels:
     return _rwkv_runtime_models_for_profile(mw)
 
 
-def _rwkv_runtime_models_for_profile(mw: object) -> RwkvRuntimeModels:
+def _rwkv_runtime_models_for_profile(
+    mw: object, *, profile: Mapping[str, object] | None = None
+) -> RwkvRuntimeModels:
     """The runtime models for the open profile and the schedulers its presets use.
 
-    Read when the backend is created (profile open); a later change of the
-    profile opt-out or of the presets' schedulers applies at the next open,
-    except that a preset turning on RWKV-Curve beside an instant-only runtime
-    swaps it at once (refresh_rwkv_runtime_models_after_preset_change()).
+    Read when the backend is created. Saving a different model configuration
+    can replace the backend; a preset enabling RWKV-Curve can also do so.
     """
     from aqt.rwkv_model import (
         curve_model_for_choice,
@@ -22559,7 +22691,8 @@ def _rwkv_runtime_models_for_profile(mw: object) -> RwkvRuntimeModels:
         single_model_for_profile,
     )
 
-    profile = getattr(getattr(mw, "pm", None), "profile", None)
+    if profile is None:
+        profile = getattr(getattr(mw, "pm", None), "profile", None)
     model = model_for_profile(profile)
     if os.environ.get("ANKI_RWKV_MODEL_PATH"):
         # A custom checkpoint serves both schedulers, in place of the
@@ -22608,8 +22741,8 @@ def refresh_rwkv_runtime_models_after_preset_change(mw: object) -> bool:
     while it runs would otherwise get FSRS intervals until the next profile
     open. The next backend use creates the runtime the profile now needs
     (the pair, or the release alone with the opt-out), whose replay key
-    differs, so state rebuilds once. Every other change still waits for the
-    next profile open. Returns whether the backend was dropped.
+    differs, so state rebuilds once. Other preset scheduler changes wait for
+    the next profile open. Returns whether the backend was dropped.
     """
     from aqt.rwkv_srs_benchmark import EmbeddedRwkvReviewerBackend
 
@@ -22639,8 +22772,7 @@ def refresh_rwkv_runtime_models_after_preset_change(mw: object) -> bool:
 
 
 def _rwkv_state_precision() -> str:
-    # Keep the running session's precision stable if Preferences has saved a
-    # different choice for the next restart. Background jobs share this mode.
+    # Background jobs share the running backend's precision until it is replaced.
     precision = getattr(_reviewer_backend, "state_precision", None)
     if isinstance(precision, str):
         return precision

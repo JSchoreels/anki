@@ -201,8 +201,12 @@ normal-input Instant LogLoss). Neither SM98 nor SM101 has a trained forgetting c
   one model is its show-time big model (SM91s2). The setting has no effect without
   RWKV-Curve.
 
-Changes apply when the profile is reopened and rebuild RWKV state from history
-once; saving a preset that turns RWKV-Curve on switches at once. Details:
+Saving a model size or the one-model setting applies the new choice immediately.
+If it changes the models in use, Anki offers to rebuild RWKV state from history;
+if the models are unchanged, it keeps the existing state. Choosing **Cancel**
+leaves RWKV state unavailable until you build it, for example with **Build Cache**
+in Deck Options.
+Saving a preset that turns RWKV-Curve on also switches at once. Details:
 [integration report](docs/rwkv-sm98-2026-11-10.MD).
 
 ### How do intervals and desired retention fit in?
