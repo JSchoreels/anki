@@ -36,7 +36,7 @@ fn weights(folder: &str) -> PathBuf {
 }
 
 /// `(name, main model, instant model beside it)`.
-const RUNTIMES: [(&str, &str, Option<&str>); 8] = [
+const RUNTIMES: [(&str, &str, Option<&str>); 9] = [
     ("big", "legacy", None),
     ("big-pair", "legacy", Some("sm99")),
     ("big-instant", "sm99", None),
@@ -45,6 +45,7 @@ const RUNTIMES: [(&str, &str, Option<&str>); 8] = [
     ("small-instant", "sm98", None),
     ("tiny-pair", "sm72e25", Some("sm101")),
     ("tiny-instant", "sm101", None),
+    ("tiny-single", "sm106", None),
 ];
 
 fn load(main: &str, instant: Option<&str>) -> Option<RwkvRuntime> {

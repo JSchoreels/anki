@@ -14,6 +14,9 @@ const PRECISIONS: [(StatePrecision, [bool; 3]); 4] = [
 /// The tiny model (the smaller instant-only model, SM101): one card layer.
 const TINY_MODEL_PATH: &str = "../qt/aqt/rwkv_inference/sm101/weights.f32.bin";
 
+/// The Tiny two-head model (SM106): the tiny plan with a trained curve head.
+const TINY_TWO_HEAD_MODEL_PATH: &str = "../qt/aqt/rwkv_inference/sm106/weights.f32.bin";
+
 /// The engine's test model and, in the small engine, the tiny model: every
 /// state precision must run both layer plans.
 fn models() -> Vec<PathBuf> {
@@ -323,9 +326,10 @@ fn stored_layer_bytes(precision: StatePrecision, channel_mixer: bool) -> usize {
     }
 }
 
-/// Stored card and note state per precision: the tiny model keeps one card
-/// layer (the one with a channel mixer), the small model two; notes are the
-/// same. Per card + note, int8: small 4,554 B, tiny 3,134 B; int4 cards +
+/// Stored card and note state per precision: the tiny models (the Tiny
+/// Instant-Only model (SM101) and the Tiny two-head model (SM106)) keep one
+/// card layer (the one with a channel mixer), the small model two; notes are
+/// the same. Per card + note, int8: small 4,554 B, tiny 3,134 B; int4 cards +
 /// int8 notes: 3,530 B and 2,622 B; f32: 13,640 B and 9,276 B.
 #[test]
 fn rwkv_state_precision_stored_sizes_of_the_small_and_tiny_models() {
@@ -334,7 +338,11 @@ fn rwkv_state_precision_stored_sizes_of_the_small_and_tiny_models() {
     }
     let root = PathBuf::from(env!("CARGO_MANIFEST_DIR"));
     let mut per_card_and_note = Vec::new();
-    for (weights, card_layers) in [(root.join(MODEL_PATH), 2), (root.join(TINY_MODEL_PATH), 1)] {
+    for (weights, card_layers) in [
+        (root.join(MODEL_PATH), 2),
+        (root.join(TINY_MODEL_PATH), 1),
+        (root.join(TINY_TWO_HEAD_MODEL_PATH), 1),
+    ] {
         for (precision, card, note) in [
             (
                 StatePrecision::F32,
@@ -386,6 +394,6 @@ fn rwkv_state_precision_stored_sizes_of_the_small_and_tiny_models() {
     }
     assert_eq!(
         per_card_and_note,
-        [13_640, 4_554, 3_530, 9_276, 3_134, 2_622]
+        [13_640, 4_554, 3_530, 9_276, 3_134, 2_622, 9_276, 3_134, 2_622]
     );
 }
