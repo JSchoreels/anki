@@ -14,3 +14,4 @@ qt/aqt/rwkv_inference/sm57/* -text whitespace=cr-at-eol linguist-vendored
 qt/aqt/rwkv_inference/sm98/* -text whitespace=cr-at-eol linguist-vendored
 qt/aqt/rwkv_inference/sm101/* -text whitespace=cr-at-eol linguist-vendored
 qt/aqt/rwkv_inference/sm99/* -text whitespace=cr-at-eol linguist-vendored
+qt/aqt/rwkv_inference/sm106/* -text whitespace=cr-at-eol linguist-vendored

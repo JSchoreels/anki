@@ -39,6 +39,12 @@ pub enum ModelKind {
     /// It runs on the big engine beside `Legacy`, or alone as an instant-only
     /// runtime when no preset uses RWKV-Curve; never as a full model.
     Sm99,
+    /// The Tiny two-head model (SM106), the Tiny choice's one model: the
+    /// show-time retrain (SM92) cut to one card layer (the tiny plan of
+    /// SM101) and trained on with both heads on show-time inputs. A full
+    /// model (curve, intervals, S90, instant recall and buttons) without an
+    /// answer-time head; it runs alone when the one-model opt-out is on.
+    Sm106,
 }
 
 impl ModelKind {
@@ -57,6 +63,7 @@ impl ModelKind {
             "sm98" => Ok(Self::Sm98),
             "sm101" => Ok(Self::Sm101),
             "sm99" => Ok(Self::Sm99),
+            "sm106" => Ok(Self::Sm106),
             _ => Err(io::Error::new(
                 io::ErrorKind::InvalidInput,
                 "unknown RWKV model",
@@ -80,6 +87,7 @@ impl ModelKind {
                 | Self::Sm98
                 | Self::Sm101
                 | Self::Sm99
+                | Self::Sm106
         )
     }
 
@@ -106,7 +114,7 @@ impl ModelKind {
     fn card_layers(self) -> Option<usize> {
         match self {
             Self::Legacy | Self::Sm99 => None,
-            Self::Sm101 => Some(1),
+            Self::Sm101 | Self::Sm106 => Some(1),
             _ => Some(2),
         }
     }
@@ -1109,6 +1117,7 @@ mod tests {
             ModelKind::Sm98 => "../qt/aqt/rwkv_inference/sm98/weights.f32.bin",
             ModelKind::Sm101 => "../qt/aqt/rwkv_inference/sm101/weights.f32.bin",
             ModelKind::Sm99 => "../qt/aqt/rwkv_inference/sm99/weights.f32.bin",
+            ModelKind::Sm106 => "../qt/aqt/rwkv_inference/sm106/weights.f32.bin",
         });
         RwkvRuntime::load_with_precision(path, 0.9, 36_500, precision, model).unwrap()
     }
@@ -1137,6 +1146,7 @@ mod tests {
                 (ModelKind::Sm72e20, load(ModelKind::Sm72e20, precision)),
                 (ModelKind::Sm72e25, load(ModelKind::Sm72e25, precision)),
                 (ModelKind::Sm92, load(ModelKind::Sm92, precision)),
+                (ModelKind::Sm106, load(ModelKind::Sm106, precision)),
             ] {
                 let answers = crate::rwkv::precision_tests::reviews(14);
                 engine.warm_up_reviews(answers.clone(), false).unwrap();
@@ -1167,6 +1177,7 @@ mod tests {
         assert_eq!(ModelKind::parse("sm72e20").unwrap(), ModelKind::Sm72e20);
         assert_eq!(ModelKind::parse("sm72e25").unwrap(), ModelKind::Sm72e25);
         assert_eq!(ModelKind::parse("sm92").unwrap(), ModelKind::Sm92);
+        assert_eq!(ModelKind::parse("sm106").unwrap(), ModelKind::Sm106);
         // The same checkpoint without the runtime's input rule.
         let unadjusted = |model: ModelKind| {
             let path = PathBuf::from(env!("CARGO_MANIFEST_DIR")).join(match model {
@@ -1175,6 +1186,7 @@ mod tests {
                 ModelKind::Sm72e20 => "../qt/aqt/rwkv_inference/sm72e20/weights.f32.bin",
                 ModelKind::Sm72e25 => "../qt/aqt/rwkv_inference/sm72e25/weights.f32.bin",
                 ModelKind::Sm92 => "../qt/aqt/rwkv_inference/sm92/weights.f32.bin",
+                ModelKind::Sm106 => "../qt/aqt/rwkv_inference/sm106/weights.f32.bin",
                 _ => "../qt/aqt/rwkv_inference/sm72/weights.f32.bin",
             });
             // Legacy runs on the big engine, the small models on the small one.
@@ -1214,6 +1226,7 @@ mod tests {
             ModelKind::Sm72e20,
             ModelKind::Sm72e25,
             ModelKind::Sm92,
+            ModelKind::Sm106,
         ] {
             assert_eq!(model.leak_free_inputs(), model != ModelKind::Sm56);
             for missing_ids in [false, true] {
@@ -1241,8 +1254,9 @@ mod tests {
         for (model, folder) in [(ModelKind::Sm72e25, "sm72e25"), (ModelKind::Sm92, "sm92")] {
             check_answer_time_head_is_optional(model, folder);
         }
-        // Legacy never has a head.
+        // Legacy never has a head; nor has the Tiny two-head model (SM106).
         assert!(!load(ModelKind::Legacy, StatePrecision::F32).has_answer_time_head());
+        assert!(!load(ModelKind::Sm106, StatePrecision::F32).has_answer_time_head());
     }
 
     fn check_answer_time_head_is_optional(model: ModelKind, folder: &str) {
@@ -1363,6 +1377,9 @@ mod tests {
             (ModelKind::Sm101, "sm98"),
             (ModelKind::Sm98, "sm101"),
             (ModelKind::Sm72e25, "sm101"),
+            (ModelKind::Sm106, "sm92"),
+            (ModelKind::Sm92, "sm106"),
+            (ModelKind::Sm72e25, "sm106"),
         ] {
             assert!(
                 RwkvRuntime::load_with_precision(
@@ -1396,6 +1413,39 @@ mod tests {
             ModelKind::Sm101,
         )
         .is_err());
+    }
+
+    /// The Tiny two-head model (SM106) alone is a full runtime on the tiny
+    /// plan: curve recall, intervals and S90 beside instant recall and
+    /// buttons, one card layer, no answer-time head, at every state
+    /// precision.
+    #[test]
+    fn rwkv_sm106_alone_is_a_full_tiny_model() {
+        assert!(!ModelKind::Sm106.instant_only() && ModelKind::Sm106.leak_free_inputs());
+        assert!(ModelKind::Sm106.small() && ModelKind::Sm106.card_layers() == Some(1));
+        for precision in [
+            StatePrecision::F32,
+            StatePrecision::Int8,
+            StatePrecision::Int4CardsInt8Notes,
+        ] {
+            let mut engine = load(ModelKind::Sm106, precision);
+            assert!(!engine.is_paired() && engine.has_curve(), "{precision:?}");
+            assert!(!engine.has_answer_time_head(), "{precision:?}");
+            let answers = crate::rwkv::precision_tests::reviews(14);
+            engine.warm_up_reviews(answers.clone(), false).unwrap();
+            let review = review_with_state(&mut engine, &query_of(&answers[0], 2));
+            assert!(
+                review.intervals.iter().all(Option::is_some),
+                "{precision:?}"
+            );
+            assert!(review.s90s.iter().all(Option::is_some), "{precision:?}");
+            assert!(review.curve_retrievability.is_some(), "{precision:?}");
+            assert!(
+                (0.0..=1.0).contains(&review.retrievability)
+                    && review.button_probabilities.iter().all(|p| p.is_finite()),
+                "{precision:?}"
+            );
+        }
     }
 
     /// An instant model as a plain engine (for SM57 with its raw, untrained

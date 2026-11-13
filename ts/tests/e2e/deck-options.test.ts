@@ -334,14 +334,18 @@ test(
             /trained on the time since the last review.*card is shown.*19\.6 KB with one model.*39\.1 KB/,
         );
         await expect(small).toHaveAccessibleDescription(
-            /3\.5 KB with Instant only.*7\.1 KB.*82% less than Big in either case/,
+            /2\.6 KB with Instant only.*87% less than Big.*7\.1 KB.*82% less/,
         );
         await expect(small).toHaveAccessibleDescription(/Curve 0\.33% higher, Instant 0\.11% higher/);
+        await expect(small).toHaveAccessibleDescription(/With Instant only, Small uses the same model as Tiny/);
         await expect(tiny).toHaveAccessibleDescription(
-            /2\.6 KB with Instant only.*26% less than Small, 87% less than Big.*6\.2 KB.*13% less than Small, 84% less than Big/,
+            /2\.6 KB with Instant only.*same as Small, 87% less than Big.*6\.2 KB.*13% less than Small, 84% less than Big/,
         );
         await expect(tiny).toHaveAccessibleDescription(
             /Curve 0\.33% higher, Instant 0\.30% higher \(0\.19% higher than Small\)/,
+        );
+        await expect(tiny).toHaveAccessibleDescription(
+            /With both schedulers and the one-model setting.*no answer-time estimate/,
         );
         await expect(group).toContainText("With both schedulers, comparisons assume separate models");
         await expect(group).toContainText("default precision (INT4 cards + INT8 notes)");
@@ -362,7 +366,8 @@ test(
         await tiny.check();
         await expect(singleModel).toBeVisible();
         await expect(group).toContainText("Turn this on to use one model for both");
-        await expect(group).toContainText("If you use Instant without Curve, it always uses its own model");
+        await expect(group).toContainText("Small and Tiny use the same Instant model; Big uses its own");
+        await expect(group).toContainText("With Tiny, Curve predictions are also slightly less accurate");
         await page.setViewportSize({ width: 736, height: 1000 });
         await card.screenshot({ path: testInfo.outputPath("rwkv-options-advanced.png") });
         await page.evaluate(() => document.documentElement.classList.add("night-mode"));
