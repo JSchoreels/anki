@@ -1696,6 +1696,79 @@ mod tests {
         }
     }
 
+    /// The pairs of the RWKV family release's Small and Tiny sizes (the
+    /// family wiring (SM114)): the show-time retrain (SM92) beside the Small
+    /// Instant-Only model (SM98), and the Tiny two-head model (SM106) beside
+    /// the Tiny Instant-Only model (SM101). Instant recall and buttons come
+    /// from the Instant-Only model, the curve, intervals, S90 and answer time
+    /// from the two-head model, bit for bit, at every state precision. The
+    /// Tiny pair has no answer-time head, like SM106 alone.
+    #[test]
+    fn rwkv_family_pairs_match_each_model_alone() {
+        if !super::super::SMALL_MODEL {
+            // Small models run on the alternate engine, which has no pairs.
+            assert!(RwkvRuntime::load_paired(
+                model_path("sm106"),
+                model_path("sm101"),
+                0.9,
+                36_500,
+                StatePrecision::F32,
+                ModelKind::Sm106,
+                ModelKind::Sm101,
+            )
+            .is_err());
+            return;
+        }
+        // (two-head model, Instant-Only model, stored pair bytes per card and
+        // note at int4 cards + int8 notes)
+        for (release, instant, stored) in [
+            ((ModelKind::Sm92, "sm92"), (ModelKind::Sm98, "sm98"), 7_098),
+            (
+                (ModelKind::Sm106, "sm106"),
+                (ModelKind::Sm101, "sm101"),
+                5_282,
+            ),
+        ] {
+            for precision in [
+                StatePrecision::F32,
+                StatePrecision::Int8,
+                StatePrecision::Int4CardsInt8Notes,
+            ] {
+                let label = format!("{}+{} {precision:?}", release.1, instant.1);
+                let pair = || {
+                    RwkvRuntime::load_paired(
+                        model_path(release.1),
+                        model_path(instant.1),
+                        0.9,
+                        36_500,
+                        precision,
+                        release.0,
+                        instant.0,
+                    )
+                    .unwrap()
+                };
+                let alone = load(release.0, precision);
+                let instant_alone = instant_alone_of(precision, instant);
+                assert!(pair().is_paired() && pair().has_curve(), "{label}");
+                let head = release.0 == ModelKind::Sm92;
+                assert_eq!(pair().has_answer_time_head(), head, "{label}");
+                assert_eq!(alone.has_answer_time_head(), head, "{label}");
+                if precision == StatePrecision::Int4CardsInt8Notes {
+                    let mut engine = pair();
+                    let answers = crate::rwkv::precision_tests::reviews(14);
+                    engine.warm_up_reviews(answers.clone(), false).unwrap();
+                    let state = engine.warm_up_state(&answers[0]).unwrap();
+                    assert_eq!(
+                        state.card.unwrap().len() + state.note.unwrap().len(),
+                        stored,
+                        "{label}"
+                    );
+                }
+                check_pair_matches_models(pair(), alone, instant_alone, label);
+            }
+        }
+    }
+
     /// Replays answers, queries and reviews through a pair and through its two
     /// models alone: instant outputs from the instant model, the rest from the
     /// release, bit for bit.
@@ -2390,16 +2463,40 @@ mod tests {
             ("big instant alone", false, load(ModelKind::Sm99, precision)),
         ];
         if super::super::SMALL_MODEL {
+            // The family release's Small and Tiny layouts (SM114).
+            let family_pair = |release: (ModelKind, &str), instant: (ModelKind, &str)| {
+                RwkvRuntime::load_paired(
+                    model_path(release.1),
+                    model_path(instant.1),
+                    0.9,
+                    36_500,
+                    precision,
+                    release.0,
+                    instant.0,
+                )
+                .unwrap()
+            };
             layouts.push((
                 "small pair",
                 true,
-                paired_with(precision, (ModelKind::Sm98, "sm98")),
+                family_pair((ModelKind::Sm92, "sm92"), (ModelKind::Sm98, "sm98")),
             ));
-            layouts.push(("small alone", true, load(ModelKind::Sm72e25, precision)));
+            layouts.push(("small alone", true, load(ModelKind::Sm92, precision)));
             layouts.push((
                 "small instant alone",
                 true,
                 load(ModelKind::Sm98, precision),
+            ));
+            layouts.push((
+                "tiny pair",
+                true,
+                family_pair((ModelKind::Sm106, "sm106"), (ModelKind::Sm101, "sm101")),
+            ));
+            layouts.push(("tiny alone", true, load(ModelKind::Sm106, precision)));
+            layouts.push((
+                "tiny instant alone",
+                true,
+                load(ModelKind::Sm101, precision),
             ));
         }
         for (_, _, engine) in &mut layouts {
