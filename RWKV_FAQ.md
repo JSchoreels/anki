@@ -168,7 +168,7 @@ With the default size, Small (the small model, SM63), a profile whose presets us
 RWKV-Instant, with or without RWKV-Curve, runs RWKV-Instant on the show-time
 instant-only model, stage 2 (SM98), trained only to predict the next answer at the
 moment a card is shown. Tiny runs the Tiny Instant-Only model (SM101) in its
-place, with the same rules below; Big runs its own show-time instant-only big model (SM99). On 722 held-out users SM98's Instant LogLoss is 0.248% lower than the
+place, with the same rules below; Big runs its own show-time instant-only big model (SM99). On 722 held-out users the Instant LogLoss of the show-time instant-only model, stage 2 (SM98) is 0.248% lower than the
 show-time retrain's (SM92), which RWKV-Instant used before, and 0.554% lower than
 the small model's (SM63) (both % of the big model (1 leak-free epoch)'s
 normal-input Instant LogLoss). It has no trained forgetting curve:
@@ -176,7 +176,8 @@ normal-input Instant LogLoss). It has no trained forgetting curve:
 - When no preset uses RWKV-Curve (neither as scheduler nor as RWKV-Instant's
   fallback), an instant-only model runs alone, one model state: since 2026-11-13
   the Tiny Instant-Only model (SM101) for Small and Tiny alike (the smallest and
-  fastest; its Instant LogLoss is 0.19% higher than SM98's), the show-time
+  fastest; its Instant LogLoss is 0.19% higher than that of the show-time
+  instant-only model, stage 2 (SM98)), the show-time
   instant-only big model (SM99) for Big. Due dates, intervals and memory
   states come from the FSRS fallback, Card Info shows FSRS stability and
   retrievability without the RWKV-Curve S90 and answer-time rows, and the RWKV
@@ -194,7 +195,8 @@ normal-input Instant LogLoss). It has no trained forgetting curve:
   still gives RWKV-Curve, the intervals, the workload simulation and the
   answer-time estimate. With Tiny the one model is the Tiny two-head model (SM106)
   since 2026-11-13: Tiny's small state for both schedulers, Curve LogLoss 0.11% and
-  Instant LogLoss 0.18% higher than SM92's, and no answer-time estimate. Big's
+  Instant LogLoss 0.18% higher than the show-time retrain (SM92), and no answer-time
+  estimate. Big's
   one model is its show-time big model (SM91s2). The setting has no effect without
   RWKV-Curve.
 
@@ -501,7 +503,7 @@ Deck Options → RWKV → Advanced offers three sizes:
   model (SM101), which has one card layer instead of two. With both schedulers
   RWKV-Curve, its intervals and S90 come from the same small model (SM63) as with
   Small (it is more accurate on the curve than the Tiny two-head model (SM106));
-  with the one-model setting Tiny runs SM106 for both. RWKV-Instant's state is about 26% smaller per
+  with the one-model setting Tiny runs the Tiny two-head model (SM106) for both. RWKV-Instant's state is about 26% smaller per
   card and note at the default storage precision (2.6 KB instead of 3.5 KB; 31%
   at int8), and its Instant LogLoss is 0.19% higher than SM98's (722 held-out
   users, % of the big model (1 leak-free epoch)'s normal-input Instant LogLoss);
