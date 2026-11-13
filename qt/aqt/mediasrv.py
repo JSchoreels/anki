@@ -734,17 +734,29 @@ def _on_update_deck_configs_success(
             RWKV_MODEL_KEY,
             RWKV_OLD_SPECIALIZED_INSTANT_MODEL_KEY,
             RWKV_SINGLE_MODEL_KEY,
+            model_for_profile,
+            single_model_for_profile,
         )
         from aqt.rwkv_precision import RWKV_STATE_PRECISION_KEY
 
         profile = aqt.mw.pm.profile
         assert profile is not None
+        previous_profile = dict(profile)
+        models_changed = (
+            model_for_profile(profile) != input.rwkv_profile_settings.model
+            or single_model_for_profile(profile)
+            != input.rwkv_profile_settings.single_model
+        )
         profile[RWKV_MODEL_KEY] = input.rwkv_profile_settings.model
         profile[RWKV_STATE_PRECISION_KEY] = input.rwkv_profile_settings.state_precision
         profile[RWKV_SINGLE_MODEL_KEY] = input.rwkv_profile_settings.single_model
         # The former opt-in toggle meant the opposite: never read again.
         profile.pop(RWKV_OLD_SPECIALIZED_INSTANT_MODEL_KEY, None)
         aqt.mw.pm.save()
+        if models_changed:
+            aqt.rwkv_scheduler.rwkv_profile_models_did_change(
+                aqt.mw, previous_profile=previous_profile
+            )
     if not is_compute_all and isinstance(
         window := aqt.mw.app.activeModalWidget(), DeckOptionsDialog
     ):

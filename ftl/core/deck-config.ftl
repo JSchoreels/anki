@@ -343,7 +343,7 @@ deck-config-minimum-interval-tooltip = The minimum interval given to a review ca
 ## RWKV model and recurrent state precision. Keep f32, int8 and int4 cards + int8 notes unchanged.
 
 deck-config-rwkv-model-and-storage = Model and storage
-deck-config-rwkv-profile-settings-scope = Applies to all decks in this profile on this computer. These settings do not sync. Save and reopen the profile to apply changes and rebuild RWKV state from review history.
+deck-config-rwkv-profile-settings-scope = Applies to all decks in this profile on this computer. These settings do not sync. Saving a different model prompts you to rebuild RWKV state when needed.
 deck-config-rwkv-precision = Storage precision
 deck-config-rwkv-model = Prediction model
 deck-config-rwkv-model-sm40 = SM40 — smaller model

@@ -120,10 +120,13 @@ The desktop attaches `rwkv_profile_settings` to the Deck Options response and sa
 request, then updates the existing profile keys only after the configuration save
 succeeds. Failed saves and parameter-only optimization do not apply these choices.
 No collection configuration or synced state is added.
-Saving a choice takes effect after reopening the profile; the active session, its
-cache identity and its background jobs keep using the current model.
-Switching models reconstructs state from canonical retained review history and
-does not rewrite collection data or existing scheduling dates.
+Saving a model size or the one-model setting applies the choice in the open
+profile. If the effective runtime models change, Anki prompts to build state
+only or build state with calibration data. **Cancel** leaves RWKV state
+unavailable until the user builds it, for example with **Build Cache**; this
+does not require a profile reopen. If the effective models are unchanged, Anki keeps the existing state
+without prompting. Switching models reconstructs state from canonical retained
+review history and does not rewrite collection data or existing scheduling dates.
 
 Legacy (Big) weights are `qt/aqt/rwkv_inference/RWKV_trained_on_5000_10000.bin`. Since
 2026-11-11 the file holds the show-time big model (SM91s2): the big model (1 leak-free
@@ -264,8 +267,8 @@ backend refuses such a simulation with the same message before loading any state
 FSRS simulations are unchanged. Saving a preset that turns RWKV-Curve on drops this
 instant-only runtime at once (`refresh_rwkv_runtime_models_after_preset_change`), so
 the next use loads the pair (or the show-time retrain of the release (SM92) alone with the opt-out) and
-rebuilds its state; every other change of the presets' schedulers or of the opt-out
-still applies at the next profile open.
+rebuilds its state. Other preset scheduler changes still apply at the next profile
+open; saving a model size or the opt-out applies that model choice immediately.
 
 Since 2026-11-11 the opt-out runs the show-time retrain of the release (SM92) alone
 (a full model: curve, intervals, S90 and answer time all come from it, so nothing is
@@ -579,8 +582,9 @@ written in full int4 is never reused; it is rebuilt from review history. Explici
 precision choices, including `int8`, are preserved when saving Deck Options or
 switching models. This choice is local and is
 not synced.
-Changes take effect after restarting Anki (or reopening the profile), and the
-next state preparation rebuilds from retained review history. Precision is part
+Changes take effect when the backend is replaced, such as after reopening the
+profile or changing the model, and the next state preparation rebuilds from
+retained review history. Precision is part
 of the replay identity, so a checkpoint from another mode cannot satisfy either
 canonical or fast startup validation. Returning to `f32` replays original
 reviews to recover full precision; it does not upcast previously truncated state.
