@@ -541,6 +541,9 @@ def _load_rsbridge_runtime(
         # card layer): alone only as instant-only, and beside the release.
         ("sm101", "sm101/weights.f32.bin"),
         ("sm72e25+sm101", "sm72e25/weights.f32.bin"),
+        # Tiny's one model under the opt-out, the Tiny two-head model (SM106,
+        # one card layer, both heads): a full model alone.
+        ("sm106", "sm106/weights.f32.bin"),
         # Big's RWKV-Instant model, the show-time instant-only big model
         # (SM99): alone only as instant-only, and beside the show-time big
         # model (SM91s2) on the big engine.

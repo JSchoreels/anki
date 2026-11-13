@@ -308,7 +308,7 @@ test(
         await expect(group).toContainText("Uses the most memory and takes the longest");
         await expect(group).toContainText("Much less memory and faster than Big");
         await expect(group).toContainText(
-            "Tiny only shrinks RWKV-Instant's state; RWKV-Curve uses the same model as Small.",
+            "RWKV-Curve uses the same model as Small; with the one-model setting, Tiny runs one tiny model for both instead",
         );
         // Short descriptions without internal model IDs.
         for (const description of await group.locator(".size-description").allTextContents()) {
