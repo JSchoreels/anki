@@ -106,12 +106,17 @@ def test_deck_options_loads_existing_profile_model_and_precision(
     monkeypatch.setattr(
         "aqt.mw",
         SimpleNamespace(
-            pm=SimpleNamespace(profile=profile), col=SimpleNamespace(_backend=backend)
+            pm=SimpleNamespace(profile=profile),
+            col=SimpleNamespace(
+                _backend=backend, card_count=lambda: 123, note_count=lambda: 87
+            ),
         ),
     )
     with Flask(__name__).test_request_context(data=b""):
         result = DeckConfigsForUpdate.FromString(mediasrv.get_deck_configs_for_update())
     assert result.fsrs
+    assert result.rwkv_collection_counts.cards == 123
+    assert result.rwkv_collection_counts.notes == 87
     assert result.rwkv_profile_settings.model == (model or "sm72e25")
     # Full int4 was removed; a stored "int4" falls back to the default.
     assert result.rwkv_profile_settings.state_precision == (

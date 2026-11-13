@@ -95,15 +95,32 @@ the instant-only models SM57 and SM98 and the 311,786-parameter Tiny
 Instant-Only model (SM101) and Tiny two-head model (SM106) are bundled. Only the models the size and the presets'
 schedulers need, and their states, are loaded.
 
-Each size is a radio button with a one-line description; SM40, SM36, SM55, SM56
-and the three SM72 cool-downs are not offered and show as Small (they switch to
-Small on save). A profile that holds the show-time retrain of the release (SM92)
-sees it as a fourth, preserved choice until it picks a size.
-The legend below the choices explains the one-model opt-out, the profile-wide
-scope and how to apply changes. It is visible whenever Advanced is open.
-Its links open the upstream [Model Factory results](https://jschoreels.github.io/anki-rwkv/factory.html)
-and the matched five-model backup comparison in the SM56 report, which uses f32 compute and mixed
-INT4-card/INT8-note storage.
+Each size is a selectable card showing estimated model-state RAM and disk use,
+state per card and note, and separately labeled Curve and Instant Factory
+LogLoss relative to Big. Estimates use the profile's current card and note
+counts, the saved state precision, and the schedulers used by its presets,
+including unsaved changes in Deck Options. They add the serialized card and
+note states separately; two-model layouts include both states and their pair
+headers. They estimate model state for every card and note, not total Anki
+memory or disk use: shared states, weights, cache overhead and other allocations
+are excluded, and cards without model state can make actual use lower. The
+one-model switch updates the estimates, while unavailable Curve or Instant
+values are marked as not used. SM40, SM36, SM55, SM56 and the three SM72
+cool-downs are not offered and show as Small (they switch to Small on save). A
+profile that holds the show-time retrain (SM92) sees it as a fourth, preserved
+choice until it picks a size. The expandable explanation retains the upstream
+[Model Factory results](https://jschoreels.github.io/anki-rwkv/factory.html)
+and the matched five-model backup comparison in the SM56 report.
+
+At the default mixed precision, the cards also compare native model replay
+time against Big with the same scheduler layout. The reference is the median
+of three timed runs after one warm-up on 32,000 synthetic answers from 4,000
+cards and 2,000 notes with four Rayon threads; it excludes loading history and
+writing caches. On the development machine, Big / Small / Tiny replay took
+4,176 / 962 / 893 ms for paired models, 2,246 / 550 / 496 ms for one two-head
+model, and 2,305 / 543 / 486 ms for Instant-Only models. These are model replay
+comparisons, not total rebuild times or measured CPU utilization; actual gains
+depend on the computer and review history.
 
 The profile key is `rwkvModel`, with `legacy`, `sm40`, `sm36`, `sm55`, `sm56`, `sm72`, `sm72e20`, `sm63`, `sm72e25`, `sm92` and `tiny` as
 supported values (`RWKV_MODELS`; the three sizes are `RWKV_MODEL_SIZES`). Big and Small keep the values earlier
@@ -117,9 +134,11 @@ creation explicitly stores `sm72e25`. Neither model choice nor state precision i
 The model control has moved from Preferences into Advanced in the RWKV card.
 Storage precision is hidden and keeps its saved value. Use Save to keep model
 changes; closing and discarding leaves both profile keys unchanged.
-The desktop attaches `rwkv_profile_settings` to the Deck Options response and save
-request, then updates the existing profile keys only after the configuration save
-succeeds. Failed saves and parameter-only optimization do not apply these choices.
+The desktop attaches `rwkv_profile_settings` and read-only collection counts to
+the Deck Options response, and sends the profile settings in the save request.
+It updates the existing profile keys only after the configuration save succeeds.
+The counts are not sent on save or persisted. Failed saves and parameter-only
+optimization do not apply these choices.
 No collection configuration or synced state is added.
 Saving a model size or the one-model setting applies the choice in the open
 profile. If the effective runtime models change, Anki prompts to build state

@@ -301,6 +301,13 @@ message DeckConfigsForUpdate {
   float review_fuzz_factor_long = 20;
   // Desktop-local settings supplied by the GUI, never stored in the collection.
   RwkvProfileSettings rwkv_profile_settings = 21;
+  // Desktop-only inputs for the RWKV model-state estimate.
+  RwkvCollectionCounts rwkv_collection_counts = 22;
+}
+
+message RwkvCollectionCounts {
+  uint64 cards = 1;
+  uint64 notes = 2;
 }
 
 message RwkvProfileSettings {
