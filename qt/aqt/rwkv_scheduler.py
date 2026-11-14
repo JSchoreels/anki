@@ -29,6 +29,7 @@ from collections import OrderedDict
 from collections.abc import Callable, Iterable, Iterator, Mapping, Sequence
 from collections.abc import Set as AbstractSet
 from concurrent.futures import Future
+from concurrent.futures import TimeoutError as FutureTimeoutError
 from contextlib import ExitStack, contextmanager
 from dataclasses import dataclass, field, replace
 from functools import lru_cache, partial
@@ -16780,6 +16781,366 @@ def cancel_rwkv_workload_forecast(job_id: int) -> None:
         job.cancel.set()
 
 
+_RWKV_RECALL_PROJECTION_DEFAULT_SEARCH = "is:review -is:learn -is:suspended -is:buried"
+_RWKV_RECALL_PROJECTION_MAX_OFFSETS = 16
+_RWKV_RECALL_PROJECTION_MAX_OFFSET_SECONDS = 0xFFFF_FFFF
+_RWKV_RECALL_PROJECTION_CANCEL_POLL_SECS = 0.05
+_rwkv_recall_projection_lock = threading.Lock()
+_rwkv_recall_projection_in_flight: dict[
+    tuple[object, ...], Future[dict[str, object]]
+] = {}
+
+
+def rwkv_recall_projection_available(mw: object | None = None) -> bool:
+    """Capability check for add-ons: True when this build and the current
+    RWKV backend can run `project_rwkv_recall`."""
+
+    del mw
+    return (
+        configure_reviewer_backend_from_environment() and _reviewer_backend is not None
+    )
+
+
+def _rwkv_recall_projection_offsets(
+    offsets_seconds: Sequence[int | None],
+) -> tuple[int | None, ...]:
+    offsets = tuple(offsets_seconds)
+    if not 1 <= len(offsets) <= _RWKV_RECALL_PROJECTION_MAX_OFFSETS:
+        raise ValueError(
+            f"recall projection needs 1..{_RWKV_RECALL_PROJECTION_MAX_OFFSETS} offsets"
+        )
+    for offset in offsets:
+        if offset is not None and (
+            not isinstance(offset, int)
+            or isinstance(offset, bool)
+            or not 0 <= offset <= _RWKV_RECALL_PROJECTION_MAX_OFFSET_SECONDS
+        ):
+            raise ValueError(
+                "recall projection offsets must be None or integer seconds "
+                f"in 0..{_RWKV_RECALL_PROJECTION_MAX_OFFSET_SECONDS}"
+            )
+    return offsets
+
+
+def _rwkv_recall_projection_rollovers(at: float, day_cutoff: int) -> int:
+    """Day rollovers between now and `at`, `day_cutoff` being the next one."""
+
+    if at < day_cutoff:
+        return 0
+    return 1 + int(max(0.0, at - day_cutoff) // 86_400)
+
+
+def _rwkv_review_input_shifted(
+    review_input: RwkvReviewInput,
+    seconds: int,
+    rollovers: int,
+) -> RwkvReviewInput:
+    """The same query `seconds` later, `rollovers` scheduler days ahead."""
+
+    if not seconds:
+        return review_input
+    elapsed_seconds = review_input.current_elapsed_seconds
+    elapsed_days = review_input.current_elapsed_days
+    day_offset = review_input.day_offset
+    # All attributes are constructor fields (see the current-elapsed refresh).
+    return type(review_input)(
+        **(
+            vars(review_input)
+            | {
+                "current_elapsed_seconds": (
+                    None
+                    if elapsed_seconds is None
+                    else min(elapsed_seconds + seconds, 0xFFFF_FFFF)
+                ),
+                "current_elapsed_days": (
+                    None if elapsed_days is None else elapsed_days + rollovers
+                ),
+                "day_offset": None if day_offset is None else day_offset + rollovers,
+            }
+        )
+    )
+
+
+def _begin_rwkv_recall_projection(
+    key: tuple[object, ...] | None,
+) -> tuple[Future[dict[str, object]], bool]:
+    future: Future[dict[str, object]] = Future()
+    if key is None:
+        return future, True
+    with _rwkv_recall_projection_lock:
+        existing = _rwkv_recall_projection_in_flight.get(key)
+        if existing is not None:
+            return existing, False
+        _rwkv_recall_projection_in_flight[key] = future
+        return future, True
+
+
+def _finish_rwkv_recall_projection(
+    key: tuple[object, ...] | None,
+    future: Future[dict[str, object]],
+) -> None:
+    if key is None:
+        return
+    with _rwkv_recall_projection_lock:
+        if _rwkv_recall_projection_in_flight.get(key) is future:
+            del _rwkv_recall_projection_in_flight[key]
+
+
+def _rwkv_recall_projection_result_copy(
+    result: dict[str, object],
+) -> dict[str, object]:
+    """Give each coalesced caller its own mutable result."""
+
+    copied = dict(result)
+    if "offsets_seconds" in result:
+        copied["offsets_seconds"] = list(cast(Sequence[int], result["offsets_seconds"]))
+    if "cards" in result:
+        copied["cards"] = [
+            {**card, "recall": list(cast(Sequence[float | None], card["recall"]))}
+            for card in cast(Sequence[dict[str, object]], result["cards"])
+        ]
+    return copied
+
+
+@dataclass
+class _RwkvRecallProjectionStats:
+    chunks: int = 0
+    waits: int = 0
+
+
+def _project_rwkv_recall_with_state(
+    reviewer: object,
+    *,
+    search: str,
+    offsets: Sequence[int | None],
+    day_cutoff: int,
+    state_token: _ReviewerBackendPredictionStateToken,
+    cancel_event: threading.Event | None,
+    stats: _RwkvRecallProjectionStats,
+) -> dict[str, object]:
+    def cancelled() -> bool:
+        return cancel_event is not None and cancel_event.is_set()
+
+    input_build = _rwkv_review_input_batches_for_search(
+        reviewer=reviewer,
+        search=search,
+        include_suspended_review=False,
+    )
+    if input_build is None:
+        return {"status": "unavailable", "reason": "inputs_unavailable"}
+    input_build = _resolve_dynamic_desired_retentions_for_input_build(
+        reviewer, input_build
+    )
+    taken = time.time()
+    resolved_offsets = [
+        max(1, math.ceil(day_cutoff - taken)) if offset is None else offset
+        for offset in offsets
+    ]
+    rows: dict[int, dict[str, object]] = {}
+    recalls: dict[int, list[float | None]] = {}
+    for card_id, review_input in _rwkv_review_input_build_inputs(input_build):
+        recall: list[float | None] = [None] * len(resolved_offsets)
+        recalls[card_id] = recall
+        rows[card_id] = {
+            "card_id": card_id,
+            "deck_id": review_input.identity.deck_id,
+            "target_retention": _rwkv_review_input_target_retention(review_input),
+            "recall": recall,
+        }
+
+    for offset_index, seconds in enumerate(resolved_offsets):
+        rollovers = _rwkv_recall_projection_rollovers(taken + seconds, day_cutoff)
+        for batch_size, items in input_build.inputs_by_batch_size.items():
+            for chunk_start in range(0, len(items), _RWKV_REVIEW_RESCHEDULE_BATCH_SIZE):
+                if cancelled():
+                    return {"status": "cancelled"}
+                chunk = [
+                    (
+                        card_id,
+                        _rwkv_review_input_shifted(review_input, seconds, rollovers),
+                    )
+                    for card_id, review_input in items[
+                        chunk_start : chunk_start + _RWKV_REVIEW_RESCHEDULE_BATCH_SIZE
+                    ]
+                ]
+                try:
+                    try:
+                        scores = _rwkv_review_scores_for_inputs(
+                            chunk, batch_size=batch_size, state_token=state_token
+                        )
+                    except _ReviewerBackendPredictionBusy:
+                        # Queue behind the reviewer instead of failing the run.
+                        stats.waits += 1
+                        scores = _rwkv_review_scores_for_inputs(
+                            chunk,
+                            batch_size=batch_size,
+                            state_token=state_token,
+                            wait_for_access=True,
+                        )
+                except _ReviewerBackendPredictionAborted:
+                    return {"status": "stale", "reason": "state_changed"}
+                if scores is None:
+                    return {"status": "unavailable", "reason": "scores_unavailable"}
+                if cancelled():
+                    return {"status": "cancelled"}
+                stats.chunks += 1
+                for card_id, score in scores:
+                    card_recall = recalls.get(card_id)
+                    if card_recall is not None:
+                        card_recall[offset_index] = float(score)
+
+    if not _reviewer_backend_prediction_state_token_is_current(state_token):
+        return {"status": "stale", "reason": "state_changed"}
+    return {
+        "status": "ready",
+        "taken": taken,
+        "offsets_seconds": resolved_offsets,
+        "cards": [
+            row
+            for card_id, row in rows.items()
+            if recalls[card_id][0] is not None and row["target_retention"] is not None
+        ],
+    }
+
+
+def project_rwkv_recall(
+    mw: object | None = None,
+    *,
+    search: str = _RWKV_RECALL_PROJECTION_DEFAULT_SEARCH,
+    offsets_seconds: Sequence[int | None] = (0,),
+    cancel_event: threading.Event | None = None,
+) -> dict[str, object]:
+    """Project each matched card's RWKV recall at future times.
+
+    Add-on API (see docs/rwkv.MD, "Recall Projection"). The recall is what the
+    current model state predicts if the user stopped reviewing now; nothing is
+    written and no warm-up is started. Blocking: call it from a background
+    thread that does not hold the collection executor (a plain thread or
+    `run_in_background(..., uses_collection=False)`). `offsets_seconds` are
+    seconds after now; None is the next day rollover. Returns plain data with
+    `status` "ready", "pending", "unavailable", "stale" or "cancelled".
+    """
+
+    if threading.current_thread() is threading.main_thread():
+        raise RuntimeError("project_rwkv_recall blocks; call it off the main thread")
+    offsets = _rwkv_recall_projection_offsets(offsets_seconds)
+    if mw is None:
+        import aqt
+
+        mw = aqt.mw
+    start = time.monotonic()
+    reviewer = SimpleNamespace(mw=mw)
+
+    def stopped(status: str, reason: str | None = None) -> dict[str, object]:
+        logger.debug(
+            "RWKV recall projection %s: reason=%s search=%r offsets=%s elapsed_ms=%.1f",
+            status,
+            reason,
+            search[:120],
+            list(offsets),
+            (time.monotonic() - start) * 1000,
+        )
+        return (
+            {"status": status}
+            if reason is None
+            else {"status": status, "reason": reason}
+        )
+
+    if not configure_reviewer_backend_from_environment() or _reviewer_backend is None:
+        return stopped("unavailable", "backend_unavailable")
+    day_cutoff = getattr(
+        getattr(_collection(reviewer), "sched", None), "day_cutoff", None
+    )
+    if not isinstance(day_cutoff, int) or isinstance(day_cutoff, bool):
+        return stopped("unavailable", "collection_unavailable")
+    # Cache-only readiness: a cold state is reported, never replayed here.
+    if not _prepare_reviewer_backend_for_review(reviewer):
+        return stopped(
+            "pending",
+            "warmup_pending"
+            if _reviewer_backend_warmup_pending(reviewer)
+            else "state_cold",
+        )
+    state_token = _capture_reviewer_backend_prediction_state_token(reviewer)
+    if state_token is None:
+        return stopped("pending", "state_unavailable")
+    state_key = _rwkv_stats_prepare_key(reviewer, search, state_token=state_token)
+    key = (
+        None
+        if state_key is None
+        else (
+            "recall_projection",
+            state_key,
+            tuple(
+                ("rollover", day_cutoff) if offset is None else offset
+                for offset in offsets
+            ),
+        )
+    )
+
+    while True:
+        if cancel_event is not None and cancel_event.is_set():
+            return stopped("cancelled")
+        future, owns = _begin_rwkv_recall_projection(key)
+        if owns:
+            break
+        while True:
+            try:
+                shared = future.result(timeout=_RWKV_RECALL_PROJECTION_CANCEL_POLL_SECS)
+                break
+            except FutureTimeoutError:
+                if cancel_event is not None and cancel_event.is_set():
+                    return stopped("cancelled")
+        if shared.get("status") == "cancelled":
+            # Another caller cancelled the shared run; this one still wants it.
+            continue
+        logger.debug(
+            "RWKV recall projection reused in-flight result: status=%s cards=%s "
+            "offsets=%s search=%r elapsed_ms=%.1f",
+            shared.get("status"),
+            len(cast(Sequence[object], shared.get("cards", ()))),
+            list(offsets),
+            search[:120],
+            (time.monotonic() - start) * 1000,
+        )
+        return _rwkv_recall_projection_result_copy(shared)
+
+    stats = _RwkvRecallProjectionStats()
+    try:
+        result = _project_rwkv_recall_with_state(
+            reviewer,
+            search=search,
+            offsets=offsets,
+            day_cutoff=day_cutoff,
+            state_token=state_token,
+            cancel_event=cancel_event,
+            stats=stats,
+        )
+        elapsed_ms = (time.monotonic() - start) * 1000
+        if result["status"] == "ready":
+            result["elapsed_ms"] = elapsed_ms
+        future.set_result(result)
+    except BaseException as exc:
+        if not future.done():
+            future.set_exception(exc)
+        raise
+    finally:
+        _finish_rwkv_recall_projection(key, future)
+    logger.debug(
+        "RWKV recall projection finished: status=%s reason=%s cards=%s offsets=%s "
+        "chunks=%s waits=%s coalesced=False search=%r elapsed_ms=%.1f",
+        result["status"],
+        result.get("reason"),
+        len(cast(Sequence[object], result.get("cards", ()))),
+        result.get("offsets_seconds", list(offsets)),
+        stats.chunks,
+        stats.waits,
+        search[:120],
+        elapsed_ms,
+    )
+    return _rwkv_recall_projection_result_copy(result) if key is not None else result
+
+
 def _rwkv_simulation_inputs(
     input_build: RwkvReviewInputBatchBuild,
 ) -> list[tuple[int, RwkvReviewInput, int]]:
@@ -25883,9 +26244,11 @@ def _rwkv_review_scores_for_inputs(
     *,
     batch_size: int,
     state_token: _ReviewerBackendPredictionStateToken | None = None,
+    wait_for_access: bool = False,
 ) -> list[tuple[int, float]] | None:
     with _try_reviewer_backend_prediction_access(
         expected_state_token=state_token,
+        wait_for_access=wait_for_access,
     ) as backend:
         if backend is None:
             logger.debug("RWKV input scoring skipped: backend busy")
