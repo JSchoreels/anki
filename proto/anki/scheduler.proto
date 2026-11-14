@@ -160,6 +160,9 @@ service SchedulerService {
   // superseded.
   rpc PruneRwkvReviewRetrievabilityCacheRows(
       PruneRwkvReviewRetrievabilityCacheRowsRequest) returns (generic.UInt32);
+  // Comparison-only predictions. These do not change card or review state.
+  rpc FsrsSixCurrentScores(cards.CardIds) returns (Fsrs6CurrentScoresResponse);
+  rpc FsrsSixComparisonFingerprint(generic.String) returns (generic.String);
 }
 
 // Implicitly includes any of the above methods that are not listed in the
@@ -178,6 +181,8 @@ service BackendSchedulerService {
   rpc FsrsBenchmark(FsrsBenchmarkRequest) returns (FsrsBenchmarkResponse);
   // Used for exporting revlogs for algorithm research.
   rpc ExportDataset(ExportDatasetRequest) returns (generic.Empty);
+  rpc ComputeFsrsSixComparison(ComputeFsrs6ComparisonRequest)
+      returns (ComputeFsrs6ComparisonResponse);
 }
 
 message SchedulingState {
@@ -562,6 +567,33 @@ message ComputeFsrsReviewRetrievabilityCalibrationRequest {
   optional deck_config.DeckConfig.Config.FsrsVersion fsrs_version = 6;
   bool include_validation_folds = 7;
   optional bool enable_scheduling_penalties = 8;
+}
+
+message Fsrs6CurrentScoresResponse {
+  message Score {
+    int64 card_id = 1;
+    float retrievability = 2;
+  }
+  repeated Score scores = 1;
+  uint32 missing_parameters = 2;
+}
+
+message ComputeFsrs6ComparisonRequest {
+  string search = 1;
+  repeated float params = 2;
+  int64 ignore_revlogs_before_ms = 3;
+  uint32 num_of_relearning_steps = 4;
+  bool include_validation_folds = 5;
+}
+
+message ComputeFsrs6ComparisonResponse {
+  // Packed, sorted pairs of little-endian int64 review ID and float32 R.
+  // final_fit uses the supplied parameters; validation_fold uses parameters
+  // trained on the preceding fold. Neither result is persisted by Anki.
+  bytes final_fit = 1;
+  bytes validation_fold = 2;
+  // Hash of the history and rollover used for these predictions.
+  string history_fingerprint = 3;
 }
 
 message ComputeFsrsParamsFromItemsRequest {

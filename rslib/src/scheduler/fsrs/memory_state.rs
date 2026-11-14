@@ -1033,6 +1033,84 @@ impl Collection {
         })
     }
 
+    /// Reconstruct FSRS-6 scores using saved home-deck parameters without
+    /// changing the current scheduler's stored state or applying fallbacks.
+    pub(crate) fn fsrs6_comparison_current_scores(
+        &mut self,
+        card_ids: &[CardId],
+    ) -> Result<(Vec<(CardId, f32)>, usize)> {
+        let cards = self.all_cards_for_ids(card_ids, false)?;
+        let mut deck_configs = HashMap::new();
+        let mut groups: HashMap<_, (crate::deckconfig::DeckConfig, Vec<CardId>)> = HashMap::new();
+        let mut missing_parameters = 0;
+        for card in cards {
+            let deck_id = card.original_or_current_deck_id();
+            let config_id = if let Some(id) = deck_configs.get(&deck_id) {
+                *id
+            } else {
+                let deck = self.get_deck(deck_id)?.or_not_found(deck_id)?;
+                let id = deck.config_id().or_not_found(deck_id)?;
+                deck_configs.insert(deck_id, id);
+                id
+            };
+            let (config, ids) = match groups.entry(config_id) {
+                std::collections::hash_map::Entry::Occupied(entry) => entry.into_mut(),
+                std::collections::hash_map::Entry::Vacant(entry) => entry.insert((
+                    self.get_deck_config(config_id, false)?
+                        .or_not_found(config_id)?,
+                    Vec::new(),
+                )),
+            };
+            if config.inner.fsrs_params_6.len() == 21
+                && config
+                    .inner
+                    .fsrs_params_6
+                    .iter()
+                    .all(|param| param.is_finite())
+            {
+                ids.push(card.id);
+            } else {
+                missing_parameters += 1;
+            }
+        }
+
+        let timing = self.timing_today()?;
+        let mut scores = Vec::new();
+        for (_config_id, (config, ids)) in groups {
+            if ids.is_empty() {
+                continue;
+            }
+            let params = &config.inner.fsrs_params_6;
+            let fsrs = FSRS::new(params)?;
+            let revlogs = self.revlog_for_srs(SearchNode::CardIds(comma_separated_ids(&ids)))?;
+            let items = fsrs_items_for_memory_states(
+                &fsrs,
+                params,
+                revlogs,
+                timing.next_day_at,
+                config.inner.historical_retention,
+                crate::scheduler::fsrs::params::ignore_revlogs_before_ms_from_config(&config)?,
+            )?;
+            for (card_id, item) in items {
+                let Some(item) = item else { continue };
+                let Some(last_review) = item.filtered_revlogs.last() else {
+                    continue;
+                };
+                let elapsed_days = timing
+                    .now
+                    .elapsed_secs_since_clamped(last_review.id.as_secs())
+                    as f32
+                    / 86_400.0;
+                let state = fsrs.memory_state(item.item, item.starting_state)?;
+                let prediction = fsrs.current_retrievability(state, elapsed_days);
+                if prediction.is_finite() && (0.0..=1.0).contains(&prediction) {
+                    scores.push((card_id, prediction));
+                }
+            }
+        }
+        Ok((scores, missing_parameters))
+    }
+
     pub(crate) fn recompute_fsrs_data_for_card(&mut self, card: &mut Card) -> Result<()> {
         if card.ctype == CardType::New {
             return Ok(());
@@ -2123,6 +2201,41 @@ mod tests {
             repaired.last_review_time,
             Some(TimestampSecs(entry.id.0 / 1000))
         );
+        Ok(())
+    }
+
+    #[test]
+    fn fsrs6_comparison_reconstructs_saved_parameters_and_leaves_cards_unchanged() -> Result<()> {
+        let mut col = Collection::new();
+        NoteAdder::basic(&mut col).add(&mut col);
+        let mut card = col.get_first_card();
+        card.ctype = CardType::Review;
+        card.queue = CardQueue::Review;
+        card.interval = 10;
+        col.storage.update_card(&card)?;
+        let mut entry = revlog(RevlogReviewKind::Learning, 10);
+        entry.cid = card.id;
+        entry.interval = 10;
+        col.storage.add_revlog_entry(&entry, false)?;
+
+        let (missing, count) = col.fsrs6_comparison_current_scores(&[card.id])?;
+        assert!(missing.is_empty());
+        assert_eq!(count, 1);
+
+        let mut config = col.get_deck_config(DeckConfigId(1), false)?.unwrap();
+        config.inner.fsrs_params_6 = fsrs::FSRS6_DEFAULT_PARAMETERS.to_vec();
+        col.add_or_update_deck_config(&mut config)?;
+        let original = col.storage.get_card(card.id)?.unwrap();
+        let (scores, count) = col.fsrs6_comparison_current_scores(&[card.id])?;
+        assert_eq!(count, 0);
+        assert_eq!(scores.len(), 1);
+        assert_eq!(scores[0].0, card.id);
+        assert!(scores[0].1 > 0.0 && scores[0].1 < 1.0);
+        assert_eq!(col.storage.get_card(card.id)?.unwrap(), original);
+        config.inner.fsrs_params_6[2] *= 2.0;
+        col.add_or_update_deck_config(&mut config)?;
+        let (updated, _) = col.fsrs6_comparison_current_scores(&[card.id])?;
+        assert!(updated[0].1 > scores[0].1);
         Ok(())
     }
 
