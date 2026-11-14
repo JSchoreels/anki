@@ -38,6 +38,11 @@ previous compact Anki adapter. Keep the fork commit reachable while it is
 pinned; after the API lands upstream, update the dependency to the corresponding
 upstream revision before deleting the fork branch.
 
+**2026-11-14 update:** The compact prediction API was merged upstream in
+[fsrs-rs #471](https://github.com/open-spaced-repetition/fsrs-rs/pull/471).
+The current fork dependency additionally backports later FSRS correctness fixes;
+see the pinned revision in `Cargo.toml` and the release notes.
+
 After integrating the API and merging Anki `origin/main`, five additional
 fresh-process pairs compared the production release-LTO build with the preserved
 adapter build from `3c4a61048`. The same Yomitan backup, preset and options were
