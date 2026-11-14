@@ -29,8 +29,8 @@ param(
     [string]$OutDir = "",
     [string[]]$Runtimes = @(
         "big-pair", "big-one", "big-instant",
-        "small-pair", "small-one", "small-curve", "small-instant",
-        "tiny-pair", "tiny-instant"
+        "small-pair", "small-one", "small-instant",
+        "tiny-pair", "tiny-one", "tiny-instant"
     ),
     [int]$Repeats = 5,
     [switch]$AllowBusy,

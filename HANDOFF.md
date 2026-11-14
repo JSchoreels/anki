@@ -7,7 +7,7 @@ State on 2026-11-12: harness built and calibrated (contended, GPU training runni
 1. Quiet window: GPU queue idle (no training, scoring or export), no other CPU work, probably Friday after 16:00.
 2. Worktree: `C:/Users/jonat/workspace/wt/speed-test` (branch `speed-test` of the fork). `git fetch && git merge --ff-only origin/speed-test`.
 3. Collection copy: `.local/collection/collection.anki2` (git-ignored, from 2026-11-03). To refresh it, make a plain file copy of `C:/Users/jonat/AppData/Roaming/Anki2/User 1/collection.anki2` (plus `-wal` if present) into `.local/collection/`. Never open, lock or run anything against the AppData folder. Report only aggregate numbers.
-4. Optional, once the Tiny two-head model (SM106) is in the fork with a `ModelKind` (or as a path to its weights): add it as a custom runtime, see below.
+4. Updated 2026-11-14 (family wiring (SM114) merged): runtimes follow the per-size models. `tiny-pair` = Tiny two-head model (SM106) + Tiny Instant-Only model (SM101), `tiny-one` = SM106 alone, `tiny-instant` = SM101 alone; Big = show-time big model (SM91s2) + show-time instant-only big model (SM99); Small = show-time retrain (SM92) + Small Instant-Only model (SM98). Extra names: `tiny-curve`, `small-curve` (same as the one-model runs), `sm63-alone` (default small model (SM63), comparison only). Smoke 2026-11-14 passed (tiny pair 2,129 B per card + 3,153 B per note = 5,282 B).
 
 ## The run (one command, about 25 minutes)
 
@@ -18,10 +18,14 @@ powershell -NoProfile -ExecutionPolicy Bypass -File qt/tools/rwkv_speed_test.ps1
   -OutDir C:/Users/jonat/workspace/wt/speed-test/.local/speed-final
 ```
 
-With the Tiny two-head model (SM106) as Tiny's one-model choice (kind key as the fork names it; `@path` only while the weights are not bundled):
+The default runtime list is already: big-pair, big-one, big-instant, small-pair, small-one, small-instant, tiny-pair, tiny-one, tiny-instant (no custom `@path` needed). Final-run command (after the GPU training ends, quiet machine):
 
 ```powershell
-  -Runtimes big-pair,big-one,big-instant,small-pair,small-one,small-curve,small-instant,tiny-pair,tiny-instant,"tiny-one=sm106@C:/path/to/sm106/weights.f32.bin"
+cd C:/Users/jonat/workspace/wt/speed-test
+powershell -NoProfile -ExecutionPolicy Bypass -File qt/tools/rwkv_speed_test.ps1 `
+  -Collection C:/Users/jonat/workspace/wt/speed-test/.local/collection/collection.anki2 `
+  -OutDir C:/Users/jonat/workspace/wt/speed-test/.local/speed-final `
+  -Runtimes big-pair,big-one,big-instant,small-pair,small-one,small-instant,tiny-pair,tiny-one,tiny-instant
 ```
 
 The script builds the release test binary (`PROTOC` from `wt/anki-tiny/out/extracted`), copies the collection into the output folder, refuses to start if the GPU is above 5% or the CPU load above 10% (`-AllowBusy` overrides, for smoke tests only), and writes:
