@@ -181,6 +181,8 @@ impl Collection {
         let deck = self.get_deck(deck)?.or_not_found(deck)?;
         let normal = deck.normal()?;
         let today = self.timing_today()?.days_elapsed;
+        let mut limits = normal_deck_to_limits(normal, today);
+        limits.rwkv_respect_subdeck_minimums = Some(deck.rwkv_respect_subdeck_minimums());
 
         Ok(CurrentDeck {
             name: deck.human_name(),
@@ -195,7 +197,7 @@ impl Collection {
                 .into_iter()
                 .map(Into::into)
                 .collect(),
-            limits: Some(normal_deck_to_limits(normal, today)),
+            limits: Some(limits),
         })
     }
 
@@ -322,6 +324,22 @@ impl Collection {
         } else {
             [req.target_deck_id].iter().cloned().collect()
         };
+        let rwkv_subdeck_ids: HashSet<_> =
+            if req.limits.rwkv_apply_respect_subdeck_minimums_to_children
+                && req.limits.rwkv_respect_subdeck_minimums.is_some()
+            {
+                let deck = self
+                    .storage
+                    .get_deck(req.target_deck_id)?
+                    .or_not_found(req.target_deck_id)?;
+                self.storage
+                    .child_decks(&deck)?
+                    .into_iter()
+                    .map(|deck| deck.id)
+                    .collect()
+            } else {
+                HashSet::new()
+            };
 
         // loop through all normal decks
         let usn = self.usn()?;
@@ -355,17 +373,30 @@ impl Collection {
 
                 // if a selected (sub)deck, or its old config was removed, update deck to point
                 // to new config
-                let (current_config_id, current_deck_dr) = if selected_deck_ids.contains(&deck.id)
-                    || !configs_after_update.contains_key(&previous_config_id)
-                {
-                    let mut updated = deck.clone();
-                    updated.normal_mut()?.config_id = selected_config.id.0;
-                    update_deck_limits(updated.normal_mut()?, &req.limits, today);
-                    self.update_deck_inner(&mut updated, deck, usn)?;
-                    (selected_config.id, updated.normal()?.desired_retention)
-                } else {
-                    (previous_config_id, previous_deck_dr)
-                };
+                let change_config = selected_deck_ids.contains(&deck.id)
+                    || !configs_after_update.contains_key(&previous_config_id);
+                let rwkv_setting = (deck.id == req.target_deck_id
+                    || rwkv_subdeck_ids.contains(&deck.id))
+                .then_some(req.limits.rwkv_respect_subdeck_minimums)
+                .flatten();
+                let (current_config_id, current_deck_dr) =
+                    if change_config || rwkv_setting.is_some() {
+                        let mut updated = deck.clone();
+                        let config_id = if change_config {
+                            updated.normal_mut()?.config_id = selected_config.id.0;
+                            update_deck_limits(updated.normal_mut()?, &req.limits, today);
+                            selected_config.id
+                        } else {
+                            previous_config_id
+                        };
+                        if let Some(enabled) = rwkv_setting {
+                            updated.set_rwkv_respect_subdeck_minimums(enabled)?;
+                        }
+                        self.update_deck_inner(&mut updated, deck, usn)?;
+                        (config_id, updated.normal()?.desired_retention)
+                    } else {
+                        (previous_config_id, previous_deck_dr)
+                    };
 
                 // if new order differs, deck needs re-sorting
                 let current_config = configs_after_update.get(&current_config_id);
@@ -672,6 +703,7 @@ fn normal_deck_to_limits(deck: &NormalDeck, today: u32) -> Limits {
             .map(|limit| limit.today == today)
             .unwrap_or_default(),
         desired_retention: deck.desired_retention,
+        ..Default::default()
     }
 }
 
@@ -1137,6 +1169,100 @@ mod test {
             subtree_config_ids,
             HashSet::from([DeckConfigId(1).0, child_config.id.0])
         );
+        Ok(())
+    }
+
+    #[test]
+    fn rwkv_subdeck_option_applies_only_to_requested_decks() -> Result<()> {
+        let mut col = Collection::new();
+        let parent = col.get_or_create_normal_deck("Language")?;
+        let child = col.get_or_create_normal_deck("Language::Japanese")?;
+        let grandchild = col.get_or_create_normal_deck("Language::Japanese::Vocab")?;
+        let outside = col.get_or_create_normal_deck("Outside")?;
+        assert_eq!(parent.config_id(), child.config_id());
+        assert_eq!(child.config_id(), outside.config_id());
+
+        let output = col.get_deck_configs_for_update(parent.id)?;
+        let current = output.current_deck.unwrap();
+        assert_eq!(
+            current
+                .limits
+                .as_ref()
+                .unwrap()
+                .rwkv_respect_subdeck_minimums,
+            Some(false)
+        );
+        let config = output
+            .all_config
+            .into_iter()
+            .find_map(|entry| entry.config.filter(|config| config.id == current.config_id))
+            .unwrap();
+        let mut request = anki_proto::deck_config::UpdateDeckConfigsRequest {
+            target_deck_id: parent.id.0,
+            configs: vec![config],
+            limits: current.limits,
+            ..Default::default()
+        };
+        let limits = request.limits.as_mut().unwrap();
+        limits.rwkv_respect_subdeck_minimums = Some(true);
+        col.update_deck_configs(request.clone().into())?;
+        assert!(col
+            .get_deck(parent.id)?
+            .unwrap()
+            .rwkv_respect_subdeck_minimums());
+        assert!(!col
+            .get_deck(child.id)?
+            .unwrap()
+            .rwkv_respect_subdeck_minimums());
+        assert!(!col
+            .get_deck(outside.id)?
+            .unwrap()
+            .rwkv_respect_subdeck_minimums());
+
+        request
+            .limits
+            .as_mut()
+            .unwrap()
+            .rwkv_apply_respect_subdeck_minimums_to_children = true;
+        col.update_deck_configs(request.clone().into())?;
+        for deck in [&child, &grandchild] {
+            let saved = col.get_deck(deck.id)?.unwrap();
+            assert!(saved.rwkv_respect_subdeck_minimums());
+            assert_eq!(saved.config_id(), deck.config_id());
+        }
+        assert!(!col
+            .get_deck(outside.id)?
+            .unwrap()
+            .rwkv_respect_subdeck_minimums());
+
+        col.undo()?;
+        assert!(col
+            .get_deck(parent.id)?
+            .unwrap()
+            .rwkv_respect_subdeck_minimums());
+        assert!(!col
+            .get_deck(child.id)?
+            .unwrap()
+            .rwkv_respect_subdeck_minimums());
+        assert!(!col
+            .get_deck(grandchild.id)?
+            .unwrap()
+            .rwkv_respect_subdeck_minimums());
+
+        request
+            .limits
+            .as_mut()
+            .unwrap()
+            .rwkv_respect_subdeck_minimums = None;
+        col.update_deck_configs(request.into())?;
+        assert!(col
+            .get_deck(parent.id)?
+            .unwrap()
+            .rwkv_respect_subdeck_minimums());
+        assert!(!col
+            .get_deck(child.id)?
+            .unwrap()
+            .rwkv_respect_subdeck_minimums());
         Ok(())
     }
 

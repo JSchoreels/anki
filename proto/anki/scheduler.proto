@@ -1144,6 +1144,11 @@ message RwkvReviewInputRowsForCardsResponse {
     optional float fsrs_historical_retention = 22;
     // Unix time from which current_elapsed_seconds was calculated.
     optional int64 current_elapsed_since_secs = 23;
+    // Learning steps still to complete (without the legacy packed-day count).
+    optional uint32 remaining_steps = 24;
+    // The card is currently in a filtered deck, even though deck_id is its
+    // home.
+    bool in_filtered_deck = 25;
   }
 
   repeated Row rows = 1;

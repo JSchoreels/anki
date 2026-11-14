@@ -356,12 +356,14 @@ deck-config-rwkv-model-sm92 = Show-time retrain of the release (SM92)
 deck-config-rwkv-model-big = Big
 deck-config-rwkv-model-small = Small
 deck-config-rwkv-model-tiny = Tiny
-deck-config-rwkv-model-big-description = A big model for RWKV-Curve, with its own big model for RWKV-Instant, both trained on the time since the last review at the moment a card is shown. The most accurate; uses the most memory and takes the longest.
-deck-config-rwkv-model-small-description = Default. A small model for RWKV-Curve, with its own small model for RWKV-Instant, trained to predict the next answer at the moment a card is shown. Much less memory and faster than Big.
-deck-config-rwkv-model-tiny-description = Like Small, with an even smaller RWKV-Instant model: about 25-30% less RWKV-Instant memory per card, slightly less accurate RWKV-Instant predictions. Tiny only shrinks RWKV-Instant's state; RWKV-Curve uses the same model as Small.
+deck-config-rwkv-model-big-description = Separate models for RWKV-Curve and RWKV-Instant, trained on the time since the last review at the moment a card is shown. Model state per card and note: about 19.6 KB with one model, or 39.1 KB with both schedulers using separate models. Uses the most memory and takes the longest.
+deck-config-rwkv-model-small-description = Default. Separate small models for RWKV-Curve and RWKV-Instant. Model state per card and note: about 3.5 KB with Instant only (82% less than Big), or 7.1 KB with both schedulers (82% less). With both schedulers, Factory LogLoss compared to Big: Curve 0.31% higher, Instant 0.11% higher.
+deck-config-rwkv-model-tiny-description = Separate tiny models for RWKV-Curve and RWKV-Instant. Model state per card and note: about 2.6 KB with Instant only (26% less than Small, 87% less than Big), or 5.3 KB with both schedulers (26% less than Small, 87% less than Big). With both schedulers, Factory LogLoss compared to Big: Curve 0.42% higher, Instant 0.30% higher (0.11% and 0.19% higher than Small). Tiny has no answer-time estimate.
 deck-config-rwkv-model-sm92-description = Kept from an earlier version: one model for both schedulers. Pick a size above to switch.
-deck-config-rwkv-single-model = Use one model for RWKV (about half the memory, slightly worse RWKV-Instant predictions)
-deck-config-rwkv-single-model-explanation = Applies when presets use both RWKV-Instant and RWKV-Curve (as a scheduler or as RWKV-Instant's fallback). By default, RWKV-Instant then runs on its own model, trained only to predict the next answer at the moment a card is shown, which predicts it better. It runs beside the model that gives RWKV-Curve, the RWKV intervals and the answer-time estimate, so two model states are kept (about twice the memory, and answers replay on both). Turn this on to run one model for both instead: with Big, its RWKV-Curve model; with Small and Tiny, a retrain of the Small model on the inputs as shown when a card is due. Either keeps RWKV-Curve's accuracy and predicts RWKV-Instant a little worse than the model RWKV-Instant uses by default. With RWKV-Instant and no RWKV-Curve, RWKV-Instant's own model runs alone whatever this setting: due dates and memory states come from the FSRS fallback, and RWKV workload simulation is unavailable.
+deck-config-rwkv-model-comparison = With both schedulers, comparisons assume separate models. State sizes use the default precision (INT4 cards + INT8 notes) and one card per note; they cover part of memory use. Factory LogLoss is from 722 users; lower is better.
+deck-config-rwkv-single-model = Use one model for RWKV
+deck-config-rwkv-single-model-explanation = When your presets use both RWKV-Instant and RWKV-Curve (including as Instant's fallback), each normally uses its own model of the chosen size. Turn this on to use the size's Curve model for both: it uses less memory, but Instant predictions are slightly less accurate.
+deck-config-rwkv-single-model-instant-only = If you use Instant without Curve, the size's Instant model always runs alone. FSRS supplies due dates and memory states, and RWKV workload simulation is unavailable.
 deck-config-rwkv-workload-needs-curve = RWKV workload simulation needs RWKV-Curve. Turn on RWKV-Curve in a preset (as its scheduler or as RWKV-Instant's fallback) and save to simulate RWKV workload.
 deck-config-rwkv-model-help = About prediction models
 deck-config-rwkv-model-size-migration = Older small models saved by earlier versions switch to Small when you save.
@@ -412,12 +414,18 @@ deck-config-rwkv-review-instant-order-tooltip =
 deck-config-rwkv-review-minimum-reviews-per-day = Minimum reviews per day
 deck-config-rwkv-review-minimum-reviews-per-day-tooltip =
     If RWKV-Instant finds fewer reviews than this daily target, pull forward the
-    lowest-retrievability review cards until the target is met. Reviews already
-    completed today count toward the target, including reviews completed in
-    subdecks when this deck is studied. Subdeck targets are also respected when
-    studying a parent deck. The normal maximum review limits and same-day repeat
-    safeguards still apply. Set this to 0 to let RWKV alone decide how many
-    reviews are ready.
+    lowest-retrievability review cards from this deck and its subdecks until the
+    target is met. Reviews already completed today count toward the target. The
+    normal maximum review limits and same-day repeat safeguards still apply.
+deck-config-rwkv-review-respect-subdeck-minimums = Also honor subdeck minimums
+deck-config-rwkv-apply-respect-subdeck-minimums-to-children = Apply this setting to all subdecks on save
+deck-config-rwkv-review-respect-subdeck-minimums-tooltip =
+    When studying this deck, also meet the minimum reviews set on its direct
+    subdecks. A subdeck can also honor its own subdecks' minimums by enabling
+    this option. Reviews selected for subdeck minimums count toward this deck's
+    minimum, but may add reviews beyond it. Turn this off to use this deck's
+    minimum across its whole tree. This option belongs to the deck, not its
+    preset; you can apply it to all subdecks when saving.
 deck-config-rwkv-review-candidate-refresh = Use faster, approximate queue updates
 deck-config-rwkv-review-candidate-refresh-tooltip =
     After the first full update, RWKV rechecks only the cards most likely to

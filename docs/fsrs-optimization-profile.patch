@@ -1,0 +1,177 @@
+diff --git a/rslib/Cargo.toml b/rslib/Cargo.toml
+index decc840b7..ab0d4cb80 100644
+--- a/rslib/Cargo.toml
++++ b/rslib/Cargo.toml
+@@ -49,6 +49,7 @@ libc.workspace = true
+
+ [dependencies]
+ criterion = { workspace = true, optional = true }
++libc.workspace = true
+
+ ammonia.workspace = true
+ anki_i18n.workspace = true
+diff --git a/rslib/src/scheduler/fsrs/params.rs b/rslib/src/scheduler/fsrs/params.rs
+index 0eae5f934..4f5c7aec7 100644
+--- a/rslib/src/scheduler/fsrs/params.rs
++++ b/rslib/src/scheduler/fsrs/params.rs
+@@ -402,26 +402,30 @@ fn training_target_counts_from_items(items: &[FSRSItem]) -> TrainingTargetCounts
+     }
+ }
+
+-fn health_check_passed_for_evaluated_targets(eval: ModelEvaluation, items: &[FSRSItem]) -> bool {
+-    let fsrs_items = items.len() as u32;
++fn health_check_passed_for_evaluated_targets(
++    eval: ModelEvaluation,
++    fsrs_items: u32,
++    remembered: u32,
++) -> bool {
+     if fsrs_items == 0 {
+         return false;
+     }
+-    let r = items.iter().fold(0, |passed, item| {
+-        passed
+-            + (item
+-                .reviews
+-                .last()
+-                .map(|reviews| reviews.rating)
+-                .unwrap_or(0)
+-                > 1) as u32
+-    }) as f32
+-        / fsrs_items as f32;
++    let r = remembered as f32 / fsrs_items as f32;
+     let adjusted_log_loss = eval.log_loss / log_loss_adjustment(r);
+     let adjusted_rmse = eval.rmse_bins / rmse_adjustment(r, fsrs_items);
+     adjusted_log_loss <= 1.11 || adjusted_rmse <= 1.53
+ }
+
++fn profile_optimization(stage: &str, start: std::time::Instant) {
++    if std::env::var_os("ANKI_FSRS_PROFILE_OPTIMIZATION").is_some() {
++        let mut usage = std::mem::MaybeUninit::<libc::rusage>::uninit();
++        if unsafe { libc::getrusage(libc::RUSAGE_SELF, usage.as_mut_ptr()) } == 0 {
++            let peak = unsafe { usage.assume_init() }.ru_maxrss as f64 / 1024.0 / 1024.0;
++            eprintln!("fsrs_opt_profile stage={stage} ms={:.3} peak_mib={peak:.3}", start.elapsed().as_secs_f64() * 1000.0);
++        }
++    }
++}
++
+ /// Below this many items, fsrs-rs returns its default or initial parameters
+ /// without training.
+ const MIN_ITEMS_FOR_TRAINING: usize = 64;
+@@ -616,6 +620,8 @@ pub(crate) fn compute_params_from_prepared(
+     progress_phase: Option<SharedComputeParamsProgressPhase>,
+     health_check: bool,
+ ) -> Result<ComputeFsrsParamsResponse> {
++    let profile_start = std::time::Instant::now();
++    profile_optimization("compute_start", profile_start);
+     let fsrs_items = training.len() as u32;
+     if fsrs_items == 0 {
+         return Ok(ComputeFsrsParamsResponse {
+@@ -653,7 +659,9 @@ pub(crate) fn compute_params_from_prepared(
+         &current_params,
+         compute_compact_parameters(&training.prefixes, input)?,
+     );
++    profile_optimization("training_done", profile_start);
+     let params = params_to_keep(&current_params, params, &training)?;
++    profile_optimization("evaluation_done", profile_start);
+     let existing_cards = existing_card_input
+         .map(|input| existing_cards_for_dynamic_desired_retention(input, &params))
+         .transpose()?
+@@ -674,16 +682,26 @@ pub(crate) fn compute_params_from_prepared(
+         training.target_counts().long_term_targets
+     };
+     let health_check_passed = if health_check && health_check_target_count > 300 {
+-        let health_check_items = if include_same_day_reviews {
++        let mut health_check_items = if include_same_day_reviews {
+             training.expanded()
+         } else {
+             training.without_same_day_targets().expanded()
+         };
++        profile_optimization("health_expanded", profile_start);
++        let target_count = health_check_items.items.len() as u32;
++        let remembered = health_check_items.items.iter().filter(|item| item.reviews.last().map(|review| review.rating).unwrap_or(0) > 1).count() as u32;
++        let move_items = std::env::var_os("ANKI_FSRS_HEALTH_MOVE").is_some();
++        let (train_set, card_ids) = if move_items {
++            (std::mem::take(&mut health_check_items.items), health_check_items.card_ids.take())
++        } else {
++            (health_check_items.items.clone(), health_check_items.card_ids.clone())
++        };
++        profile_optimization("health_input_ready", profile_start);
+         evaluate_with_time_series_splits(
+             ComputeParametersInput {
+                 training_config: None,
+-                train_set: health_check_items.items.clone(),
+-                card_ids: health_check_items.card_ids.clone(),
++                train_set,
++                card_ids,
+                 progress: None,
+                 enable_short_term: true,
+                 enable_sched_penalties: enable_scheduling_penalties,
+@@ -693,10 +711,11 @@ pub(crate) fn compute_params_from_prepared(
+             |_| true,
+         )
+         .ok()
+-        .map(|eval| health_check_passed_for_evaluated_targets(eval, &health_check_items.items))
++        .map(|eval| health_check_passed_for_evaluated_targets(eval, target_count, remembered))
+     } else {
+         None
+     };
++    profile_optimization("health_done", profile_start);
+
+     Ok(ComputeFsrsParamsResponse {
+         params,
+@@ -1157,6 +1176,8 @@ impl Collection {
+         &mut self,
+         input: PrepareComputeParamsInput<'_>,
+     ) -> Result<PreparedComputeParams> {
++        let profile_start = std::time::Instant::now();
++        profile_optimization("prepare_start", profile_start);
+         let PrepareComputeParamsInput {
+             search,
+             ignore_revlogs_before,
+@@ -1172,11 +1193,19 @@ impl Collection {
+         } = input;
+         let timing = self.timing_today()?;
+         let revlogs = self.revlog_for_srs(search)?;
+-        let mut simulator_config = extract_simulator_config(
+-            revlogs.iter().cloned().map(Into::into).collect(),
+-            timing.next_day_at.into(),
+-            true,
+-        );
++        profile_optimization("fetch_done", profile_start);
++        let mut simulator_config = if !dynamic_desired_retention_enabled
++            && std::env::var_os("ANKI_FSRS_SKIP_SIMULATOR").is_some()
++        {
++            SimulatorConfig::default()
++        } else {
++            extract_simulator_config(
++                revlogs.iter().cloned().map(Into::into).collect(),
++                timing.next_day_at.into(),
++                true,
++            )
++        };
++        profile_optimization("simulator_done", profile_start);
+         if dynamic_desired_retention_enabled {
+             shape_simulator_config_for_dynamic_desired_retention(
+                 &mut simulator_config,
+@@ -1218,6 +1247,7 @@ impl Collection {
+             ignore_revlogs_before,
+             include_same_day_reviews,
+         )?;
++        profile_optimization("compact_done", profile_start);
+         let target_counts = training.target_counts();
+         Ok(PreparedComputeParams {
+             current_params: current_params.to_vec(),
+@@ -3331,8 +3361,11 @@ pub(crate) mod tests {
+             log_loss: 0.3,
+             rmse_bins: 1.0,
+         };
+-        assert!(health_check_passed_for_evaluated_targets(eval, &items));
+-        assert!(!health_check_passed_for_evaluated_targets(eval, &filtered));
++        let remembered = |targets: &[FSRSItem]| {
++            targets.iter().filter(|item| item.reviews.last().map(|review| review.rating).unwrap_or(0) > 1).count() as u32
++        };
++        assert!(health_check_passed_for_evaluated_targets(eval, items.len() as u32, remembered(&items)));
++        assert!(!health_check_passed_for_evaluated_targets(eval, filtered.len() as u32, remembered(&filtered)));
+     }
+
+     #[test]

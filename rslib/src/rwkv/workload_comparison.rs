@@ -718,7 +718,7 @@ fn prepare_cards(inputs: Vec<RwkvComparisonCard>) -> io::Result<(Vec<PreparedCar
     Ok((cards, estimated))
 }
 
-fn valid_memory(memory: &MemoryState) -> bool {
+pub(super) fn valid_memory(memory: &MemoryState) -> bool {
     memory.stability.is_finite()
         && memory.stability > 0.0
         && memory.stability_fast.is_finite()
@@ -870,7 +870,7 @@ fn comparison_memorized(
     Ok(totals)
 }
 
-fn fsrs_answer(
+pub(super) fn fsrs_answer(
     model: &FSRS,
     memory: Option<MemoryState>,
     retention: f32,
@@ -903,7 +903,13 @@ fn performance_probability(r: f32, day: i64, config: &RwkvComparisonConfig) -> f
     (r + delta).clamp(0.0, 1.0)
 }
 
-fn paired_grade(model: &RwkvWorkloadReviewModel, r: f32, card_id: i64, reps: i64, seed: u32) -> u8 {
+pub(super) fn paired_grade(
+    model: &RwkvWorkloadReviewModel,
+    r: f32,
+    card_id: i64,
+    reps: i64,
+    seed: u32,
+) -> u8 {
     let quantile = simulation_unit_hash(
         card_id ^ (i64::from(seed).wrapping_mul(0x5851_F42D_4C95_7F2D)),
         0,

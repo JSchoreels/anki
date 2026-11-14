@@ -1,0 +1,3179 @@
+{
+    "three_way": {
+        "predict": {
+            "original": [
+                {
+                    "stored": 173683,
+                    "rows": 173683,
+                    "scenario": "predict",
+                    "elapsed_ms": 805.6975421495736,
+                    "peak_rss_mib": 173.265625,
+                    "digest": "c741e560d1717fd252381c79a1e69347502068946b90bf7d746a2fbcd817a5c8"
+                },
+                {
+                    "stored": 173683,
+                    "rows": 173683,
+                    "scenario": "predict",
+                    "elapsed_ms": 793.8785830046982,
+                    "peak_rss_mib": 174.328125,
+                    "digest": "c741e560d1717fd252381c79a1e69347502068946b90bf7d746a2fbcd817a5c8"
+                },
+                {
+                    "stored": 173683,
+                    "rows": 173683,
+                    "scenario": "predict",
+                    "elapsed_ms": 749.415417201817,
+                    "peak_rss_mib": 172.90625,
+                    "digest": "c741e560d1717fd252381c79a1e69347502068946b90bf7d746a2fbcd817a5c8"
+                },
+                {
+                    "stored": 173683,
+                    "rows": 173683,
+                    "scenario": "predict",
+                    "elapsed_ms": 770.4480411484838,
+                    "peak_rss_mib": 173.3125,
+                    "digest": "c741e560d1717fd252381c79a1e69347502068946b90bf7d746a2fbcd817a5c8"
+                },
+                {
+                    "stored": 173683,
+                    "rows": 173683,
+                    "scenario": "predict",
+                    "elapsed_ms": 806.3681658823043,
+                    "peak_rss_mib": 173.1875,
+                    "digest": "c741e560d1717fd252381c79a1e69347502068946b90bf7d746a2fbcd817a5c8"
+                },
+                {
+                    "stored": 173683,
+                    "rows": 173683,
+                    "scenario": "predict",
+                    "elapsed_ms": 863.6371248867363,
+                    "peak_rss_mib": 174.625,
+                    "digest": "c741e560d1717fd252381c79a1e69347502068946b90bf7d746a2fbcd817a5c8"
+                }
+            ],
+            "adapter": [
+                {
+                    "stored": 173683,
+                    "rows": 173683,
+                    "scenario": "predict",
+                    "elapsed_ms": 760.7543750200421,
+                    "peak_rss_mib": 111.359375,
+                    "digest": "c741e560d1717fd252381c79a1e69347502068946b90bf7d746a2fbcd817a5c8",
+                    "phases_ms": {
+                        "fetch": 128.134792,
+                        "prepare": 10.359333,
+                        "rows": 106.032166,
+                        "sort": 0.156625,
+                        "save": 515.6565
+                    },
+                    "prediction_calls_ms": [
+                        47.265458
+                    ]
+                },
+                {
+                    "stored": 173683,
+                    "rows": 173683,
+                    "scenario": "predict",
+                    "elapsed_ms": 752.7640420012176,
+                    "peak_rss_mib": 113.453125,
+                    "digest": "c741e560d1717fd252381c79a1e69347502068946b90bf7d746a2fbcd817a5c8",
+                    "phases_ms": {
+                        "fetch": 112.144208,
+                        "prepare": 9.187792,
+                        "rows": 105.615584,
+                        "sort": 0.146625,
+                        "save": 525.576292
+                    },
+                    "prediction_calls_ms": [
+                        43.940667
+                    ]
+                },
+                {
+                    "stored": 173683,
+                    "rows": 173683,
+                    "scenario": "predict",
+                    "elapsed_ms": 730.6280420161784,
+                    "peak_rss_mib": 112.1875,
+                    "digest": "c741e560d1717fd252381c79a1e69347502068946b90bf7d746a2fbcd817a5c8",
+                    "phases_ms": {
+                        "fetch": 114.214,
+                        "prepare": 9.285625,
+                        "rows": 102.904708,
+                        "sort": 0.52175,
+                        "save": 503.579917
+                    },
+                    "prediction_calls_ms": [
+                        45.538416
+                    ]
+                },
+                {
+                    "stored": 173683,
+                    "rows": 173683,
+                    "scenario": "predict",
+                    "elapsed_ms": 723.1691249180585,
+                    "peak_rss_mib": 111.328125,
+                    "digest": "c741e560d1717fd252381c79a1e69347502068946b90bf7d746a2fbcd817a5c8",
+                    "phases_ms": {
+                        "fetch": 108.544083,
+                        "prepare": 9.057916,
+                        "rows": 102.143459,
+                        "sort": 0.140667,
+                        "save": 503.182125
+                    },
+                    "prediction_calls_ms": [
+                        44.038334
+                    ]
+                },
+                {
+                    "stored": 173683,
+                    "rows": 173683,
+                    "scenario": "predict",
+                    "elapsed_ms": 787.5356660224497,
+                    "peak_rss_mib": 114.671875,
+                    "digest": "c741e560d1717fd252381c79a1e69347502068946b90bf7d746a2fbcd817a5c8",
+                    "phases_ms": {
+                        "fetch": 117.764709,
+                        "prepare": 9.284792,
+                        "rows": 105.649458,
+                        "sort": 0.505417,
+                        "save": 554.232459
+                    },
+                    "prediction_calls_ms": [
+                        43.391875
+                    ]
+                },
+                {
+                    "stored": 173683,
+                    "rows": 173683,
+                    "scenario": "predict",
+                    "elapsed_ms": 977.9597918968648,
+                    "peak_rss_mib": 111.390625,
+                    "digest": "c741e560d1717fd252381c79a1e69347502068946b90bf7d746a2fbcd817a5c8",
+                    "phases_ms": {
+                        "fetch": 169.449333,
+                        "prepare": 11.380458,
+                        "rows": 101.473834,
+                        "sort": 0.482875,
+                        "save": 695.052583
+                    },
+                    "prediction_calls_ms": [
+                        54.157
+                    ]
+                }
+            ],
+            "api": [
+                {
+                    "stored": 173683,
+                    "rows": 173683,
+                    "scenario": "predict",
+                    "elapsed_ms": 707.0812499150634,
+                    "peak_rss_mib": 113.5,
+                    "digest": "c741e560d1717fd252381c79a1e69347502068946b90bf7d746a2fbcd817a5c8",
+                    "phases_ms": {
+                        "fetch": 112.473625,
+                        "prepare": 9.272667,
+                        "rows": 105.718959,
+                        "sort": 0.143875,
+                        "save": 479.363542
+                    },
+                    "prediction_calls_ms": [
+                        44.183125
+                    ]
+                },
+                {
+                    "stored": 173683,
+                    "rows": 173683,
+                    "scenario": "predict",
+                    "elapsed_ms": 771.0008749272674,
+                    "peak_rss_mib": 111.625,
+                    "digest": "c741e560d1717fd252381c79a1e69347502068946b90bf7d746a2fbcd817a5c8",
+                    "phases_ms": {
+                        "fetch": 115.391875,
+                        "prepare": 8.977958,
+                        "rows": 105.607083,
+                        "sort": 0.147708,
+                        "save": 540.736916
+                    },
+                    "prediction_calls_ms": [
+                        43.3935
+                    ]
+                },
+                {
+                    "stored": 173683,
+                    "rows": 173683,
+                    "scenario": "predict",
+                    "elapsed_ms": 758.60166689381,
+                    "peak_rss_mib": 112.0,
+                    "digest": "c741e560d1717fd252381c79a1e69347502068946b90bf7d746a2fbcd817a5c8",
+                    "phases_ms": {
+                        "fetch": 112.58825,
+                        "prepare": 9.0045,
+                        "rows": 105.651209,
+                        "sort": 0.143083,
+                        "save": 531.09375
+                    },
+                    "prediction_calls_ms": [
+                        43.124708
+                    ]
+                },
+                {
+                    "stored": 173683,
+                    "rows": 173683,
+                    "scenario": "predict",
+                    "elapsed_ms": 745.4235409386456,
+                    "peak_rss_mib": 111.09375,
+                    "digest": "c741e560d1717fd252381c79a1e69347502068946b90bf7d746a2fbcd817a5c8",
+                    "phases_ms": {
+                        "fetch": 112.149292,
+                        "prepare": 9.746583,
+                        "rows": 104.763875,
+                        "sort": 0.14025,
+                        "save": 518.432042
+                    },
+                    "prediction_calls_ms": [
+                        44.109584
+                    ]
+                },
+                {
+                    "stored": 173683,
+                    "rows": 173683,
+                    "scenario": "predict",
+                    "elapsed_ms": 796.2587920483202,
+                    "peak_rss_mib": 112.5625,
+                    "digest": "c741e560d1717fd252381c79a1e69347502068946b90bf7d746a2fbcd817a5c8",
+                    "phases_ms": {
+                        "fetch": 116.967875,
+                        "prepare": 9.518917,
+                        "rows": 101.359666,
+                        "sort": 0.15325,
+                        "save": 568.119625
+                    },
+                    "prediction_calls_ms": [
+                        44.212042
+                    ]
+                },
+                {
+                    "stored": 173683,
+                    "rows": 173683,
+                    "scenario": "predict",
+                    "elapsed_ms": 1283.8571250904351,
+                    "peak_rss_mib": 111.828125,
+                    "digest": "c741e560d1717fd252381c79a1e69347502068946b90bf7d746a2fbcd817a5c8",
+                    "phases_ms": {
+                        "fetch": 122.571041,
+                        "prepare": 9.693875,
+                        "rows": 104.535125,
+                        "sort": 0.140667,
+                        "save": 1046.7655
+                    },
+                    "prediction_calls_ms": [
+                        44.063291
+                    ]
+                }
+            ]
+        },
+        "folds": {
+            "original": [
+                {
+                    "stored": 318419,
+                    "rows": 318419,
+                    "scenario": "folds",
+                    "elapsed_ms": 1653.5910840611905,
+                    "peak_rss_mib": 236.0,
+                    "digest": "f3733d42022d69d932f0f143e3156621da3af27c7d1f6b194587295a1df295e3"
+                },
+                {
+                    "stored": 318419,
+                    "rows": 318419,
+                    "scenario": "folds",
+                    "elapsed_ms": 2361.8964578490704,
+                    "peak_rss_mib": 234.4375,
+                    "digest": "f3733d42022d69d932f0f143e3156621da3af27c7d1f6b194587295a1df295e3"
+                },
+                {
+                    "stored": 318419,
+                    "rows": 318419,
+                    "scenario": "folds",
+                    "elapsed_ms": 1606.8940828554332,
+                    "peak_rss_mib": 239.859375,
+                    "digest": "f3733d42022d69d932f0f143e3156621da3af27c7d1f6b194587295a1df295e3"
+                },
+                {
+                    "stored": 318419,
+                    "rows": 318419,
+                    "scenario": "folds",
+                    "elapsed_ms": 1888.3151251357049,
+                    "peak_rss_mib": 238.015625,
+                    "digest": "f3733d42022d69d932f0f143e3156621da3af27c7d1f6b194587295a1df295e3"
+                },
+                {
+                    "stored": 318419,
+                    "rows": 318419,
+                    "scenario": "folds",
+                    "elapsed_ms": 1559.110458008945,
+                    "peak_rss_mib": 236.609375,
+                    "digest": "f3733d42022d69d932f0f143e3156621da3af27c7d1f6b194587295a1df295e3"
+                },
+                {
+                    "stored": 318419,
+                    "rows": 318419,
+                    "scenario": "folds",
+                    "elapsed_ms": 1584.1947919689119,
+                    "peak_rss_mib": 236.640625,
+                    "digest": "f3733d42022d69d932f0f143e3156621da3af27c7d1f6b194587295a1df295e3"
+                }
+            ],
+            "adapter": [
+                {
+                    "stored": 318419,
+                    "rows": 318419,
+                    "scenario": "folds",
+                    "elapsed_ms": 1802.3249169345945,
+                    "peak_rss_mib": 125.109375,
+                    "digest": "f3733d42022d69d932f0f143e3156621da3af27c7d1f6b194587295a1df295e3",
+                    "phases_ms": {
+                        "fetch": 115.543292,
+                        "prepare": 9.115375,
+                        "rows": 418.193292,
+                        "sort": 13.154459,
+                        "save": 1246.198959
+                    },
+                    "prediction_calls_ms": [
+                        44.389375,
+                        12.753958,
+                        18.481583,
+                        21.877167,
+                        22.915083,
+                        31.367875
+                    ]
+                },
+                {
+                    "stored": 318419,
+                    "rows": 318419,
+                    "scenario": "folds",
+                    "elapsed_ms": 1566.6657080873847,
+                    "peak_rss_mib": 125.109375,
+                    "digest": "f3733d42022d69d932f0f143e3156621da3af27c7d1f6b194587295a1df295e3",
+                    "phases_ms": {
+                        "fetch": 122.034166,
+                        "prepare": 10.131375,
+                        "rows": 407.968958,
+                        "sort": 8.893167,
+                        "save": 1017.523792
+                    },
+                    "prediction_calls_ms": [
+                        45.18425,
+                        12.624292,
+                        18.736458,
+                        21.872167,
+                        23.057584,
+                        32.377625
+                    ]
+                },
+                {
+                    "stored": 318419,
+                    "rows": 318419,
+                    "scenario": "folds",
+                    "elapsed_ms": 1484.6965409815311,
+                    "peak_rss_mib": 125.203125,
+                    "digest": "f3733d42022d69d932f0f143e3156621da3af27c7d1f6b194587295a1df295e3",
+                    "phases_ms": {
+                        "fetch": 110.27725,
+                        "prepare": 9.686708,
+                        "rows": 418.340625,
+                        "sort": 9.963958,
+                        "save": 936.273
+                    },
+                    "prediction_calls_ms": [
+                        44.081291,
+                        12.317584,
+                        17.819625,
+                        21.863375,
+                        23.255292,
+                        32.959209
+                    ]
+                },
+                {
+                    "stored": 318419,
+                    "rows": 318419,
+                    "scenario": "folds",
+                    "elapsed_ms": 1446.743874810636,
+                    "peak_rss_mib": 127.46875,
+                    "digest": "f3733d42022d69d932f0f143e3156621da3af27c7d1f6b194587295a1df295e3",
+                    "phases_ms": {
+                        "fetch": 108.282417,
+                        "prepare": 9.020333,
+                        "rows": 414.353375,
+                        "sort": 8.765333,
+                        "save": 906.211375
+                    },
+                    "prediction_calls_ms": [
+                        42.40875,
+                        12.241041,
+                        17.657334,
+                        21.263834,
+                        23.929375,
+                        32.120042
+                    ]
+                },
+                {
+                    "stored": 318419,
+                    "rows": 318419,
+                    "scenario": "folds",
+                    "elapsed_ms": 1628.2315829303116,
+                    "peak_rss_mib": 124.0,
+                    "digest": "f3733d42022d69d932f0f143e3156621da3af27c7d1f6b194587295a1df295e3",
+                    "phases_ms": {
+                        "fetch": 114.879916,
+                        "prepare": 9.071208,
+                        "rows": 417.180875,
+                        "sort": 8.895792,
+                        "save": 1078.085541
+                    },
+                    "prediction_calls_ms": [
+                        46.567833,
+                        14.582167,
+                        18.803917,
+                        21.852917,
+                        24.761791,
+                        34.010625
+                    ]
+                },
+                {
+                    "stored": 318419,
+                    "rows": 318419,
+                    "scenario": "folds",
+                    "elapsed_ms": 1482.612958876416,
+                    "peak_rss_mib": 125.4375,
+                    "digest": "f3733d42022d69d932f0f143e3156621da3af27c7d1f6b194587295a1df295e3",
+                    "phases_ms": {
+                        "fetch": 115.34825,
+                        "prepare": 9.465,
+                        "rows": 417.123875,
+                        "sort": 8.901209,
+                        "save": 931.658042
+                    },
+                    "prediction_calls_ms": [
+                        46.762083,
+                        13.004167,
+                        18.0735,
+                        21.866167,
+                        23.307875,
+                        31.01575
+                    ]
+                }
+            ],
+            "api": [
+                {
+                    "stored": 318419,
+                    "rows": 318419,
+                    "scenario": "folds",
+                    "elapsed_ms": 1548.738749930635,
+                    "peak_rss_mib": 127.046875,
+                    "digest": "f3733d42022d69d932f0f143e3156621da3af27c7d1f6b194587295a1df295e3",
+                    "phases_ms": {
+                        "fetch": 126.558458,
+                        "prepare": 9.44625,
+                        "rows": 413.355875,
+                        "sort": 9.012917,
+                        "save": 990.120834
+                    },
+                    "prediction_calls_ms": [
+                        44.47025,
+                        12.060125,
+                        17.609167,
+                        21.425875,
+                        22.296125,
+                        29.531584
+                    ]
+                },
+                {
+                    "stored": 318419,
+                    "rows": 318419,
+                    "scenario": "folds",
+                    "elapsed_ms": 1522.0285409595817,
+                    "peak_rss_mib": 124.6875,
+                    "digest": "f3733d42022d69d932f0f143e3156621da3af27c7d1f6b194587295a1df295e3",
+                    "phases_ms": {
+                        "fetch": 119.983292,
+                        "prepare": 9.502625,
+                        "rows": 417.632917,
+                        "sort": 9.333084,
+                        "save": 965.162375
+                    },
+                    "prediction_calls_ms": [
+                        43.525708,
+                        11.734709,
+                        17.468292,
+                        21.125583,
+                        22.420292,
+                        30.701792
+                    ]
+                },
+                {
+                    "stored": 318419,
+                    "rows": 318419,
+                    "scenario": "folds",
+                    "elapsed_ms": 1766.4811669383198,
+                    "peak_rss_mib": 124.890625,
+                    "digest": "f3733d42022d69d932f0f143e3156621da3af27c7d1f6b194587295a1df295e3",
+                    "phases_ms": {
+                        "fetch": 200.558583,
+                        "prepare": 16.24725,
+                        "rows": 515.198,
+                        "sort": 9.3805,
+                        "save": 1024.812458
+                    },
+                    "prediction_calls_ms": [
+                        62.318291,
+                        14.0605,
+                        20.089791,
+                        21.992333,
+                        30.147625,
+                        30.15375
+                    ]
+                },
+                {
+                    "stored": 318419,
+                    "rows": 318419,
+                    "scenario": "folds",
+                    "elapsed_ms": 1489.3088340759277,
+                    "peak_rss_mib": 127.125,
+                    "digest": "f3733d42022d69d932f0f143e3156621da3af27c7d1f6b194587295a1df295e3",
+                    "phases_ms": {
+                        "fetch": 118.024,
+                        "prepare": 8.824917,
+                        "rows": 410.662417,
+                        "sort": 8.953541,
+                        "save": 942.7155
+                    },
+                    "prediction_calls_ms": [
+                        42.300542,
+                        11.82375,
+                        16.839708,
+                        20.435958,
+                        22.424958,
+                        31.445083
+                    ]
+                },
+                {
+                    "stored": 318419,
+                    "rows": 318419,
+                    "scenario": "folds",
+                    "elapsed_ms": 1518.24733405374,
+                    "peak_rss_mib": 127.515625,
+                    "digest": "f3733d42022d69d932f0f143e3156621da3af27c7d1f6b194587295a1df295e3",
+                    "phases_ms": {
+                        "fetch": 113.795917,
+                        "prepare": 9.126834,
+                        "rows": 419.240125,
+                        "sort": 9.69075,
+                        "save": 966.259334
+                    },
+                    "prediction_calls_ms": [
+                        42.927375,
+                        12.062625,
+                        17.256291,
+                        19.9535,
+                        21.288667,
+                        28.800708
+                    ]
+                },
+                {
+                    "stored": 318419,
+                    "rows": 318419,
+                    "scenario": "folds",
+                    "elapsed_ms": 1490.1924580335617,
+                    "peak_rss_mib": 127.8125,
+                    "digest": "f3733d42022d69d932f0f143e3156621da3af27c7d1f6b194587295a1df295e3",
+                    "phases_ms": {
+                        "fetch": 114.024375,
+                        "prepare": 9.185833,
+                        "rows": 417.6725,
+                        "sort": 9.308125,
+                        "save": 939.8455
+                    },
+                    "prediction_calls_ms": [
+                        44.118834,
+                        12.504125,
+                        18.588833,
+                        21.133667,
+                        22.057875,
+                        29.731625
+                    ]
+                }
+            ]
+        },
+        "optimize": {
+            "original": [
+                {
+                    "targets": 173683,
+                    "scenario": "optimize",
+                    "elapsed_ms": 1601.058749947697,
+                    "peak_rss_mib": 260.59375,
+                    "digest": "f022794f09cbfc12072e4b461da8d4ef24b9a073583eaeb150b54ac09f757849"
+                },
+                {
+                    "targets": 173683,
+                    "scenario": "optimize",
+                    "elapsed_ms": 1570.875790901482,
+                    "peak_rss_mib": 260.5,
+                    "digest": "f022794f09cbfc12072e4b461da8d4ef24b9a073583eaeb150b54ac09f757849"
+                },
+                {
+                    "targets": 173683,
+                    "scenario": "optimize",
+                    "elapsed_ms": 1642.1323749236763,
+                    "peak_rss_mib": 261.28125,
+                    "digest": "f022794f09cbfc12072e4b461da8d4ef24b9a073583eaeb150b54ac09f757849"
+                },
+                {
+                    "targets": 173683,
+                    "scenario": "optimize",
+                    "elapsed_ms": 1577.3671669885516,
+                    "peak_rss_mib": 260.078125,
+                    "digest": "f022794f09cbfc12072e4b461da8d4ef24b9a073583eaeb150b54ac09f757849"
+                },
+                {
+                    "targets": 173683,
+                    "scenario": "optimize",
+                    "elapsed_ms": 1593.2121248915792,
+                    "peak_rss_mib": 262.59375,
+                    "digest": "f022794f09cbfc12072e4b461da8d4ef24b9a073583eaeb150b54ac09f757849"
+                },
+                {
+                    "targets": 173683,
+                    "scenario": "optimize",
+                    "elapsed_ms": 1578.7482499144971,
+                    "peak_rss_mib": 258.703125,
+                    "digest": "f022794f09cbfc12072e4b461da8d4ef24b9a073583eaeb150b54ac09f757849"
+                }
+            ],
+            "api": [
+                {
+                    "targets": 173683,
+                    "scenario": "optimize",
+                    "elapsed_ms": 394.2887079901993,
+                    "peak_rss_mib": 165.5,
+                    "digest": "f022794f09cbfc12072e4b461da8d4ef24b9a073583eaeb150b54ac09f757849"
+                },
+                {
+                    "targets": 173683,
+                    "scenario": "optimize",
+                    "elapsed_ms": 368.49191691726446,
+                    "peak_rss_mib": 167.328125,
+                    "digest": "f022794f09cbfc12072e4b461da8d4ef24b9a073583eaeb150b54ac09f757849"
+                },
+                {
+                    "targets": 173683,
+                    "scenario": "optimize",
+                    "elapsed_ms": 354.7170830424875,
+                    "peak_rss_mib": 165.6875,
+                    "digest": "f022794f09cbfc12072e4b461da8d4ef24b9a073583eaeb150b54ac09f757849"
+                },
+                {
+                    "targets": 173683,
+                    "scenario": "optimize",
+                    "elapsed_ms": 360.737832961604,
+                    "peak_rss_mib": 165.578125,
+                    "digest": "f022794f09cbfc12072e4b461da8d4ef24b9a073583eaeb150b54ac09f757849"
+                },
+                {
+                    "targets": 173683,
+                    "scenario": "optimize",
+                    "elapsed_ms": 356.94662504829466,
+                    "peak_rss_mib": 167.953125,
+                    "digest": "f022794f09cbfc12072e4b461da8d4ef24b9a073583eaeb150b54ac09f757849"
+                },
+                {
+                    "targets": 173683,
+                    "scenario": "optimize",
+                    "elapsed_ms": 355.4905408527702,
+                    "peak_rss_mib": 168.15625,
+                    "digest": "f022794f09cbfc12072e4b461da8d4ef24b9a073583eaeb150b54ac09f757849"
+                }
+            ]
+        },
+        "optimize-health": {
+            "original": [
+                {
+                    "targets": 173683,
+                    "scenario": "optimize-health",
+                    "elapsed_ms": 1933.9163340628147,
+                    "peak_rss_mib": 391.015625,
+                    "digest": "d1f18c849b2c799fed370edc6b3c01fffc6b76c0bec3d79fa44207ed436b94d2"
+                },
+                {
+                    "targets": 173683,
+                    "scenario": "optimize-health",
+                    "elapsed_ms": 1872.4935839418322,
+                    "peak_rss_mib": 443.703125,
+                    "digest": "d1f18c849b2c799fed370edc6b3c01fffc6b76c0bec3d79fa44207ed436b94d2"
+                },
+                {
+                    "targets": 173683,
+                    "scenario": "optimize-health",
+                    "elapsed_ms": 1822.040957864374,
+                    "peak_rss_mib": 389.390625,
+                    "digest": "d1f18c849b2c799fed370edc6b3c01fffc6b76c0bec3d79fa44207ed436b94d2"
+                },
+                {
+                    "targets": 173683,
+                    "scenario": "optimize-health",
+                    "elapsed_ms": 1843.290250049904,
+                    "peak_rss_mib": 413.328125,
+                    "digest": "d1f18c849b2c799fed370edc6b3c01fffc6b76c0bec3d79fa44207ed436b94d2"
+                },
+                {
+                    "targets": 173683,
+                    "scenario": "optimize-health",
+                    "elapsed_ms": 1867.7336662076414,
+                    "peak_rss_mib": 443.390625,
+                    "digest": "d1f18c849b2c799fed370edc6b3c01fffc6b76c0bec3d79fa44207ed436b94d2"
+                },
+                {
+                    "targets": 173683,
+                    "scenario": "optimize-health",
+                    "elapsed_ms": 1985.2412082254887,
+                    "peak_rss_mib": 394.328125,
+                    "digest": "d1f18c849b2c799fed370edc6b3c01fffc6b76c0bec3d79fa44207ed436b94d2"
+                }
+            ],
+            "api": [
+                {
+                    "targets": 173683,
+                    "scenario": "optimize-health",
+                    "elapsed_ms": 634.2431248631328,
+                    "peak_rss_mib": 359.125,
+                    "digest": "d1f18c849b2c799fed370edc6b3c01fffc6b76c0bec3d79fa44207ed436b94d2"
+                },
+                {
+                    "targets": 173683,
+                    "scenario": "optimize-health",
+                    "elapsed_ms": 622.758915880695,
+                    "peak_rss_mib": 360.671875,
+                    "digest": "d1f18c849b2c799fed370edc6b3c01fffc6b76c0bec3d79fa44207ed436b94d2"
+                },
+                {
+                    "targets": 173683,
+                    "scenario": "optimize-health",
+                    "elapsed_ms": 636.8507908191532,
+                    "peak_rss_mib": 361.78125,
+                    "digest": "d1f18c849b2c799fed370edc6b3c01fffc6b76c0bec3d79fa44207ed436b94d2"
+                },
+                {
+                    "targets": 173683,
+                    "scenario": "optimize-health",
+                    "elapsed_ms": 665.9772500861436,
+                    "peak_rss_mib": 359.796875,
+                    "digest": "d1f18c849b2c799fed370edc6b3c01fffc6b76c0bec3d79fa44207ed436b94d2"
+                },
+                {
+                    "targets": 173683,
+                    "scenario": "optimize-health",
+                    "elapsed_ms": 668.6535000335425,
+                    "peak_rss_mib": 363.921875,
+                    "digest": "d1f18c849b2c799fed370edc6b3c01fffc6b76c0bec3d79fa44207ed436b94d2"
+                },
+                {
+                    "targets": 173683,
+                    "scenario": "optimize-health",
+                    "elapsed_ms": 619.8567501269281,
+                    "peak_rss_mib": 361.515625,
+                    "digest": "d1f18c849b2c799fed370edc6b3c01fffc6b76c0bec3d79fa44207ed436b94d2"
+                }
+            ]
+        }
+    },
+    "optimization_experiments": {
+        "optimize": {
+            "current": [
+                {
+                    "targets": 173683,
+                    "scenario": "optimize",
+                    "elapsed_ms": 373.4909170307219,
+                    "peak_rss_mib": 166.171875,
+                    "digest": "f022794f09cbfc12072e4b461da8d4ef24b9a073583eaeb150b54ac09f757849",
+                    "stages": {
+                        "prepare_start": {
+                            "ms": 0.017,
+                            "peak_mib": 62.5
+                        },
+                        "fetch_done": {
+                            "ms": 111.568,
+                            "peak_mib": 89.719
+                        },
+                        "simulator_done": {
+                            "ms": 162.653,
+                            "peak_mib": 144.891
+                        },
+                        "compact_done": {
+                            "ms": 171.006,
+                            "peak_mib": 149.266
+                        },
+                        "compute_start": {
+                            "ms": 0.003,
+                            "peak_mib": 149.328
+                        },
+                        "training_done": {
+                            "ms": 89.509,
+                            "peak_mib": 158.125
+                        },
+                        "evaluation_done": {
+                            "ms": 201.636,
+                            "peak_mib": 166.094
+                        },
+                        "health_done": {
+                            "ms": 201.651,
+                            "peak_mib": 166.094
+                        }
+                    }
+                },
+                {
+                    "targets": 173683,
+                    "scenario": "optimize",
+                    "elapsed_ms": 376.25808315351605,
+                    "peak_rss_mib": 166.09375,
+                    "digest": "f022794f09cbfc12072e4b461da8d4ef24b9a073583eaeb150b54ac09f757849",
+                    "stages": {
+                        "prepare_start": {
+                            "ms": 0.005,
+                            "peak_mib": 62.328
+                        },
+                        "fetch_done": {
+                            "ms": 117.641,
+                            "peak_mib": 89.781
+                        },
+                        "simulator_done": {
+                            "ms": 165.756,
+                            "peak_mib": 144.922
+                        },
+                        "compact_done": {
+                            "ms": 173.625,
+                            "peak_mib": 149.281
+                        },
+                        "compute_start": {
+                            "ms": 0.001,
+                            "peak_mib": 149.312
+                        },
+                        "training_done": {
+                            "ms": 89.197,
+                            "peak_mib": 159.719
+                        },
+                        "evaluation_done": {
+                            "ms": 201.993,
+                            "peak_mib": 166.0
+                        },
+                        "health_done": {
+                            "ms": 202.006,
+                            "peak_mib": 166.0
+                        }
+                    }
+                },
+                {
+                    "targets": 173683,
+                    "scenario": "optimize",
+                    "elapsed_ms": 365.48625002615154,
+                    "peak_rss_mib": 168.765625,
+                    "digest": "f022794f09cbfc12072e4b461da8d4ef24b9a073583eaeb150b54ac09f757849",
+                    "stages": {
+                        "prepare_start": {
+                            "ms": 0.006,
+                            "peak_mib": 62.312
+                        },
+                        "fetch_done": {
+                            "ms": 114.02,
+                            "peak_mib": 89.781
+                        },
+                        "simulator_done": {
+                            "ms": 158.052,
+                            "peak_mib": 144.234
+                        },
+                        "compact_done": {
+                            "ms": 166.26,
+                            "peak_mib": 150.641
+                        },
+                        "compute_start": {
+                            "ms": 0.002,
+                            "peak_mib": 150.672
+                        },
+                        "training_done": {
+                            "ms": 88.405,
+                            "peak_mib": 161.688
+                        },
+                        "evaluation_done": {
+                            "ms": 198.548,
+                            "peak_mib": 168.688
+                        },
+                        "health_done": {
+                            "ms": 198.563,
+                            "peak_mib": 168.688
+                        }
+                    }
+                },
+                {
+                    "targets": 173683,
+                    "scenario": "optimize",
+                    "elapsed_ms": 368.6335838865489,
+                    "peak_rss_mib": 165.34375,
+                    "digest": "f022794f09cbfc12072e4b461da8d4ef24b9a073583eaeb150b54ac09f757849",
+                    "stages": {
+                        "prepare_start": {
+                            "ms": 0.005,
+                            "peak_mib": 61.578
+                        },
+                        "fetch_done": {
+                            "ms": 112.1,
+                            "peak_mib": 89.047
+                        },
+                        "simulator_done": {
+                            "ms": 159.552,
+                            "peak_mib": 144.484
+                        },
+                        "compact_done": {
+                            "ms": 167.494,
+                            "peak_mib": 149.531
+                        },
+                        "compute_start": {
+                            "ms": 0.001,
+                            "peak_mib": 149.562
+                        },
+                        "training_done": {
+                            "ms": 89.326,
+                            "peak_mib": 160.172
+                        },
+                        "evaluation_done": {
+                            "ms": 200.521,
+                            "peak_mib": 165.266
+                        },
+                        "health_done": {
+                            "ms": 200.534,
+                            "peak_mib": 165.266
+                        }
+                    }
+                },
+                {
+                    "targets": 173683,
+                    "scenario": "optimize",
+                    "elapsed_ms": 367.3111249227077,
+                    "peak_rss_mib": 167.5625,
+                    "digest": "f022794f09cbfc12072e4b461da8d4ef24b9a073583eaeb150b54ac09f757849",
+                    "stages": {
+                        "prepare_start": {
+                            "ms": 0.007,
+                            "peak_mib": 62.125
+                        },
+                        "fetch_done": {
+                            "ms": 108.663,
+                            "peak_mib": 89.578
+                        },
+                        "simulator_done": {
+                            "ms": 158.221,
+                            "peak_mib": 144.281
+                        },
+                        "compact_done": {
+                            "ms": 166.281,
+                            "peak_mib": 148.625
+                        },
+                        "compute_start": {
+                            "ms": 0.001,
+                            "peak_mib": 148.672
+                        },
+                        "training_done": {
+                            "ms": 89.601,
+                            "peak_mib": 159.078
+                        },
+                        "evaluation_done": {
+                            "ms": 200.366,
+                            "peak_mib": 167.469
+                        },
+                        "health_done": {
+                            "ms": 200.378,
+                            "peak_mib": 167.469
+                        }
+                    }
+                },
+                {
+                    "targets": 173683,
+                    "scenario": "optimize",
+                    "elapsed_ms": 375.92749996110797,
+                    "peak_rss_mib": 169.75,
+                    "digest": "f022794f09cbfc12072e4b461da8d4ef24b9a073583eaeb150b54ac09f757849",
+                    "stages": {
+                        "prepare_start": {
+                            "ms": 0.005,
+                            "peak_mib": 62.875
+                        },
+                        "fetch_done": {
+                            "ms": 114.621,
+                            "peak_mib": 90.312
+                        },
+                        "simulator_done": {
+                            "ms": 165.379,
+                            "peak_mib": 145.328
+                        },
+                        "compact_done": {
+                            "ms": 173.76,
+                            "peak_mib": 151.734
+                        },
+                        "compute_start": {
+                            "ms": 0.002,
+                            "peak_mib": 151.766
+                        },
+                        "training_done": {
+                            "ms": 90.073,
+                            "peak_mib": 161.688
+                        },
+                        "evaluation_done": {
+                            "ms": 201.476,
+                            "peak_mib": 169.672
+                        },
+                        "health_done": {
+                            "ms": 201.49,
+                            "peak_mib": 169.672
+                        }
+                    }
+                }
+            ],
+            "skip_simulator": [
+                {
+                    "targets": 173683,
+                    "scenario": "optimize",
+                    "elapsed_ms": 327.41800020448864,
+                    "peak_rss_mib": 115.796875,
+                    "digest": "f022794f09cbfc12072e4b461da8d4ef24b9a073583eaeb150b54ac09f757849",
+                    "stages": {
+                        "prepare_start": {
+                            "ms": 0.006,
+                            "peak_mib": 62.109
+                        },
+                        "fetch_done": {
+                            "ms": 116.877,
+                            "peak_mib": 89.531
+                        },
+                        "simulator_done": {
+                            "ms": 116.889,
+                            "peak_mib": 89.531
+                        },
+                        "compact_done": {
+                            "ms": 125.735,
+                            "peak_mib": 100.641
+                        },
+                        "compute_start": {
+                            "ms": 0.001,
+                            "peak_mib": 100.672
+                        },
+                        "training_done": {
+                            "ms": 90.253,
+                            "peak_mib": 108.922
+                        },
+                        "evaluation_done": {
+                            "ms": 200.997,
+                            "peak_mib": 115.688
+                        },
+                        "health_done": {
+                            "ms": 201.01,
+                            "peak_mib": 115.688
+                        }
+                    }
+                },
+                {
+                    "targets": 173683,
+                    "scenario": "optimize",
+                    "elapsed_ms": 312.6222079154104,
+                    "peak_rss_mib": 115.6875,
+                    "digest": "f022794f09cbfc12072e4b461da8d4ef24b9a073583eaeb150b54ac09f757849",
+                    "stages": {
+                        "prepare_start": {
+                            "ms": 0.008,
+                            "peak_mib": 62.406
+                        },
+                        "fetch_done": {
+                            "ms": 104.132,
+                            "peak_mib": 90.469
+                        },
+                        "simulator_done": {
+                            "ms": 104.145,
+                            "peak_mib": 90.469
+                        },
+                        "compact_done": {
+                            "ms": 112.556,
+                            "peak_mib": 99.25
+                        },
+                        "compute_start": {
+                            "ms": 0.002,
+                            "peak_mib": 99.297
+                        },
+                        "training_done": {
+                            "ms": 87.992,
+                            "peak_mib": 108.062
+                        },
+                        "evaluation_done": {
+                            "ms": 199.354,
+                            "peak_mib": 115.594
+                        },
+                        "health_done": {
+                            "ms": 199.372,
+                            "peak_mib": 115.594
+                        }
+                    }
+                },
+                {
+                    "targets": 173683,
+                    "scenario": "optimize",
+                    "elapsed_ms": 327.87249982357025,
+                    "peak_rss_mib": 116.875,
+                    "digest": "f022794f09cbfc12072e4b461da8d4ef24b9a073583eaeb150b54ac09f757849",
+                    "stages": {
+                        "prepare_start": {
+                            "ms": 0.006,
+                            "peak_mib": 62.453
+                        },
+                        "fetch_done": {
+                            "ms": 119.013,
+                            "peak_mib": 88.875
+                        },
+                        "simulator_done": {
+                            "ms": 119.033,
+                            "peak_mib": 88.891
+                        },
+                        "compact_done": {
+                            "ms": 127.366,
+                            "peak_mib": 99.703
+                        },
+                        "compute_start": {
+                            "ms": 0.001,
+                            "peak_mib": 99.75
+                        },
+                        "training_done": {
+                            "ms": 90.083,
+                            "peak_mib": 109.031
+                        },
+                        "evaluation_done": {
+                            "ms": 199.798,
+                            "peak_mib": 116.781
+                        },
+                        "health_done": {
+                            "ms": 199.813,
+                            "peak_mib": 116.781
+                        }
+                    }
+                },
+                {
+                    "targets": 173683,
+                    "scenario": "optimize",
+                    "elapsed_ms": 326.613417128101,
+                    "peak_rss_mib": 116.234375,
+                    "digest": "f022794f09cbfc12072e4b461da8d4ef24b9a073583eaeb150b54ac09f757849",
+                    "stages": {
+                        "prepare_start": {
+                            "ms": 0.005,
+                            "peak_mib": 62.969
+                        },
+                        "fetch_done": {
+                            "ms": 116.635,
+                            "peak_mib": 89.953
+                        },
+                        "simulator_done": {
+                            "ms": 116.646,
+                            "peak_mib": 89.953
+                        },
+                        "compact_done": {
+                            "ms": 125.188,
+                            "peak_mib": 100.391
+                        },
+                        "compute_start": {
+                            "ms": 0.002,
+                            "peak_mib": 100.422
+                        },
+                        "training_done": {
+                            "ms": 89.087,
+                            "peak_mib": 107.578
+                        },
+                        "evaluation_done": {
+                            "ms": 200.68,
+                            "peak_mib": 116.141
+                        },
+                        "health_done": {
+                            "ms": 200.692,
+                            "peak_mib": 116.141
+                        }
+                    }
+                },
+                {
+                    "targets": 173683,
+                    "scenario": "optimize",
+                    "elapsed_ms": 325.74900006875396,
+                    "peak_rss_mib": 113.6875,
+                    "digest": "f022794f09cbfc12072e4b461da8d4ef24b9a073583eaeb150b54ac09f757849",
+                    "stages": {
+                        "prepare_start": {
+                            "ms": 0.004,
+                            "peak_mib": 61.984
+                        },
+                        "fetch_done": {
+                            "ms": 116.167,
+                            "peak_mib": 88.875
+                        },
+                        "simulator_done": {
+                            "ms": 116.182,
+                            "peak_mib": 88.891
+                        },
+                        "compact_done": {
+                            "ms": 124.576,
+                            "peak_mib": 99.422
+                        },
+                        "compute_start": {
+                            "ms": 0.001,
+                            "peak_mib": 99.453
+                        },
+                        "training_done": {
+                            "ms": 89.696,
+                            "peak_mib": 108.188
+                        },
+                        "evaluation_done": {
+                            "ms": 200.495,
+                            "peak_mib": 113.609
+                        },
+                        "health_done": {
+                            "ms": 200.51,
+                            "peak_mib": 113.609
+                        }
+                    }
+                },
+                {
+                    "targets": 173683,
+                    "scenario": "optimize",
+                    "elapsed_ms": 325.58966614305973,
+                    "peak_rss_mib": 116.0625,
+                    "digest": "f022794f09cbfc12072e4b461da8d4ef24b9a073583eaeb150b54ac09f757849",
+                    "stages": {
+                        "prepare_start": {
+                            "ms": 0.005,
+                            "peak_mib": 61.797
+                        },
+                        "fetch_done": {
+                            "ms": 116.041,
+                            "peak_mib": 89.062
+                        },
+                        "simulator_done": {
+                            "ms": 116.056,
+                            "peak_mib": 89.078
+                        },
+                        "compact_done": {
+                            "ms": 124.455,
+                            "peak_mib": 99.312
+                        },
+                        "compute_start": {
+                            "ms": 0.002,
+                            "peak_mib": 99.344
+                        },
+                        "training_done": {
+                            "ms": 89.284,
+                            "peak_mib": 108.375
+                        },
+                        "evaluation_done": {
+                            "ms": 200.419,
+                            "peak_mib": 115.969
+                        },
+                        "health_done": {
+                            "ms": 200.438,
+                            "peak_mib": 115.969
+                        }
+                    }
+                }
+            ]
+        },
+        "optimize-health": {
+            "current": [
+                {
+                    "targets": 173683,
+                    "scenario": "optimize-health",
+                    "elapsed_ms": 623.1108747888356,
+                    "peak_rss_mib": 361.390625,
+                    "digest": "d1f18c849b2c799fed370edc6b3c01fffc6b76c0bec3d79fa44207ed436b94d2",
+                    "stages": {
+                        "prepare_start": {
+                            "ms": 0.007,
+                            "peak_mib": 62.281
+                        },
+                        "fetch_done": {
+                            "ms": 111.038,
+                            "peak_mib": 89.734
+                        },
+                        "simulator_done": {
+                            "ms": 156.193,
+                            "peak_mib": 143.578
+                        },
+                        "compact_done": {
+                            "ms": 164.069,
+                            "peak_mib": 148.234
+                        },
+                        "compute_start": {
+                            "ms": 0.001,
+                            "peak_mib": 148.266
+                        },
+                        "training_done": {
+                            "ms": 88.076,
+                            "peak_mib": 159.016
+                        },
+                        "evaluation_done": {
+                            "ms": 199.095,
+                            "peak_mib": 165.172
+                        },
+                        "health_expanded": {
+                            "ms": 208.226,
+                            "peak_mib": 195.188
+                        },
+                        "health_input_ready": {
+                            "ms": 218.146,
+                            "peak_mib": 229.469
+                        },
+                        "health_done": {
+                            "ms": 458.299,
+                            "peak_mib": 361.391
+                        }
+                    }
+                },
+                {
+                    "targets": 173683,
+                    "scenario": "optimize-health",
+                    "elapsed_ms": 626.6296249814332,
+                    "peak_rss_mib": 360.671875,
+                    "digest": "d1f18c849b2c799fed370edc6b3c01fffc6b76c0bec3d79fa44207ed436b94d2",
+                    "stages": {
+                        "prepare_start": {
+                            "ms": 0.008,
+                            "peak_mib": 62.484
+                        },
+                        "fetch_done": {
+                            "ms": 112.928,
+                            "peak_mib": 89.188
+                        },
+                        "simulator_done": {
+                            "ms": 160.788,
+                            "peak_mib": 144.594
+                        },
+                        "compact_done": {
+                            "ms": 169.502,
+                            "peak_mib": 149.812
+                        },
+                        "compute_start": {
+                            "ms": 0.002,
+                            "peak_mib": 149.844
+                        },
+                        "training_done": {
+                            "ms": 88.197,
+                            "peak_mib": 159.844
+                        },
+                        "evaluation_done": {
+                            "ms": 197.681,
+                            "peak_mib": 165.844
+                        },
+                        "health_expanded": {
+                            "ms": 206.616,
+                            "peak_mib": 194.25
+                        },
+                        "health_input_ready": {
+                            "ms": 215.575,
+                            "peak_mib": 228.891
+                        },
+                        "health_done": {
+                            "ms": 456.385,
+                            "peak_mib": 360.672
+                        }
+                    }
+                },
+                {
+                    "targets": 173683,
+                    "scenario": "optimize-health",
+                    "elapsed_ms": 648.3892910182476,
+                    "peak_rss_mib": 361.0,
+                    "digest": "d1f18c849b2c799fed370edc6b3c01fffc6b76c0bec3d79fa44207ed436b94d2",
+                    "stages": {
+                        "prepare_start": {
+                            "ms": 0.005,
+                            "peak_mib": 61.766
+                        },
+                        "fetch_done": {
+                            "ms": 118.335,
+                            "peak_mib": 89.219
+                        },
+                        "simulator_done": {
+                            "ms": 166.349,
+                            "peak_mib": 144.156
+                        },
+                        "compact_done": {
+                            "ms": 175.026,
+                            "peak_mib": 148.891
+                        },
+                        "compute_start": {
+                            "ms": 0.002,
+                            "peak_mib": 148.922
+                        },
+                        "training_done": {
+                            "ms": 91.999,
+                            "peak_mib": 159.688
+                        },
+                        "evaluation_done": {
+                            "ms": 205.007,
+                            "peak_mib": 166.859
+                        },
+                        "health_expanded": {
+                            "ms": 215.524,
+                            "peak_mib": 196.625
+                        },
+                        "health_input_ready": {
+                            "ms": 226.182,
+                            "peak_mib": 232.141
+                        },
+                        "health_done": {
+                            "ms": 472.537,
+                            "peak_mib": 361.0
+                        }
+                    }
+                },
+                {
+                    "targets": 173683,
+                    "scenario": "optimize-health",
+                    "elapsed_ms": 622.3284588195384,
+                    "peak_rss_mib": 358.46875,
+                    "digest": "d1f18c849b2c799fed370edc6b3c01fffc6b76c0bec3d79fa44207ed436b94d2",
+                    "stages": {
+                        "prepare_start": {
+                            "ms": 0.005,
+                            "peak_mib": 61.625
+                        },
+                        "fetch_done": {
+                            "ms": 109.595,
+                            "peak_mib": 88.562
+                        },
+                        "simulator_done": {
+                            "ms": 152.786,
+                            "peak_mib": 142.672
+                        },
+                        "compact_done": {
+                            "ms": 160.635,
+                            "peak_mib": 148.344
+                        },
+                        "compute_start": {
+                            "ms": 0.001,
+                            "peak_mib": 148.375
+                        },
+                        "training_done": {
+                            "ms": 88.27,
+                            "peak_mib": 158.75
+                        },
+                        "evaluation_done": {
+                            "ms": 198.838,
+                            "peak_mib": 164.438
+                        },
+                        "health_expanded": {
+                            "ms": 208.887,
+                            "peak_mib": 193.859
+                        },
+                        "health_input_ready": {
+                            "ms": 218.779,
+                            "peak_mib": 228.109
+                        },
+                        "health_done": {
+                            "ms": 460.952,
+                            "peak_mib": 358.469
+                        }
+                    }
+                },
+                {
+                    "targets": 173683,
+                    "scenario": "optimize-health",
+                    "elapsed_ms": 689.7822499740869,
+                    "peak_rss_mib": 361.296875,
+                    "digest": "d1f18c849b2c799fed370edc6b3c01fffc6b76c0bec3d79fa44207ed436b94d2",
+                    "stages": {
+                        "prepare_start": {
+                            "ms": 0.005,
+                            "peak_mib": 61.828
+                        },
+                        "fetch_done": {
+                            "ms": 113.927,
+                            "peak_mib": 88.938
+                        },
+                        "simulator_done": {
+                            "ms": 160.195,
+                            "peak_mib": 142.844
+                        },
+                        "compact_done": {
+                            "ms": 168.303,
+                            "peak_mib": 147.359
+                        },
+                        "compute_start": {
+                            "ms": 0.002,
+                            "peak_mib": 147.391
+                        },
+                        "training_done": {
+                            "ms": 90.486,
+                            "peak_mib": 157.703
+                        },
+                        "evaluation_done": {
+                            "ms": 245.06,
+                            "peak_mib": 165.906
+                        },
+                        "health_expanded": {
+                            "ms": 255.31,
+                            "peak_mib": 194.344
+                        },
+                        "health_input_ready": {
+                            "ms": 273.675,
+                            "peak_mib": 229.078
+                        },
+                        "health_done": {
+                            "ms": 520.704,
+                            "peak_mib": 361.297
+                        }
+                    }
+                },
+                {
+                    "targets": 173683,
+                    "scenario": "optimize-health",
+                    "elapsed_ms": 633.1672079395503,
+                    "peak_rss_mib": 359.015625,
+                    "digest": "d1f18c849b2c799fed370edc6b3c01fffc6b76c0bec3d79fa44207ed436b94d2",
+                    "stages": {
+                        "prepare_start": {
+                            "ms": 0.007,
+                            "peak_mib": 62.109
+                        },
+                        "fetch_done": {
+                            "ms": 114.581,
+                            "peak_mib": 89.156
+                        },
+                        "simulator_done": {
+                            "ms": 159.779,
+                            "peak_mib": 143.266
+                        },
+                        "compact_done": {
+                            "ms": 168.303,
+                            "peak_mib": 148.922
+                        },
+                        "compute_start": {
+                            "ms": 0.001,
+                            "peak_mib": 148.953
+                        },
+                        "training_done": {
+                            "ms": 88.756,
+                            "peak_mib": 159.0
+                        },
+                        "evaluation_done": {
+                            "ms": 200.944,
+                            "peak_mib": 167.234
+                        },
+                        "health_expanded": {
+                            "ms": 210.795,
+                            "peak_mib": 195.625
+                        },
+                        "health_input_ready": {
+                            "ms": 220.444,
+                            "peak_mib": 230.5
+                        },
+                        "health_done": {
+                            "ms": 464.031,
+                            "peak_mib": 359.016
+                        }
+                    }
+                }
+            ],
+            "skip_simulator": [
+                {
+                    "targets": 173683,
+                    "scenario": "optimize-health",
+                    "elapsed_ms": 595.1220421120524,
+                    "peak_rss_mib": 329.703125,
+                    "digest": "d1f18c849b2c799fed370edc6b3c01fffc6b76c0bec3d79fa44207ed436b94d2",
+                    "stages": {
+                        "prepare_start": {
+                            "ms": 0.007,
+                            "peak_mib": 62.438
+                        },
+                        "fetch_done": {
+                            "ms": 118.248,
+                            "peak_mib": 89.625
+                        },
+                        "simulator_done": {
+                            "ms": 118.261,
+                            "peak_mib": 89.625
+                        },
+                        "compact_done": {
+                            "ms": 126.832,
+                            "peak_mib": 100.641
+                        },
+                        "compute_start": {
+                            "ms": 0.001,
+                            "peak_mib": 100.672
+                        },
+                        "training_done": {
+                            "ms": 88.566,
+                            "peak_mib": 109.375
+                        },
+                        "evaluation_done": {
+                            "ms": 197.943,
+                            "peak_mib": 118.812
+                        },
+                        "health_expanded": {
+                            "ms": 207.502,
+                            "peak_mib": 148.766
+                        },
+                        "health_input_ready": {
+                            "ms": 216.304,
+                            "peak_mib": 184.109
+                        },
+                        "health_done": {
+                            "ms": 467.411,
+                            "peak_mib": 329.703
+                        }
+                    }
+                },
+                {
+                    "targets": 173683,
+                    "scenario": "optimize-health",
+                    "elapsed_ms": 597.7066669147462,
+                    "peak_rss_mib": 324.6875,
+                    "digest": "d1f18c849b2c799fed370edc6b3c01fffc6b76c0bec3d79fa44207ed436b94d2",
+                    "stages": {
+                        "prepare_start": {
+                            "ms": 0.008,
+                            "peak_mib": 63.203
+                        },
+                        "fetch_done": {
+                            "ms": 115.484,
+                            "peak_mib": 90.031
+                        },
+                        "simulator_done": {
+                            "ms": 115.496,
+                            "peak_mib": 90.031
+                        },
+                        "compact_done": {
+                            "ms": 124.863,
+                            "peak_mib": 100.297
+                        },
+                        "compute_start": {
+                            "ms": 0.002,
+                            "peak_mib": 100.328
+                        },
+                        "training_done": {
+                            "ms": 91.724,
+                            "peak_mib": 108.578
+                        },
+                        "evaluation_done": {
+                            "ms": 207.306,
+                            "peak_mib": 116.25
+                        },
+                        "health_expanded": {
+                            "ms": 216.347,
+                            "peak_mib": 148.109
+                        },
+                        "health_input_ready": {
+                            "ms": 226.946,
+                            "peak_mib": 180.797
+                        },
+                        "health_done": {
+                            "ms": 472.079,
+                            "peak_mib": 324.688
+                        }
+                    }
+                },
+                {
+                    "targets": 173683,
+                    "scenario": "optimize-health",
+                    "elapsed_ms": 939.8012501187623,
+                    "peak_rss_mib": 327.078125,
+                    "digest": "d1f18c849b2c799fed370edc6b3c01fffc6b76c0bec3d79fa44207ed436b94d2",
+                    "stages": {
+                        "prepare_start": {
+                            "ms": 0.006,
+                            "peak_mib": 62.062
+                        },
+                        "fetch_done": {
+                            "ms": 112.805,
+                            "peak_mib": 89.109
+                        },
+                        "simulator_done": {
+                            "ms": 112.819,
+                            "peak_mib": 89.109
+                        },
+                        "compact_done": {
+                            "ms": 121.74,
+                            "peak_mib": 100.906
+                        },
+                        "compute_start": {
+                            "ms": 0.002,
+                            "peak_mib": 100.938
+                        },
+                        "training_done": {
+                            "ms": 89.847,
+                            "peak_mib": 109.406
+                        },
+                        "evaluation_done": {
+                            "ms": 207.382,
+                            "peak_mib": 116.062
+                        },
+                        "health_expanded": {
+                            "ms": 219.0,
+                            "peak_mib": 147.781
+                        },
+                        "health_input_ready": {
+                            "ms": 231.963,
+                            "peak_mib": 181.922
+                        },
+                        "health_done": {
+                            "ms": 817.184,
+                            "peak_mib": 327.078
+                        }
+                    }
+                },
+                {
+                    "targets": 173683,
+                    "scenario": "optimize-health",
+                    "elapsed_ms": 589.003125205636,
+                    "peak_rss_mib": 324.46875,
+                    "digest": "d1f18c849b2c799fed370edc6b3c01fffc6b76c0bec3d79fa44207ed436b94d2",
+                    "stages": {
+                        "prepare_start": {
+                            "ms": 0.007,
+                            "peak_mib": 61.891
+                        },
+                        "fetch_done": {
+                            "ms": 110.691,
+                            "peak_mib": 89.016
+                        },
+                        "simulator_done": {
+                            "ms": 110.706,
+                            "peak_mib": 89.031
+                        },
+                        "compact_done": {
+                            "ms": 119.214,
+                            "peak_mib": 98.641
+                        },
+                        "compute_start": {
+                            "ms": 0.001,
+                            "peak_mib": 98.719
+                        },
+                        "training_done": {
+                            "ms": 89.92,
+                            "peak_mib": 107.828
+                        },
+                        "evaluation_done": {
+                            "ms": 203.355,
+                            "peak_mib": 116.062
+                        },
+                        "health_expanded": {
+                            "ms": 212.839,
+                            "peak_mib": 146.016
+                        },
+                        "health_input_ready": {
+                            "ms": 222.13,
+                            "peak_mib": 181.734
+                        },
+                        "health_done": {
+                            "ms": 468.974,
+                            "peak_mib": 324.469
+                        }
+                    }
+                },
+                {
+                    "targets": 173683,
+                    "scenario": "optimize-health",
+                    "elapsed_ms": 580.221249954775,
+                    "peak_rss_mib": 327.984375,
+                    "digest": "d1f18c849b2c799fed370edc6b3c01fffc6b76c0bec3d79fa44207ed436b94d2",
+                    "stages": {
+                        "prepare_start": {
+                            "ms": 0.006,
+                            "peak_mib": 61.734
+                        },
+                        "fetch_done": {
+                            "ms": 112.99,
+                            "peak_mib": 89.609
+                        },
+                        "simulator_done": {
+                            "ms": 113.002,
+                            "peak_mib": 89.609
+                        },
+                        "compact_done": {
+                            "ms": 121.332,
+                            "peak_mib": 98.484
+                        },
+                        "compute_start": {
+                            "ms": 0.001,
+                            "peak_mib": 98.516
+                        },
+                        "training_done": {
+                            "ms": 88.159,
+                            "peak_mib": 107.438
+                        },
+                        "evaluation_done": {
+                            "ms": 196.821,
+                            "peak_mib": 113.562
+                        },
+                        "health_expanded": {
+                            "ms": 206.507,
+                            "peak_mib": 143.609
+                        },
+                        "health_input_ready": {
+                            "ms": 215.845,
+                            "peak_mib": 178.625
+                        },
+                        "health_done": {
+                            "ms": 458.091,
+                            "peak_mib": 327.984
+                        }
+                    }
+                },
+                {
+                    "targets": 173683,
+                    "scenario": "optimize-health",
+                    "elapsed_ms": 577.4445838760585,
+                    "peak_rss_mib": 324.921875,
+                    "digest": "d1f18c849b2c799fed370edc6b3c01fffc6b76c0bec3d79fa44207ed436b94d2",
+                    "stages": {
+                        "prepare_start": {
+                            "ms": 0.004,
+                            "peak_mib": 61.453
+                        },
+                        "fetch_done": {
+                            "ms": 109.478,
+                            "peak_mib": 89.047
+                        },
+                        "simulator_done": {
+                            "ms": 109.494,
+                            "peak_mib": 89.062
+                        },
+                        "compact_done": {
+                            "ms": 117.816,
+                            "peak_mib": 99.469
+                        },
+                        "compute_start": {
+                            "ms": 0.001,
+                            "peak_mib": 99.5
+                        },
+                        "training_done": {
+                            "ms": 86.225,
+                            "peak_mib": 108.109
+                        },
+                        "evaluation_done": {
+                            "ms": 193.938,
+                            "peak_mib": 114.453
+                        },
+                        "health_expanded": {
+                            "ms": 203.574,
+                            "peak_mib": 144.406
+                        },
+                        "health_input_ready": {
+                            "ms": 213.255,
+                            "peak_mib": 178.766
+                        },
+                        "health_done": {
+                            "ms": 458.82,
+                            "peak_mib": 324.922
+                        }
+                    }
+                }
+            ],
+            "move_health_input": [
+                {
+                    "targets": 173683,
+                    "scenario": "optimize-health",
+                    "elapsed_ms": 656.811541179195,
+                    "peak_rss_mib": 312.21875,
+                    "digest": "d1f18c849b2c799fed370edc6b3c01fffc6b76c0bec3d79fa44207ed436b94d2",
+                    "stages": {
+                        "prepare_start": {
+                            "ms": 0.006,
+                            "peak_mib": 62.375
+                        },
+                        "fetch_done": {
+                            "ms": 119.531,
+                            "peak_mib": 88.938
+                        },
+                        "simulator_done": {
+                            "ms": 171.612,
+                            "peak_mib": 144.109
+                        },
+                        "compact_done": {
+                            "ms": 179.804,
+                            "peak_mib": 150.344
+                        },
+                        "compute_start": {
+                            "ms": 0.001,
+                            "peak_mib": 150.375
+                        },
+                        "training_done": {
+                            "ms": 114.232,
+                            "peak_mib": 160.797
+                        },
+                        "evaluation_done": {
+                            "ms": 227.98,
+                            "peak_mib": 165.641
+                        },
+                        "health_expanded": {
+                            "ms": 237.515,
+                            "peak_mib": 194.031
+                        },
+                        "health_input_ready": {
+                            "ms": 238.194,
+                            "peak_mib": 194.031
+                        },
+                        "health_done": {
+                            "ms": 476.313,
+                            "peak_mib": 312.219
+                        }
+                    }
+                },
+                {
+                    "targets": 173683,
+                    "scenario": "optimize-health",
+                    "elapsed_ms": 631.1397079844028,
+                    "peak_rss_mib": 317.34375,
+                    "digest": "d1f18c849b2c799fed370edc6b3c01fffc6b76c0bec3d79fa44207ed436b94d2",
+                    "stages": {
+                        "prepare_start": {
+                            "ms": 0.005,
+                            "peak_mib": 61.578
+                        },
+                        "fetch_done": {
+                            "ms": 115.691,
+                            "peak_mib": 89.172
+                        },
+                        "simulator_done": {
+                            "ms": 166.775,
+                            "peak_mib": 144.031
+                        },
+                        "compact_done": {
+                            "ms": 175.375,
+                            "peak_mib": 148.828
+                        },
+                        "compute_start": {
+                            "ms": 0.001,
+                            "peak_mib": 148.859
+                        },
+                        "training_done": {
+                            "ms": 89.822,
+                            "peak_mib": 158.516
+                        },
+                        "evaluation_done": {
+                            "ms": 203.834,
+                            "peak_mib": 167.891
+                        },
+                        "health_expanded": {
+                            "ms": 213.524,
+                            "peak_mib": 196.297
+                        },
+                        "health_input_ready": {
+                            "ms": 214.913,
+                            "peak_mib": 196.312
+                        },
+                        "health_done": {
+                            "ms": 454.968,
+                            "peak_mib": 317.344
+                        }
+                    }
+                },
+                {
+                    "targets": 173683,
+                    "scenario": "optimize-health",
+                    "elapsed_ms": 632.4607499409467,
+                    "peak_rss_mib": 324.4375,
+                    "digest": "d1f18c849b2c799fed370edc6b3c01fffc6b76c0bec3d79fa44207ed436b94d2",
+                    "stages": {
+                        "prepare_start": {
+                            "ms": 0.005,
+                            "peak_mib": 61.859
+                        },
+                        "fetch_done": {
+                            "ms": 114.904,
+                            "peak_mib": 89.453
+                        },
+                        "simulator_done": {
+                            "ms": 166.03,
+                            "peak_mib": 144.844
+                        },
+                        "compact_done": {
+                            "ms": 174.659,
+                            "peak_mib": 150.688
+                        },
+                        "compute_start": {
+                            "ms": 0.001,
+                            "peak_mib": 150.75
+                        },
+                        "training_done": {
+                            "ms": 91.302,
+                            "peak_mib": 160.172
+                        },
+                        "evaluation_done": {
+                            "ms": 205.434,
+                            "peak_mib": 166.906
+                        },
+                        "health_expanded": {
+                            "ms": 216.063,
+                            "peak_mib": 195.328
+                        },
+                        "health_input_ready": {
+                            "ms": 217.396,
+                            "peak_mib": 195.328
+                        },
+                        "health_done": {
+                            "ms": 457.097,
+                            "peak_mib": 324.438
+                        }
+                    }
+                },
+                {
+                    "targets": 173683,
+                    "scenario": "optimize-health",
+                    "elapsed_ms": 616.9960000552237,
+                    "peak_rss_mib": 322.59375,
+                    "digest": "d1f18c849b2c799fed370edc6b3c01fffc6b76c0bec3d79fa44207ed436b94d2",
+                    "stages": {
+                        "prepare_start": {
+                            "ms": 0.007,
+                            "peak_mib": 62.078
+                        },
+                        "fetch_done": {
+                            "ms": 111.14,
+                            "peak_mib": 90.078
+                        },
+                        "simulator_done": {
+                            "ms": 160.614,
+                            "peak_mib": 145.047
+                        },
+                        "compact_done": {
+                            "ms": 169.233,
+                            "peak_mib": 149.938
+                        },
+                        "compute_start": {
+                            "ms": 0.001,
+                            "peak_mib": 149.984
+                        },
+                        "training_done": {
+                            "ms": 88.904,
+                            "peak_mib": 161.031
+                        },
+                        "evaluation_done": {
+                            "ms": 200.049,
+                            "peak_mib": 166.375
+                        },
+                        "health_expanded": {
+                            "ms": 209.387,
+                            "peak_mib": 194.828
+                        },
+                        "health_input_ready": {
+                            "ms": 210.395,
+                            "peak_mib": 194.828
+                        },
+                        "health_done": {
+                            "ms": 446.888,
+                            "peak_mib": 322.594
+                        }
+                    }
+                },
+                {
+                    "targets": 173683,
+                    "scenario": "optimize-health",
+                    "elapsed_ms": 604.1907081380486,
+                    "peak_rss_mib": 324.34375,
+                    "digest": "d1f18c849b2c799fed370edc6b3c01fffc6b76c0bec3d79fa44207ed436b94d2",
+                    "stages": {
+                        "prepare_start": {
+                            "ms": 0.005,
+                            "peak_mib": 61.844
+                        },
+                        "fetch_done": {
+                            "ms": 105.399,
+                            "peak_mib": 88.953
+                        },
+                        "simulator_done": {
+                            "ms": 155.329,
+                            "peak_mib": 143.344
+                        },
+                        "compact_done": {
+                            "ms": 163.413,
+                            "peak_mib": 148.969
+                        },
+                        "compute_start": {
+                            "ms": 0.001,
+                            "peak_mib": 149.0
+                        },
+                        "training_done": {
+                            "ms": 88.792,
+                            "peak_mib": 159.297
+                        },
+                        "evaluation_done": {
+                            "ms": 198.115,
+                            "peak_mib": 164.719
+                        },
+                        "health_expanded": {
+                            "ms": 206.672,
+                            "peak_mib": 193.109
+                        },
+                        "health_input_ready": {
+                            "ms": 207.186,
+                            "peak_mib": 193.109
+                        },
+                        "health_done": {
+                            "ms": 440.013,
+                            "peak_mib": 324.344
+                        }
+                    }
+                },
+                {
+                    "targets": 173683,
+                    "scenario": "optimize-health",
+                    "elapsed_ms": 614.3087500240654,
+                    "peak_rss_mib": 311.875,
+                    "digest": "d1f18c849b2c799fed370edc6b3c01fffc6b76c0bec3d79fa44207ed436b94d2",
+                    "stages": {
+                        "prepare_start": {
+                            "ms": 0.005,
+                            "peak_mib": 62.531
+                        },
+                        "fetch_done": {
+                            "ms": 107.996,
+                            "peak_mib": 89.906
+                        },
+                        "simulator_done": {
+                            "ms": 153.256,
+                            "peak_mib": 143.844
+                        },
+                        "compact_done": {
+                            "ms": 161.33,
+                            "peak_mib": 149.453
+                        },
+                        "compute_start": {
+                            "ms": 0.002,
+                            "peak_mib": 149.484
+                        },
+                        "training_done": {
+                            "ms": 93.606,
+                            "peak_mib": 159.453
+                        },
+                        "evaluation_done": {
+                            "ms": 206.043,
+                            "peak_mib": 165.75
+                        },
+                        "health_expanded": {
+                            "ms": 215.314,
+                            "peak_mib": 194.266
+                        },
+                        "health_input_ready": {
+                            "ms": 216.277,
+                            "peak_mib": 194.266
+                        },
+                        "health_done": {
+                            "ms": 452.281,
+                            "peak_mib": 311.875
+                        }
+                    }
+                }
+            ],
+            "both": [
+                {
+                    "targets": 173683,
+                    "scenario": "optimize-health",
+                    "elapsed_ms": 578.1179158948362,
+                    "peak_rss_mib": 288.671875,
+                    "digest": "d1f18c849b2c799fed370edc6b3c01fffc6b76c0bec3d79fa44207ed436b94d2",
+                    "stages": {
+                        "prepare_start": {
+                            "ms": 0.005,
+                            "peak_mib": 62.016
+                        },
+                        "fetch_done": {
+                            "ms": 117.579,
+                            "peak_mib": 90.031
+                        },
+                        "simulator_done": {
+                            "ms": 117.598,
+                            "peak_mib": 90.047
+                        },
+                        "compact_done": {
+                            "ms": 125.816,
+                            "peak_mib": 99.969
+                        },
+                        "compute_start": {
+                            "ms": 0.001,
+                            "peak_mib": 100.0
+                        },
+                        "training_done": {
+                            "ms": 87.811,
+                            "peak_mib": 107.953
+                        },
+                        "evaluation_done": {
+                            "ms": 197.885,
+                            "peak_mib": 114.812
+                        },
+                        "health_expanded": {
+                            "ms": 208.091,
+                            "peak_mib": 144.797
+                        },
+                        "health_input_ready": {
+                            "ms": 208.644,
+                            "peak_mib": 144.797
+                        },
+                        "health_done": {
+                            "ms": 451.62,
+                            "peak_mib": 288.672
+                        }
+                    }
+                },
+                {
+                    "targets": 173683,
+                    "scenario": "optimize-health",
+                    "elapsed_ms": 593.770083039999,
+                    "peak_rss_mib": 292.703125,
+                    "digest": "d1f18c849b2c799fed370edc6b3c01fffc6b76c0bec3d79fa44207ed436b94d2",
+                    "stages": {
+                        "prepare_start": {
+                            "ms": 0.006,
+                            "peak_mib": 62.484
+                        },
+                        "fetch_done": {
+                            "ms": 117.568,
+                            "peak_mib": 89.953
+                        },
+                        "simulator_done": {
+                            "ms": 117.582,
+                            "peak_mib": 89.953
+                        },
+                        "compact_done": {
+                            "ms": 125.789,
+                            "peak_mib": 98.5
+                        },
+                        "compute_start": {
+                            "ms": 0.001,
+                            "peak_mib": 98.531
+                        },
+                        "training_done": {
+                            "ms": 97.193,
+                            "peak_mib": 107.672
+                        },
+                        "evaluation_done": {
+                            "ms": 211.949,
+                            "peak_mib": 118.188
+                        },
+                        "health_expanded": {
+                            "ms": 221.77,
+                            "peak_mib": 148.125
+                        },
+                        "health_input_ready": {
+                            "ms": 222.359,
+                            "peak_mib": 148.125
+                        },
+                        "health_done": {
+                            "ms": 467.212,
+                            "peak_mib": 292.703
+                        }
+                    }
+                },
+                {
+                    "targets": 173683,
+                    "scenario": "optimize-health",
+                    "elapsed_ms": 579.4880830217153,
+                    "peak_rss_mib": 286.3125,
+                    "digest": "d1f18c849b2c799fed370edc6b3c01fffc6b76c0bec3d79fa44207ed436b94d2",
+                    "stages": {
+                        "prepare_start": {
+                            "ms": 0.008,
+                            "peak_mib": 61.875
+                        },
+                        "fetch_done": {
+                            "ms": 114.559,
+                            "peak_mib": 88.984
+                        },
+                        "simulator_done": {
+                            "ms": 114.574,
+                            "peak_mib": 88.984
+                        },
+                        "compact_done": {
+                            "ms": 123.361,
+                            "peak_mib": 100.734
+                        },
+                        "compute_start": {
+                            "ms": 0.002,
+                            "peak_mib": 100.766
+                        },
+                        "training_done": {
+                            "ms": 90.926,
+                            "peak_mib": 109.469
+                        },
+                        "evaluation_done": {
+                            "ms": 203.592,
+                            "peak_mib": 115.703
+                        },
+                        "health_expanded": {
+                            "ms": 213.678,
+                            "peak_mib": 145.656
+                        },
+                        "health_input_ready": {
+                            "ms": 215.008,
+                            "peak_mib": 145.656
+                        },
+                        "health_done": {
+                            "ms": 455.293,
+                            "peak_mib": 286.312
+                        }
+                    }
+                },
+                {
+                    "targets": 173683,
+                    "scenario": "optimize-health",
+                    "elapsed_ms": 567.540500080213,
+                    "peak_rss_mib": 284.640625,
+                    "digest": "d1f18c849b2c799fed370edc6b3c01fffc6b76c0bec3d79fa44207ed436b94d2",
+                    "stages": {
+                        "prepare_start": {
+                            "ms": 0.005,
+                            "peak_mib": 61.5
+                        },
+                        "fetch_done": {
+                            "ms": 112.479,
+                            "peak_mib": 88.828
+                        },
+                        "simulator_done": {
+                            "ms": 112.496,
+                            "peak_mib": 88.828
+                        },
+                        "compact_done": {
+                            "ms": 120.717,
+                            "peak_mib": 98.25
+                        },
+                        "compute_start": {
+                            "ms": 0.002,
+                            "peak_mib": 98.281
+                        },
+                        "training_done": {
+                            "ms": 91.889,
+                            "peak_mib": 107.469
+                        },
+                        "evaluation_done": {
+                            "ms": 202.391,
+                            "peak_mib": 113.531
+                        },
+                        "health_expanded": {
+                            "ms": 211.069,
+                            "peak_mib": 143.469
+                        },
+                        "health_input_ready": {
+                            "ms": 211.59,
+                            "peak_mib": 143.469
+                        },
+                        "health_done": {
+                            "ms": 446.158,
+                            "peak_mib": 284.641
+                        }
+                    }
+                },
+                {
+                    "targets": 173683,
+                    "scenario": "optimize-health",
+                    "elapsed_ms": 619.9687919579446,
+                    "peak_rss_mib": 285.03125,
+                    "digest": "d1f18c849b2c799fed370edc6b3c01fffc6b76c0bec3d79fa44207ed436b94d2",
+                    "stages": {
+                        "prepare_start": {
+                            "ms": 0.006,
+                            "peak_mib": 63.047
+                        },
+                        "fetch_done": {
+                            "ms": 157.964,
+                            "peak_mib": 90.422
+                        },
+                        "simulator_done": {
+                            "ms": 157.979,
+                            "peak_mib": 90.438
+                        },
+                        "compact_done": {
+                            "ms": 167.019,
+                            "peak_mib": 99.562
+                        },
+                        "compute_start": {
+                            "ms": 0.002,
+                            "peak_mib": 99.594
+                        },
+                        "training_done": {
+                            "ms": 90.757,
+                            "peak_mib": 108.531
+                        },
+                        "evaluation_done": {
+                            "ms": 200.593,
+                            "peak_mib": 114.516
+                        },
+                        "health_expanded": {
+                            "ms": 210.602,
+                            "peak_mib": 144.5
+                        },
+                        "health_input_ready": {
+                            "ms": 211.628,
+                            "peak_mib": 144.5
+                        },
+                        "health_done": {
+                            "ms": 452.199,
+                            "peak_mib": 285.031
+                        }
+                    }
+                },
+                {
+                    "targets": 173683,
+                    "scenario": "optimize-health",
+                    "elapsed_ms": 566.1873330827802,
+                    "peak_rss_mib": 291.234375,
+                    "digest": "d1f18c849b2c799fed370edc6b3c01fffc6b76c0bec3d79fa44207ed436b94d2",
+                    "stages": {
+                        "prepare_start": {
+                            "ms": 0.005,
+                            "peak_mib": 61.703
+                        },
+                        "fetch_done": {
+                            "ms": 115.565,
+                            "peak_mib": 89.125
+                        },
+                        "simulator_done": {
+                            "ms": 115.58,
+                            "peak_mib": 89.141
+                        },
+                        "compact_done": {
+                            "ms": 123.981,
+                            "peak_mib": 99.344
+                        },
+                        "compute_start": {
+                            "ms": 0.001,
+                            "peak_mib": 99.375
+                        },
+                        "training_done": {
+                            "ms": 87.089,
+                            "peak_mib": 108.75
+                        },
+                        "evaluation_done": {
+                            "ms": 197.627,
+                            "peak_mib": 115.047
+                        },
+                        "health_expanded": {
+                            "ms": 206.715,
+                            "peak_mib": 145.0
+                        },
+                        "health_input_ready": {
+                            "ms": 207.264,
+                            "peak_mib": 145.0
+                        },
+                        "health_done": {
+                            "ms": 441.422,
+                            "peak_mib": 291.234
+                        }
+                    }
+                }
+            ]
+        }
+    },
+    "compact_api_profile": {
+        "predict": [
+            {
+                "stored": 173683,
+                "rows": 173683,
+                "scenario": "predict",
+                "elapsed_ms": 693.1898749899119,
+                "peak_rss_mib": 111.59375,
+                "digest": "c741e560d1717fd252381c79a1e69347502068946b90bf7d746a2fbcd817a5c8",
+                "calls": [
+                    {
+                        "cards": 10052.0,
+                        "targets": 173683.0,
+                        "validation_ms": 0.231,
+                        "grouping_ms": 2.179,
+                        "sorting_ms": 0.402,
+                        "walking_ms": 38.289,
+                        "total_ms": 41.668,
+                        "group_bytes": 4159648.0,
+                        "prediction_bytes": 694732.0
+                    }
+                ]
+            },
+            {
+                "stored": 173683,
+                "rows": 173683,
+                "scenario": "predict",
+                "elapsed_ms": 694.0742500592023,
+                "peak_rss_mib": 111.34375,
+                "digest": "c741e560d1717fd252381c79a1e69347502068946b90bf7d746a2fbcd817a5c8",
+                "calls": [
+                    {
+                        "cards": 10052.0,
+                        "targets": 173683.0,
+                        "validation_ms": 0.294,
+                        "grouping_ms": 2.287,
+                        "sorting_ms": 0.604,
+                        "walking_ms": 38.392,
+                        "total_ms": 42.857,
+                        "group_bytes": 4159648.0,
+                        "prediction_bytes": 694732.0
+                    }
+                ]
+            },
+            {
+                "stored": 173683,
+                "rows": 173683,
+                "scenario": "predict",
+                "elapsed_ms": 699.6687920764089,
+                "peak_rss_mib": 111.734375,
+                "digest": "c741e560d1717fd252381c79a1e69347502068946b90bf7d746a2fbcd817a5c8",
+                "calls": [
+                    {
+                        "cards": 10052.0,
+                        "targets": 173683.0,
+                        "validation_ms": 0.237,
+                        "grouping_ms": 2.139,
+                        "sorting_ms": 0.283,
+                        "walking_ms": 37.822,
+                        "total_ms": 41.034,
+                        "group_bytes": 4159648.0,
+                        "prediction_bytes": 694732.0
+                    }
+                ]
+            },
+            {
+                "stored": 173683,
+                "rows": 173683,
+                "scenario": "predict",
+                "elapsed_ms": 690.6001660972834,
+                "peak_rss_mib": 110.71875,
+                "digest": "c741e560d1717fd252381c79a1e69347502068946b90bf7d746a2fbcd817a5c8",
+                "calls": [
+                    {
+                        "cards": 10052.0,
+                        "targets": 173683.0,
+                        "validation_ms": 0.292,
+                        "grouping_ms": 2.175,
+                        "sorting_ms": 0.343,
+                        "walking_ms": 38.254,
+                        "total_ms": 41.748,
+                        "group_bytes": 4159648.0,
+                        "prediction_bytes": 694732.0
+                    }
+                ]
+            },
+            {
+                "stored": 173683,
+                "rows": 173683,
+                "scenario": "predict",
+                "elapsed_ms": 686.2761669326574,
+                "peak_rss_mib": 112.34375,
+                "digest": "c741e560d1717fd252381c79a1e69347502068946b90bf7d746a2fbcd817a5c8",
+                "calls": [
+                    {
+                        "cards": 10052.0,
+                        "targets": 173683.0,
+                        "validation_ms": 0.284,
+                        "grouping_ms": 2.12,
+                        "sorting_ms": 0.352,
+                        "walking_ms": 39.202,
+                        "total_ms": 42.528,
+                        "group_bytes": 4159648.0,
+                        "prediction_bytes": 694732.0
+                    }
+                ]
+            }
+        ],
+        "folds": [
+            {
+                "stored": 318419,
+                "rows": 318419,
+                "scenario": "folds",
+                "elapsed_ms": 1427.723583066836,
+                "peak_rss_mib": 124.96875,
+                "digest": "f3733d42022d69d932f0f143e3156621da3af27c7d1f6b194587295a1df295e3",
+                "calls": [
+                    {
+                        "cards": 10052.0,
+                        "targets": 173683.0,
+                        "validation_ms": 0.282,
+                        "grouping_ms": 2.119,
+                        "sorting_ms": 0.287,
+                        "walking_ms": 38.056,
+                        "total_ms": 41.308,
+                        "group_bytes": 4159648.0,
+                        "prediction_bytes": 694732.0
+                    },
+                    {
+                        "cards": 10052.0,
+                        "targets": 28947.0,
+                        "validation_ms": 0.128,
+                        "grouping_ms": 0.34,
+                        "sorting_ms": 0.061,
+                        "walking_ms": 10.986,
+                        "total_ms": 11.693,
+                        "group_bytes": 911904.0,
+                        "prediction_bytes": 115788.0
+                    },
+                    {
+                        "cards": 10052.0,
+                        "targets": 28947.0,
+                        "validation_ms": 0.13,
+                        "grouping_ms": 0.393,
+                        "sorting_ms": 0.08,
+                        "walking_ms": 15.853,
+                        "total_ms": 16.689,
+                        "group_bytes": 921824.0,
+                        "prediction_bytes": 115788.0
+                    },
+                    {
+                        "cards": 10052.0,
+                        "targets": 28947.0,
+                        "validation_ms": 0.132,
+                        "grouping_ms": 0.406,
+                        "sorting_ms": 0.109,
+                        "walking_ms": 19.696,
+                        "total_ms": 20.635,
+                        "group_bytes": 939296.0,
+                        "prediction_bytes": 115788.0
+                    },
+                    {
+                        "cards": 10052.0,
+                        "targets": 28947.0,
+                        "validation_ms": 0.146,
+                        "grouping_ms": 0.434,
+                        "sorting_ms": 0.204,
+                        "walking_ms": 20.95,
+                        "total_ms": 22.325,
+                        "group_bytes": 1012064.0,
+                        "prediction_bytes": 115788.0
+                    },
+                    {
+                        "cards": 10052.0,
+                        "targets": 28948.0,
+                        "validation_ms": 0.155,
+                        "grouping_ms": 0.46,
+                        "sorting_ms": 0.232,
+                        "walking_ms": 28.9,
+                        "total_ms": 30.592,
+                        "group_bytes": 1043552.0,
+                        "prediction_bytes": 115792.0
+                    }
+                ]
+            },
+            {
+                "stored": 318419,
+                "rows": 318419,
+                "scenario": "folds",
+                "elapsed_ms": 1449.2399580776691,
+                "peak_rss_mib": 126.71875,
+                "digest": "f3733d42022d69d932f0f143e3156621da3af27c7d1f6b194587295a1df295e3",
+                "calls": [
+                    {
+                        "cards": 10052.0,
+                        "targets": 173683.0,
+                        "validation_ms": 0.282,
+                        "grouping_ms": 2.171,
+                        "sorting_ms": 0.592,
+                        "walking_ms": 40.035,
+                        "total_ms": 44.048,
+                        "group_bytes": 4159648.0,
+                        "prediction_bytes": 694732.0
+                    },
+                    {
+                        "cards": 10052.0,
+                        "targets": 28947.0,
+                        "validation_ms": 0.139,
+                        "grouping_ms": 0.421,
+                        "sorting_ms": 0.209,
+                        "walking_ms": 11.322,
+                        "total_ms": 12.331,
+                        "group_bytes": 911904.0,
+                        "prediction_bytes": 115788.0
+                    },
+                    {
+                        "cards": 10052.0,
+                        "targets": 28947.0,
+                        "validation_ms": 0.139,
+                        "grouping_ms": 0.404,
+                        "sorting_ms": 0.189,
+                        "walking_ms": 16.425,
+                        "total_ms": 17.607,
+                        "group_bytes": 921824.0,
+                        "prediction_bytes": 115788.0
+                    },
+                    {
+                        "cards": 10052.0,
+                        "targets": 28947.0,
+                        "validation_ms": 0.152,
+                        "grouping_ms": 0.521,
+                        "sorting_ms": 0.115,
+                        "walking_ms": 19.259,
+                        "total_ms": 20.332,
+                        "group_bytes": 939296.0,
+                        "prediction_bytes": 115788.0
+                    },
+                    {
+                        "cards": 10052.0,
+                        "targets": 28947.0,
+                        "validation_ms": 0.149,
+                        "grouping_ms": 0.429,
+                        "sorting_ms": 0.149,
+                        "walking_ms": 20.076,
+                        "total_ms": 21.236,
+                        "group_bytes": 1012064.0,
+                        "prediction_bytes": 115788.0
+                    },
+                    {
+                        "cards": 10052.0,
+                        "targets": 28948.0,
+                        "validation_ms": 0.153,
+                        "grouping_ms": 0.439,
+                        "sorting_ms": 0.175,
+                        "walking_ms": 27.621,
+                        "total_ms": 28.879,
+                        "group_bytes": 1043552.0,
+                        "prediction_bytes": 115792.0
+                    }
+                ]
+            },
+            {
+                "stored": 318419,
+                "rows": 318419,
+                "scenario": "folds",
+                "elapsed_ms": 1482.5955829583108,
+                "peak_rss_mib": 124.859375,
+                "digest": "f3733d42022d69d932f0f143e3156621da3af27c7d1f6b194587295a1df295e3",
+                "calls": [
+                    {
+                        "cards": 10052.0,
+                        "targets": 173683.0,
+                        "validation_ms": 0.286,
+                        "grouping_ms": 2.117,
+                        "sorting_ms": 0.288,
+                        "walking_ms": 38.093,
+                        "total_ms": 41.362,
+                        "group_bytes": 4159648.0,
+                        "prediction_bytes": 694732.0
+                    },
+                    {
+                        "cards": 10052.0,
+                        "targets": 28947.0,
+                        "validation_ms": 0.143,
+                        "grouping_ms": 0.37,
+                        "sorting_ms": 0.069,
+                        "walking_ms": 11.334,
+                        "total_ms": 12.103,
+                        "group_bytes": 911904.0,
+                        "prediction_bytes": 115788.0
+                    },
+                    {
+                        "cards": 10052.0,
+                        "targets": 28947.0,
+                        "validation_ms": 0.138,
+                        "grouping_ms": 0.406,
+                        "sorting_ms": 0.077,
+                        "walking_ms": 15.9,
+                        "total_ms": 16.753,
+                        "group_bytes": 921824.0,
+                        "prediction_bytes": 115788.0
+                    },
+                    {
+                        "cards": 10052.0,
+                        "targets": 28947.0,
+                        "validation_ms": 0.139,
+                        "grouping_ms": 0.42,
+                        "sorting_ms": 0.113,
+                        "walking_ms": 19.624,
+                        "total_ms": 20.581,
+                        "group_bytes": 939296.0,
+                        "prediction_bytes": 115788.0
+                    },
+                    {
+                        "cards": 10052.0,
+                        "targets": 28947.0,
+                        "validation_ms": 0.141,
+                        "grouping_ms": 0.43,
+                        "sorting_ms": 0.155,
+                        "walking_ms": 20.082,
+                        "total_ms": 21.236,
+                        "group_bytes": 1012064.0,
+                        "prediction_bytes": 115788.0
+                    },
+                    {
+                        "cards": 10052.0,
+                        "targets": 28948.0,
+                        "validation_ms": 0.17,
+                        "grouping_ms": 0.461,
+                        "sorting_ms": 0.18,
+                        "walking_ms": 27.64,
+                        "total_ms": 28.941,
+                        "group_bytes": 1043552.0,
+                        "prediction_bytes": 115792.0
+                    }
+                ]
+            },
+            {
+                "stored": 318419,
+                "rows": 318419,
+                "scenario": "folds",
+                "elapsed_ms": 1463.3176249917597,
+                "peak_rss_mib": 125.859375,
+                "digest": "f3733d42022d69d932f0f143e3156621da3af27c7d1f6b194587295a1df295e3",
+                "calls": [
+                    {
+                        "cards": 10052.0,
+                        "targets": 173683.0,
+                        "validation_ms": 0.224,
+                        "grouping_ms": 2.086,
+                        "sorting_ms": 0.489,
+                        "walking_ms": 39.361,
+                        "total_ms": 42.899,
+                        "group_bytes": 4159648.0,
+                        "prediction_bytes": 694732.0
+                    },
+                    {
+                        "cards": 10052.0,
+                        "targets": 28947.0,
+                        "validation_ms": 0.127,
+                        "grouping_ms": 0.351,
+                        "sorting_ms": 0.075,
+                        "walking_ms": 11.176,
+                        "total_ms": 11.915,
+                        "group_bytes": 911904.0,
+                        "prediction_bytes": 115788.0
+                    },
+                    {
+                        "cards": 10052.0,
+                        "targets": 28947.0,
+                        "validation_ms": 0.222,
+                        "grouping_ms": 0.497,
+                        "sorting_ms": 0.158,
+                        "walking_ms": 16.619,
+                        "total_ms": 17.842,
+                        "group_bytes": 921824.0,
+                        "prediction_bytes": 115788.0
+                    },
+                    {
+                        "cards": 10052.0,
+                        "targets": 28947.0,
+                        "validation_ms": 0.146,
+                        "grouping_ms": 0.459,
+                        "sorting_ms": 0.114,
+                        "walking_ms": 19.472,
+                        "total_ms": 20.481,
+                        "group_bytes": 939296.0,
+                        "prediction_bytes": 115788.0
+                    },
+                    {
+                        "cards": 10052.0,
+                        "targets": 28947.0,
+                        "validation_ms": 0.146,
+                        "grouping_ms": 0.441,
+                        "sorting_ms": 0.154,
+                        "walking_ms": 20.236,
+                        "total_ms": 21.414,
+                        "group_bytes": 1012064.0,
+                        "prediction_bytes": 115788.0
+                    },
+                    {
+                        "cards": 10052.0,
+                        "targets": 28948.0,
+                        "validation_ms": 0.144,
+                        "grouping_ms": 0.42,
+                        "sorting_ms": 0.193,
+                        "walking_ms": 27.742,
+                        "total_ms": 28.992,
+                        "group_bytes": 1043552.0,
+                        "prediction_bytes": 115792.0
+                    }
+                ]
+            },
+            {
+                "stored": 318419,
+                "rows": 318419,
+                "scenario": "folds",
+                "elapsed_ms": 1460.0052498281002,
+                "peak_rss_mib": 125.21875,
+                "digest": "f3733d42022d69d932f0f143e3156621da3af27c7d1f6b194587295a1df295e3",
+                "calls": [
+                    {
+                        "cards": 10052.0,
+                        "targets": 173683.0,
+                        "validation_ms": 0.283,
+                        "grouping_ms": 2.108,
+                        "sorting_ms": 0.375,
+                        "walking_ms": 39.173,
+                        "total_ms": 42.522,
+                        "group_bytes": 4159648.0,
+                        "prediction_bytes": 694732.0
+                    },
+                    {
+                        "cards": 10052.0,
+                        "targets": 28947.0,
+                        "validation_ms": 0.132,
+                        "grouping_ms": 0.347,
+                        "sorting_ms": 0.066,
+                        "walking_ms": 11.057,
+                        "total_ms": 11.776,
+                        "group_bytes": 911904.0,
+                        "prediction_bytes": 115788.0
+                    },
+                    {
+                        "cards": 10052.0,
+                        "targets": 28947.0,
+                        "validation_ms": 0.139,
+                        "grouping_ms": 0.408,
+                        "sorting_ms": 0.092,
+                        "walking_ms": 15.92,
+                        "total_ms": 16.79,
+                        "group_bytes": 921824.0,
+                        "prediction_bytes": 115788.0
+                    },
+                    {
+                        "cards": 10052.0,
+                        "targets": 28947.0,
+                        "validation_ms": 0.146,
+                        "grouping_ms": 0.414,
+                        "sorting_ms": 0.111,
+                        "walking_ms": 19.714,
+                        "total_ms": 20.677,
+                        "group_bytes": 939296.0,
+                        "prediction_bytes": 115788.0
+                    },
+                    {
+                        "cards": 10052.0,
+                        "targets": 28947.0,
+                        "validation_ms": 0.147,
+                        "grouping_ms": 0.437,
+                        "sorting_ms": 0.161,
+                        "walking_ms": 20.503,
+                        "total_ms": 21.805,
+                        "group_bytes": 1012064.0,
+                        "prediction_bytes": 115788.0
+                    },
+                    {
+                        "cards": 10052.0,
+                        "targets": 28948.0,
+                        "validation_ms": 0.145,
+                        "grouping_ms": 0.429,
+                        "sorting_ms": 0.191,
+                        "walking_ms": 28.156,
+                        "total_ms": 29.835,
+                        "group_bytes": 1043552.0,
+                        "prediction_bytes": 115792.0
+                    }
+                ]
+            }
+        ]
+    },
+    "production_optimization": {
+        "optimize": {
+            "before": [
+                {
+                    "targets": 173683,
+                    "scenario": "optimize",
+                    "elapsed_ms": 364.7475838661194,
+                    "peak_rss_mib": 164.828125,
+                    "digest": "f022794f09cbfc12072e4b461da8d4ef24b9a073583eaeb150b54ac09f757849"
+                },
+                {
+                    "targets": 173683,
+                    "scenario": "optimize",
+                    "elapsed_ms": 364.20091707259417,
+                    "peak_rss_mib": 166.15625,
+                    "digest": "f022794f09cbfc12072e4b461da8d4ef24b9a073583eaeb150b54ac09f757849"
+                },
+                {
+                    "targets": 173683,
+                    "scenario": "optimize",
+                    "elapsed_ms": 363.83016710169613,
+                    "peak_rss_mib": 166.65625,
+                    "digest": "f022794f09cbfc12072e4b461da8d4ef24b9a073583eaeb150b54ac09f757849"
+                },
+                {
+                    "targets": 173683,
+                    "scenario": "optimize",
+                    "elapsed_ms": 362.7829998731613,
+                    "peak_rss_mib": 169.515625,
+                    "digest": "f022794f09cbfc12072e4b461da8d4ef24b9a073583eaeb150b54ac09f757849"
+                },
+                {
+                    "targets": 173683,
+                    "scenario": "optimize",
+                    "elapsed_ms": 368.3472080156207,
+                    "peak_rss_mib": 167.078125,
+                    "digest": "f022794f09cbfc12072e4b461da8d4ef24b9a073583eaeb150b54ac09f757849"
+                },
+                {
+                    "targets": 173683,
+                    "scenario": "optimize",
+                    "elapsed_ms": 379.43879095837474,
+                    "peak_rss_mib": 168.890625,
+                    "digest": "f022794f09cbfc12072e4b461da8d4ef24b9a073583eaeb150b54ac09f757849"
+                },
+                {
+                    "targets": 173683,
+                    "scenario": "optimize",
+                    "elapsed_ms": 374.9608329962939,
+                    "peak_rss_mib": 164.96875,
+                    "digest": "f022794f09cbfc12072e4b461da8d4ef24b9a073583eaeb150b54ac09f757849"
+                }
+            ],
+            "after": [
+                {
+                    "targets": 173683,
+                    "scenario": "optimize",
+                    "elapsed_ms": 316.6415421292186,
+                    "peak_rss_mib": 114.078125,
+                    "digest": "f022794f09cbfc12072e4b461da8d4ef24b9a073583eaeb150b54ac09f757849"
+                },
+                {
+                    "targets": 173683,
+                    "scenario": "optimize",
+                    "elapsed_ms": 315.0404170155525,
+                    "peak_rss_mib": 112.703125,
+                    "digest": "f022794f09cbfc12072e4b461da8d4ef24b9a073583eaeb150b54ac09f757849"
+                },
+                {
+                    "targets": 173683,
+                    "scenario": "optimize",
+                    "elapsed_ms": 315.4506660066545,
+                    "peak_rss_mib": 114.1875,
+                    "digest": "f022794f09cbfc12072e4b461da8d4ef24b9a073583eaeb150b54ac09f757849"
+                },
+                {
+                    "targets": 173683,
+                    "scenario": "optimize",
+                    "elapsed_ms": 314.590249909088,
+                    "peak_rss_mib": 115.015625,
+                    "digest": "f022794f09cbfc12072e4b461da8d4ef24b9a073583eaeb150b54ac09f757849"
+                },
+                {
+                    "targets": 173683,
+                    "scenario": "optimize",
+                    "elapsed_ms": 319.3055000156164,
+                    "peak_rss_mib": 114.296875,
+                    "digest": "f022794f09cbfc12072e4b461da8d4ef24b9a073583eaeb150b54ac09f757849"
+                },
+                {
+                    "targets": 173683,
+                    "scenario": "optimize",
+                    "elapsed_ms": 316.710458137095,
+                    "peak_rss_mib": 115.59375,
+                    "digest": "f022794f09cbfc12072e4b461da8d4ef24b9a073583eaeb150b54ac09f757849"
+                },
+                {
+                    "targets": 173683,
+                    "scenario": "optimize",
+                    "elapsed_ms": 315.5072499066591,
+                    "peak_rss_mib": 112.71875,
+                    "digest": "f022794f09cbfc12072e4b461da8d4ef24b9a073583eaeb150b54ac09f757849"
+                }
+            ]
+        },
+        "optimize-health": {
+            "before": [
+                {
+                    "targets": 173683,
+                    "scenario": "optimize-health",
+                    "elapsed_ms": 620.4500000458211,
+                    "peak_rss_mib": 359.84375,
+                    "digest": "d1f18c849b2c799fed370edc6b3c01fffc6b76c0bec3d79fa44207ed436b94d2"
+                },
+                {
+                    "targets": 173683,
+                    "scenario": "optimize-health",
+                    "elapsed_ms": 617.9907920304686,
+                    "peak_rss_mib": 359.890625,
+                    "digest": "d1f18c849b2c799fed370edc6b3c01fffc6b76c0bec3d79fa44207ed436b94d2"
+                },
+                {
+                    "targets": 173683,
+                    "scenario": "optimize-health",
+                    "elapsed_ms": 624.8060001526028,
+                    "peak_rss_mib": 361.828125,
+                    "digest": "d1f18c849b2c799fed370edc6b3c01fffc6b76c0bec3d79fa44207ed436b94d2"
+                },
+                {
+                    "targets": 173683,
+                    "scenario": "optimize-health",
+                    "elapsed_ms": 619.1390408203006,
+                    "peak_rss_mib": 367.671875,
+                    "digest": "d1f18c849b2c799fed370edc6b3c01fffc6b76c0bec3d79fa44207ed436b94d2"
+                },
+                {
+                    "targets": 173683,
+                    "scenario": "optimize-health",
+                    "elapsed_ms": 617.8093331400305,
+                    "peak_rss_mib": 361.421875,
+                    "digest": "d1f18c849b2c799fed370edc6b3c01fffc6b76c0bec3d79fa44207ed436b94d2"
+                },
+                {
+                    "targets": 173683,
+                    "scenario": "optimize-health",
+                    "elapsed_ms": 617.6145409699529,
+                    "peak_rss_mib": 364.6875,
+                    "digest": "d1f18c849b2c799fed370edc6b3c01fffc6b76c0bec3d79fa44207ed436b94d2"
+                },
+                {
+                    "targets": 173683,
+                    "scenario": "optimize-health",
+                    "elapsed_ms": 620.3086660243571,
+                    "peak_rss_mib": 359.8125,
+                    "digest": "d1f18c849b2c799fed370edc6b3c01fffc6b76c0bec3d79fa44207ed436b94d2"
+                }
+            ],
+            "after": [
+                {
+                    "targets": 173683,
+                    "scenario": "optimize-health",
+                    "elapsed_ms": 561.0412501264364,
+                    "peak_rss_mib": 291.515625,
+                    "digest": "d1f18c849b2c799fed370edc6b3c01fffc6b76c0bec3d79fa44207ed436b94d2"
+                },
+                {
+                    "targets": 173683,
+                    "scenario": "optimize-health",
+                    "elapsed_ms": 565.3232089243829,
+                    "peak_rss_mib": 292.4375,
+                    "digest": "d1f18c849b2c799fed370edc6b3c01fffc6b76c0bec3d79fa44207ed436b94d2"
+                },
+                {
+                    "targets": 173683,
+                    "scenario": "optimize-health",
+                    "elapsed_ms": 561.6284168791026,
+                    "peak_rss_mib": 289.578125,
+                    "digest": "d1f18c849b2c799fed370edc6b3c01fffc6b76c0bec3d79fa44207ed436b94d2"
+                },
+                {
+                    "targets": 173683,
+                    "scenario": "optimize-health",
+                    "elapsed_ms": 560.7742499560118,
+                    "peak_rss_mib": 288.40625,
+                    "digest": "d1f18c849b2c799fed370edc6b3c01fffc6b76c0bec3d79fa44207ed436b94d2"
+                },
+                {
+                    "targets": 173683,
+                    "scenario": "optimize-health",
+                    "elapsed_ms": 560.8412080910057,
+                    "peak_rss_mib": 288.3125,
+                    "digest": "d1f18c849b2c799fed370edc6b3c01fffc6b76c0bec3d79fa44207ed436b94d2"
+                },
+                {
+                    "targets": 173683,
+                    "scenario": "optimize-health",
+                    "elapsed_ms": 559.1233330778778,
+                    "peak_rss_mib": 293.171875,
+                    "digest": "d1f18c849b2c799fed370edc6b3c01fffc6b76c0bec3d79fa44207ed436b94d2"
+                },
+                {
+                    "targets": 173683,
+                    "scenario": "optimize-health",
+                    "elapsed_ms": 557.475000154227,
+                    "peak_rss_mib": 286.40625,
+                    "digest": "d1f18c849b2c799fed370edc6b3c01fffc6b76c0bec3d79fa44207ed436b94d2"
+                }
+            ]
+        }
+    },
+    "copied_profile_dynamic_dr": {
+        "disabled_cards": 11744,
+        "enabled_cards": 0
+    }
+}

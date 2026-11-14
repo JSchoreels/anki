@@ -191,20 +191,50 @@ fn rwkv_sm101_feature_builder_matches_show_time_intervals() {
     check_show_time_intervals("sm101", &sm101_vectors());
 }
 
+/// The Tiny two-head model (SM106), the Tiny choice's one model: the tiny
+/// plan (one card layer) with a trained curve head, show-time inputs (its
+/// vectors' inputs equal SM101's).
+fn sm106_vectors() -> Vec<u8> {
+    if let Ok(path) = std::env::var("ANKI_RWKV_SM106_VECTORS") {
+        fs::read(path).unwrap()
+    } else {
+        let mut data = Vec::new();
+        flate2::read::GzDecoder::new(&include_bytes!("testdata/sm106-vectors.json.gz")[..])
+            .read_to_end(&mut data)
+            .unwrap();
+        data
+    }
+}
+
+#[test]
+fn rwkv_sm106_matches_published_vectors() {
+    check_published_vectors("sm106", &sm106_vectors());
+}
+
+#[test]
+fn rwkv_sm106_ignores_missing_id_flags_in_every_inference_path() {
+    check_ignores_missing_id_flags("sm106", &sm106_vectors());
+}
+
+#[test]
+fn rwkv_sm106_feature_builder_matches_show_time_intervals() {
+    check_show_time_intervals("sm106", &sm106_vectors());
+}
+
 /// The small engine reads the card layers from the weights: one for SM101,
 /// two for every other small model, at f32 and INT8 weights.
 #[test]
 fn rwkv_small_engine_reads_card_layers_from_the_weights() {
     for package in [
         "sm40v2", "sm36", "sm55", "sm56", "sm72", "sm72e20", "sm72e25", "sm92", "sm57", "sm98",
-        "sm101",
+        "sm101", "sm106",
     ] {
         for format in ["f32", "int8"] {
             let model = SrsModel::load(&PathBuf::from(env!("CARGO_MANIFEST_DIR")).join(format!(
                 "../qt/aqt/rwkv_inference/{package}/weights.{format}.bin"
             )))
             .unwrap();
-            let plan = if package == "sm101" {
+            let plan = if matches!(package, "sm101" | "sm106") {
                 TINY_LAYER_PLAN
             } else {
                 ENGINE_LAYER_PLAN
@@ -361,8 +391,12 @@ fn check_ignores_missing_id_flags(package: &str, data: &[u8]) {
                     state,
                 },
             ];
-            let scalar = model.review_retrievability_query_refs_scalar(&queries);
-            let batched = model.review_retrievability_query_refs_batched(&queries);
+            let scalar = model
+                .review_retrievability_query_refs_scalar(&queries)
+                .unwrap();
+            let batched = model
+                .review_retrievability_query_refs_batched(&queries)
+                .unwrap();
             let same = heads.retrievability == flagged_heads.retrievability
                 && heads.button_probabilities == flagged_heads.button_probabilities
                 && predict_curve(&heads.curve, row.elapsed)
@@ -463,10 +497,12 @@ fn rwkv_sm40_spec_matches_compiled_architecture() {
     ] {
         check_compiled_architecture(source, ENGINE_LAYER_PLAN);
     }
-    check_compiled_architecture(
+    for source in [
         include_str!("../../../qt/aqt/rwkv_inference/sm101/architecture.json"),
-        TINY_LAYER_PLAN,
-    );
+        include_str!("../../../qt/aqt/rwkv_inference/sm106/architecture.json"),
+    ] {
+        check_compiled_architecture(source, TINY_LAYER_PLAN);
+    }
 }
 
 fn check_compiled_architecture(source: &str, plan: LayerPlan) {

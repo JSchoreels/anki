@@ -44,8 +44,8 @@ fn legacy_vectors() -> Vec<Vectors> {
 }
 
 /// PyTorch outputs of the show-time instant-only big model (SM99), made the
-/// same way (show-time inputs, first 500 rows per user); `ANKI_RWKV_SM99_VECTORS`
-/// points the test at full vectors.
+/// same way (show-time inputs, first 500 rows per user);
+/// `ANKI_RWKV_SM99_VECTORS` points the test at full vectors.
 fn sm99_vectors() -> Vec<Vectors> {
     read_vectors(
         "ANKI_RWKV_SM99_VECTORS",

@@ -21,10 +21,10 @@ License: GNU AGPL, version 3 or later; http://www.gnu.org/licenses/agpl.html
 
     const settings = state.rwkvProfileSettings;
 
-    // The three sizes, stored under the profile's model key: Big is the big
-    // model with its own big RWKV-Instant model, Small the default small
-    // model with its own RWKV-Instant model, Tiny the same with a smaller
-    // RWKV-Instant model.
+    // The three sizes of the RWKV family release, stored under the profile's
+    // model key: each runs only its own two models, a two-head model for
+    // RWKV-Curve (and both schedulers under the opt-out) and an Instant-Only
+    // model for RWKV-Instant (qt/aqt/rwkv_model.py).
     const sizes = [
         {
             value: RWKV_MODEL_BIG,
@@ -55,8 +55,8 @@ License: GNU AGPL, version 3 or later; http://www.gnu.org/licenses/agpl.html
         ? RWKV_MODEL_SMALL
         : $settings.model;
     $: choices = selected === keptChoice.value ? [...sizes, keptChoice] : sizes;
-    // Every size runs RWKV-Instant on its own model: beside the curve
-    // model when presets use both RWKV-Instant and RWKV-Curve, alone
+    // Every size runs RWKV-Instant on its own Instant-Only model: beside its
+    // two-head model when presets use both RWKV-Instant and RWKV-Curve, alone
     // otherwise. The opt-out only matters for both; its description says so,
     // since the runtime follows every preset's scheduler at profile open,
     // not just this one's.
@@ -98,6 +98,7 @@ License: GNU AGPL, version 3 or later; http://www.gnu.org/licenses/agpl.html
         {/each}
     </div>
     <div class="model-description">
+        <p>{tr.deckConfigRwkvModelComparison()}</p>
         {#if hasInstantModel}
             <div class="model-row">
                 <label class="single-model-label" for="rwkv-single-model">
@@ -111,6 +112,7 @@ License: GNU AGPL, version 3 or later; http://www.gnu.org/licenses/agpl.html
                 />
             </div>
             <p>{tr.deckConfigRwkvSingleModelExplanation()}</p>
+            <p>{tr.deckConfigRwkvSingleModelInstantOnly()}</p>
         {/if}
         <p>{tr.deckConfigRwkvProfileSettingsScope()}</p>
         <p>{tr.deckConfigRwkvModelSizeMigration()}</p>
