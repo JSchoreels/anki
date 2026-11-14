@@ -39,6 +39,12 @@ pub enum ModelKind {
     /// It runs on the big engine beside `Legacy`, or alone as an instant-only
     /// runtime when no preset uses RWKV-Curve; never as a full model.
     Sm99,
+    /// The Tiny two-head model (SM106), the Tiny choice's one model: the
+    /// show-time retrain (SM92) cut to one card layer (the tiny plan of
+    /// SM101) and trained on with both heads on show-time inputs. A full
+    /// model (curve, intervals, S90, instant recall and buttons) without an
+    /// answer-time head; it runs alone when the one-model opt-out is on.
+    Sm106,
 }
 
 impl ModelKind {
@@ -57,6 +63,7 @@ impl ModelKind {
             "sm98" => Ok(Self::Sm98),
             "sm101" => Ok(Self::Sm101),
             "sm99" => Ok(Self::Sm99),
+            "sm106" => Ok(Self::Sm106),
             _ => Err(io::Error::new(
                 io::ErrorKind::InvalidInput,
                 "unknown RWKV model",
@@ -80,6 +87,7 @@ impl ModelKind {
                 | Self::Sm98
                 | Self::Sm101
                 | Self::Sm99
+                | Self::Sm106
         )
     }
 
@@ -106,7 +114,7 @@ impl ModelKind {
     fn card_layers(self) -> Option<usize> {
         match self {
             Self::Legacy | Self::Sm99 => None,
-            Self::Sm101 => Some(1),
+            Self::Sm101 | Self::Sm106 => Some(1),
             _ => Some(2),
         }
     }
@@ -735,6 +743,19 @@ impl RwkvRuntime {
         })
     }
 
+    pub fn forecast_history_predictions(
+        &self,
+        reviews: Vec<ReviewInput>,
+        progress: &mut dyn FnMut(u32, u32) -> io::Result<()>,
+    ) -> io::Result<Vec<(usize, f32)>> {
+        dispatch!(
+            self,
+            engine,
+            engine.forecast_history_predictions(reviews, progress),
+            pair => pair.instant.forecast_history_predictions(reviews, progress)
+        )
+    }
+
     /// Replay answers and return each answer's immediate post-review
     /// prediction.
     pub fn warm_up_reviews_post(
@@ -1025,6 +1046,40 @@ impl RwkvRuntime {
         )
     }
 
+    /// The forecast schedules RWKV presets with the curve, so a paired runtime
+    /// runs it on the release model.
+    pub fn forecast_workload_from_warm_up(
+        &self,
+        inputs: Vec<RwkvForecastCard>,
+        config: RwkvWorkloadForecastConfig,
+        progress: &mut dyn FnMut(u32, u32) -> io::Result<()>,
+    ) -> io::Result<RwkvWorkloadForecastOutput> {
+        if self.is_instant_only() {
+            return Err(no_curve_model());
+        }
+        dispatch!(
+            self,
+            engine,
+            engine.forecast_workload_from_warm_up(inputs, config, progress),
+            pair => pair.release.forecast_workload_from_warm_up(inputs, config, progress)
+        )
+    }
+
+    pub fn forecast_instant_workload_from_warm_up(
+        &self,
+        inputs: Vec<RwkvInstantForecastCard>,
+        config: RwkvInstantForecastConfig,
+        progress: &mut dyn FnMut(u32, u32) -> io::Result<()>,
+        day_progress: &mut dyn FnMut(u32, u32, [f32; 5]) -> io::Result<()>,
+    ) -> io::Result<RwkvWorkloadForecastOutput> {
+        dispatch!(
+            self,
+            engine,
+            engine.forecast_instant_workload_from_warm_up(inputs, config, progress, day_progress),
+            pair => pair.instant.forecast_instant_workload_from_warm_up(inputs, config, progress, day_progress)
+        )
+    }
+
     pub fn compare_workloads_from_warm_up(
         &self,
         inputs: Vec<RwkvComparisonCard>,
@@ -1062,6 +1117,7 @@ mod tests {
             ModelKind::Sm98 => "../qt/aqt/rwkv_inference/sm98/weights.f32.bin",
             ModelKind::Sm101 => "../qt/aqt/rwkv_inference/sm101/weights.f32.bin",
             ModelKind::Sm99 => "../qt/aqt/rwkv_inference/sm99/weights.f32.bin",
+            ModelKind::Sm106 => "../qt/aqt/rwkv_inference/sm106/weights.f32.bin",
         });
         RwkvRuntime::load_with_precision(path, 0.9, 36_500, precision, model).unwrap()
     }
@@ -1090,6 +1146,7 @@ mod tests {
                 (ModelKind::Sm72e20, load(ModelKind::Sm72e20, precision)),
                 (ModelKind::Sm72e25, load(ModelKind::Sm72e25, precision)),
                 (ModelKind::Sm92, load(ModelKind::Sm92, precision)),
+                (ModelKind::Sm106, load(ModelKind::Sm106, precision)),
             ] {
                 let answers = crate::rwkv::precision_tests::reviews(14);
                 engine.warm_up_reviews(answers.clone(), false).unwrap();
@@ -1120,6 +1177,7 @@ mod tests {
         assert_eq!(ModelKind::parse("sm72e20").unwrap(), ModelKind::Sm72e20);
         assert_eq!(ModelKind::parse("sm72e25").unwrap(), ModelKind::Sm72e25);
         assert_eq!(ModelKind::parse("sm92").unwrap(), ModelKind::Sm92);
+        assert_eq!(ModelKind::parse("sm106").unwrap(), ModelKind::Sm106);
         // The same checkpoint without the runtime's input rule.
         let unadjusted = |model: ModelKind| {
             let path = PathBuf::from(env!("CARGO_MANIFEST_DIR")).join(match model {
@@ -1128,6 +1186,7 @@ mod tests {
                 ModelKind::Sm72e20 => "../qt/aqt/rwkv_inference/sm72e20/weights.f32.bin",
                 ModelKind::Sm72e25 => "../qt/aqt/rwkv_inference/sm72e25/weights.f32.bin",
                 ModelKind::Sm92 => "../qt/aqt/rwkv_inference/sm92/weights.f32.bin",
+                ModelKind::Sm106 => "../qt/aqt/rwkv_inference/sm106/weights.f32.bin",
                 _ => "../qt/aqt/rwkv_inference/sm72/weights.f32.bin",
             });
             // Legacy runs on the big engine, the small models on the small one.
@@ -1167,6 +1226,7 @@ mod tests {
             ModelKind::Sm72e20,
             ModelKind::Sm72e25,
             ModelKind::Sm92,
+            ModelKind::Sm106,
         ] {
             assert_eq!(model.leak_free_inputs(), model != ModelKind::Sm56);
             for missing_ids in [false, true] {
@@ -1194,8 +1254,9 @@ mod tests {
         for (model, folder) in [(ModelKind::Sm72e25, "sm72e25"), (ModelKind::Sm92, "sm92")] {
             check_answer_time_head_is_optional(model, folder);
         }
-        // Legacy never has a head.
+        // Legacy never has a head; nor has the Tiny two-head model (SM106).
         assert!(!load(ModelKind::Legacy, StatePrecision::F32).has_answer_time_head());
+        assert!(!load(ModelKind::Sm106, StatePrecision::F32).has_answer_time_head());
     }
 
     fn check_answer_time_head_is_optional(model: ModelKind, folder: &str) {
@@ -1316,6 +1377,9 @@ mod tests {
             (ModelKind::Sm101, "sm98"),
             (ModelKind::Sm98, "sm101"),
             (ModelKind::Sm72e25, "sm101"),
+            (ModelKind::Sm106, "sm92"),
+            (ModelKind::Sm92, "sm106"),
+            (ModelKind::Sm72e25, "sm106"),
         ] {
             assert!(
                 RwkvRuntime::load_with_precision(
@@ -1349,6 +1413,39 @@ mod tests {
             ModelKind::Sm101,
         )
         .is_err());
+    }
+
+    /// The Tiny two-head model (SM106) alone is a full runtime on the tiny
+    /// plan: curve recall, intervals and S90 beside instant recall and
+    /// buttons, one card layer, no answer-time head, at every state
+    /// precision.
+    #[test]
+    fn rwkv_sm106_alone_is_a_full_tiny_model() {
+        assert!(!ModelKind::Sm106.instant_only() && ModelKind::Sm106.leak_free_inputs());
+        assert!(ModelKind::Sm106.small() && ModelKind::Sm106.card_layers() == Some(1));
+        for precision in [
+            StatePrecision::F32,
+            StatePrecision::Int8,
+            StatePrecision::Int4CardsInt8Notes,
+        ] {
+            let mut engine = load(ModelKind::Sm106, precision);
+            assert!(!engine.is_paired() && engine.has_curve(), "{precision:?}");
+            assert!(!engine.has_answer_time_head(), "{precision:?}");
+            let answers = crate::rwkv::precision_tests::reviews(14);
+            engine.warm_up_reviews(answers.clone(), false).unwrap();
+            let review = review_with_state(&mut engine, &query_of(&answers[0], 2));
+            assert!(
+                review.intervals.iter().all(Option::is_some),
+                "{precision:?}"
+            );
+            assert!(review.s90s.iter().all(Option::is_some), "{precision:?}");
+            assert!(review.curve_retrievability.is_some(), "{precision:?}");
+            assert!(
+                (0.0..=1.0).contains(&review.retrievability)
+                    && review.button_probabilities.iter().all(|p| p.is_finite()),
+                "{precision:?}"
+            );
+        }
     }
 
     /// An instant model as a plain engine (for SM57 with its raw, untrained
@@ -1599,6 +1696,79 @@ mod tests {
         }
     }
 
+    /// The pairs of the RWKV family release's Small and Tiny sizes (the
+    /// family wiring (SM114)): the show-time retrain (SM92) beside the Small
+    /// Instant-Only model (SM98), and the Tiny two-head model (SM106) beside
+    /// the Tiny Instant-Only model (SM101). Instant recall and buttons come
+    /// from the Instant-Only model, the curve, intervals, S90 and answer time
+    /// from the two-head model, bit for bit, at every state precision. The
+    /// Tiny pair has no answer-time head, like SM106 alone.
+    #[test]
+    fn rwkv_family_pairs_match_each_model_alone() {
+        if !super::super::SMALL_MODEL {
+            // Small models run on the alternate engine, which has no pairs.
+            assert!(RwkvRuntime::load_paired(
+                model_path("sm106"),
+                model_path("sm101"),
+                0.9,
+                36_500,
+                StatePrecision::F32,
+                ModelKind::Sm106,
+                ModelKind::Sm101,
+            )
+            .is_err());
+            return;
+        }
+        // (two-head model, Instant-Only model, stored pair bytes per card and
+        // note at int4 cards + int8 notes)
+        for (release, instant, stored) in [
+            ((ModelKind::Sm92, "sm92"), (ModelKind::Sm98, "sm98"), 7_098),
+            (
+                (ModelKind::Sm106, "sm106"),
+                (ModelKind::Sm101, "sm101"),
+                5_282,
+            ),
+        ] {
+            for precision in [
+                StatePrecision::F32,
+                StatePrecision::Int8,
+                StatePrecision::Int4CardsInt8Notes,
+            ] {
+                let label = format!("{}+{} {precision:?}", release.1, instant.1);
+                let pair = || {
+                    RwkvRuntime::load_paired(
+                        model_path(release.1),
+                        model_path(instant.1),
+                        0.9,
+                        36_500,
+                        precision,
+                        release.0,
+                        instant.0,
+                    )
+                    .unwrap()
+                };
+                let alone = load(release.0, precision);
+                let instant_alone = instant_alone_of(precision, instant);
+                assert!(pair().is_paired() && pair().has_curve(), "{label}");
+                let head = release.0 == ModelKind::Sm92;
+                assert_eq!(pair().has_answer_time_head(), head, "{label}");
+                assert_eq!(alone.has_answer_time_head(), head, "{label}");
+                if precision == StatePrecision::Int4CardsInt8Notes {
+                    let mut engine = pair();
+                    let answers = crate::rwkv::precision_tests::reviews(14);
+                    engine.warm_up_reviews(answers.clone(), false).unwrap();
+                    let state = engine.warm_up_state(&answers[0]).unwrap();
+                    assert_eq!(
+                        state.card.unwrap().len() + state.note.unwrap().len(),
+                        stored,
+                        "{label}"
+                    );
+                }
+                check_pair_matches_models(pair(), alone, instant_alone, label);
+            }
+        }
+    }
+
     /// Replays answers, queries and reviews through a pair and through its two
     /// models alone: instant outputs from the instant model, the rest from the
     /// release, bit for bit.
@@ -1773,6 +1943,98 @@ mod tests {
         }
     }
 
+    #[test]
+    fn instant_forecast_pulls_future_card_for_daily_minimum() {
+        if super::super::SMALL_MODEL {
+            check_instant_forecast_pulls_future_card(load(ModelKind::Sm57, StatePrecision::F32));
+        }
+        check_instant_forecast_pulls_future_card(load(ModelKind::Sm99, StatePrecision::F32));
+        check_instant_forecast_pulls_future_card(big_pair(StatePrecision::F32));
+    }
+
+    fn check_instant_forecast_pulls_future_card(mut runtime: RwkvRuntime) {
+        let answers = crate::rwkv::precision_tests::reviews(4);
+        runtime.warm_up_reviews(answers.clone(), false).unwrap();
+        let query = query_of(&answers[0], 3);
+        let mut deck = crate::decks::Deck::new_normal();
+        deck.id = crate::decks::DeckId(1);
+        deck.name = crate::decks::NativeDeckName::from_human_name("Study");
+        let mut preset = crate::deckconfig::DeckConfig {
+            id: crate::deckconfig::DeckConfigId(1),
+            ..Default::default()
+        };
+        preset.inner.rwkv_review_instant_order_enabled = true;
+        preset.inner.rwkv_review_minimum_reviews_per_day = 1;
+        preset.inner.reviews_per_day = 1;
+        let output = runtime
+            .forecast_instant_workload_from_warm_up(
+                vec![RwkvInstantForecastCard {
+                    input: RwkvWorkloadSimulationInput {
+                        review_input: query,
+                        interval_days: Some(30),
+                        ease_factor: Some(2500),
+                        reps: Some(3),
+                        lapses: Some(0),
+                    },
+                    due_day: 30,
+                    group: 1,
+                    desired_retention: 0.01,
+                    instant_enabled: true,
+                    intervening_reviews: None,
+                    last_kind_and_grade: None,
+                    queue: 2,
+                    learning_due_millis: 0,
+                    remaining_steps: 0,
+                    new_position: 0,
+                    fsrs_memory: None,
+                    fsrs_parameters: vec![],
+                    fsrs_historical_retention: 0.9,
+                    fsrs_enabled: false,
+                }],
+                RwkvInstantForecastConfig {
+                    days: 1,
+                    paths: 1,
+                    scenario_sigma: None,
+                    stratified_answers: false,
+                    stratified_scale: 1.0,
+                    stratified_bias_sd: 0.0,
+                    stratified_review_variance: 0.0,
+                    report_days: false,
+                    seed: 0,
+                    decks: vec![deck],
+                    deck_configs: vec![preset],
+                    study_deck_id: 1,
+                    today: 0,
+                    new_cards_ignore_review_limit: true,
+                    fsrs_learning_queues_disabled: false,
+                    fsrs_short_term_with_steps_enabled: true,
+                    learn_ahead_secs: 0,
+                    timing_patterns: vec![vec![(10_000, 2_000), (15_000, 3_000)]],
+                    timing_pattern_success_shares: vec![[0.0, 0.0, 1.0, 0.0]],
+                    review_time_model: None,
+                    now_millis: 0,
+                    same_day_allowed: false,
+                    min_intervening_reviews: 0,
+                    min_elapsed_secs: 0,
+                    refresh_interval: 1,
+                    approximate_refresh_answers: 0,
+                    candidate_refresh_enabled: false,
+                    candidate_refresh_limit: 64,
+                    precompute_next_card: true,
+                    review_order:
+                        anki_proto::deck_config::deck_config::config::ReviewCardOrder::Day,
+                    review_model: RwkvWorkloadReviewModel {
+                        grade_seconds: [1.0; 4],
+                        bucket_probabilities: Vec::new(),
+                    },
+                },
+                &mut |_, _| Ok(()),
+                &mut |_, _, _| Ok(()),
+            )
+            .unwrap();
+        assert_eq!(output.days[0].done.mean, 1.0);
+    }
+
     /// An instant-only runtime against the same weights as a plain engine:
     /// the same instant outputs and states, no curve output, no simulation.
     fn check_instant_only_alone(mut alone: RwkvRuntime, mut raw: RwkvRuntime) {
@@ -1840,6 +2102,33 @@ mod tests {
         assert!(alone
             .simulate_workload_from_warm_up(Vec::new(), config(), &mut |_, _| Ok(()))
             .is_err());
+        let error = alone
+            .forecast_workload_from_warm_up(
+                Vec::new(),
+                RwkvWorkloadForecastConfig {
+                    days: 1,
+                    paths: 1,
+                    seed: 0,
+                    groups: Vec::new(),
+                    default_review_limit: 10,
+                    default_new_limit: 0,
+                    new_cards_ignore_review_limit: false,
+                    max_interval: 36_500,
+                    review_order:
+                        anki_proto::deck_config::deck_config::config::ReviewCardOrder::Day,
+                    suspend_after_lapses: None,
+                    state_update_interval: 1,
+                    single_step_answers: false,
+                    review_model: RwkvWorkloadReviewModel {
+                        grade_seconds: [1.0; 4],
+                        bucket_probabilities: Vec::new(),
+                    },
+                },
+                &mut |_, _| Ok(()),
+            )
+            .expect_err("an instant-only model cannot forecast with a curve");
+        assert_eq!(error.kind(), io::ErrorKind::InvalidInput);
+        assert!(error.to_string().contains("RWKV-Curve"));
     }
 
     fn read_u32(bytes: &[u8], at: &mut usize) -> usize {
@@ -2174,16 +2463,40 @@ mod tests {
             ("big instant alone", false, load(ModelKind::Sm99, precision)),
         ];
         if super::super::SMALL_MODEL {
+            // The family release's Small and Tiny layouts (SM114).
+            let family_pair = |release: (ModelKind, &str), instant: (ModelKind, &str)| {
+                RwkvRuntime::load_paired(
+                    model_path(release.1),
+                    model_path(instant.1),
+                    0.9,
+                    36_500,
+                    precision,
+                    release.0,
+                    instant.0,
+                )
+                .unwrap()
+            };
             layouts.push((
                 "small pair",
                 true,
-                paired_with(precision, (ModelKind::Sm98, "sm98")),
+                family_pair((ModelKind::Sm92, "sm92"), (ModelKind::Sm98, "sm98")),
             ));
-            layouts.push(("small alone", true, load(ModelKind::Sm72e25, precision)));
+            layouts.push(("small alone", true, load(ModelKind::Sm92, precision)));
             layouts.push((
                 "small instant alone",
                 true,
                 load(ModelKind::Sm98, precision),
+            ));
+            layouts.push((
+                "tiny pair",
+                true,
+                family_pair((ModelKind::Sm106, "sm106"), (ModelKind::Sm101, "sm101")),
+            ));
+            layouts.push(("tiny alone", true, load(ModelKind::Sm106, precision)));
+            layouts.push((
+                "tiny instant alone",
+                true,
+                load(ModelKind::Sm101, precision),
             ));
         }
         for (_, _, engine) in &mut layouts {

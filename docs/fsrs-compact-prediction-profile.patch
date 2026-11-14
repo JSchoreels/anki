@@ -1,0 +1,118 @@
+diff --git a/rslib/src/scheduler/fsrs/params/compact.rs b/rslib/src/scheduler/fsrs/params/compact.rs
+index 5b0fbc651..8dbce4bb3 100644
+--- a/rslib/src/scheduler/fsrs/params/compact.rs
++++ b/rslib/src/scheduler/fsrs/params/compact.rs
+@@ -209,6 +209,8 @@ pub(super) fn fsrs_review_retrievability_predictions(
+     range: std::ops::Range<usize>,
+     progress: Option<&FsrsReviewRetrievabilityProgress>,
+ ) -> Result<Vec<(RevlogId, f32)>> {
++    let profile_start = std::time::Instant::now();
++    let profile = std::env::var_os("ANKI_FSRS_PROFILE").is_some();
+     if fsrs_review_retrievability_progress_wants_abort(progress) {
+         return Err(AnkiError::Interrupted);
+     }
+@@ -218,6 +220,27 @@ pub(super) fn fsrs_review_retrievability_predictions(
+
+     let fsrs = FSRS::new(legacy_fsrs_params(params))?;
+     let prefixes = &items.prefixes.prefixes[range.clone()];
++    if std::env::var_os("ANKI_FSRS_UPSTREAM_PREDICTION").is_some() {
++        let predictions = fsrs.predict_retrievability_from_card_prefixes(
++            &items.prefixes.cards,
++            prefixes,
++            |_| !fsrs_review_retrievability_progress_wants_abort(progress),
++        )?;
++        let rows = items.revlog_ids[range]
++            .iter()
++            .copied()
++            .zip_eq(predictions)
++            .filter(|(_, prediction)| prediction.is_finite() && (0.0..=1.0).contains(prediction))
++            .collect::<Vec<_>>();
++        if profile {
++            eprintln!(
++                "fsrs_profile_prediction mode=upstream targets={} ms={:.6}",
++                rows.len(),
++                profile_start.elapsed().as_secs_f64() * 1000.0
++            );
++        }
++        return Ok(rows);
++    }
+     let mut by_card = vec![Vec::new(); items.prefixes.cards.len()];
+     for (index, prefix) in prefixes.iter().enumerate() {
+         if index % 1024 == 0 && fsrs_review_retrievability_progress_wants_abort(progress) {
+@@ -249,10 +272,18 @@ pub(super) fn fsrs_review_retrievability_predictions(
+             predictions[index] = prediction;
+         }
+     }
+-    Ok(items.revlog_ids[range]
++    let rows = items.revlog_ids[range]
+         .iter()
+         .copied()
+         .zip_eq(predictions)
+         .filter(|(_, prediction)| prediction.is_finite() && (0.0..=1.0).contains(prediction))
+-        .collect())
++        .collect::<Vec<_>>();
++    if profile {
++        eprintln!(
++            "fsrs_profile_prediction mode=adapter targets={} ms={:.6}",
++            rows.len(),
++            profile_start.elapsed().as_secs_f64() * 1000.0
++        );
++    }
++    Ok(rows)
+ }
+diff --git a/rslib/src/scheduler/service/mod.rs b/rslib/src/scheduler/service/mod.rs
+index 51b5ceb5c..f86bcac3b 100644
+--- a/rslib/src/scheduler/service/mod.rs
++++ b/rslib/src/scheduler/service/mod.rs
+@@ -1285,6 +1285,8 @@ impl crate::services::BackendSchedulerService for Backend {
+         &self,
+         input: scheduler::ComputeFsrsReviewRetrievabilityCalibrationRequest,
+     ) -> Result<generic::UInt32> {
++        let profile = std::env::var_os("ANKI_FSRS_PROFILE").is_some();
++        let mut profile_start = std::time::Instant::now();
+         // Reset stale progress before any work, so cancellation during input
+         // preparation survives the transition into training.
+         let mut progress = self.new_progress_handler();
+@@ -1294,6 +1296,8 @@ impl crate::services::BackendSchedulerService for Backend {
+             let revlogs = col.revlog_for_srs(&input.search)?;
+             Ok((revlogs, next_day_at, col.session_id.clone()))
+         })?;
++        let fetch_ms = profile_start.elapsed().as_secs_f64() * 1000.0;
++        profile_start = std::time::Instant::now();
+         progress.check_cancelled()?;
+         let context = FsrsReviewPredictionContext::from_revlogs(
+             revlogs,
+@@ -1314,6 +1318,8 @@ impl crate::services::BackendSchedulerService for Backend {
+             },
+             &mut progress,
+         )?;
++        let prepare_ms = profile_start.elapsed().as_secs_f64() * 1000.0;
++        profile_start = std::time::Instant::now();
+         let (mut rows, mut progress) = compute_fsrs_review_retrievability_calibration_rows(
+             &input.params,
+             &context,
+@@ -1322,14 +1328,24 @@ impl crate::services::BackendSchedulerService for Backend {
+         )?;
+         drop(context);
+         progress.check_cancelled()?;
++        let rows_ms = profile_start.elapsed().as_secs_f64() * 1000.0;
++        profile_start = std::time::Instant::now();
+         // Visit cache pages in review-id order, so small transactions do not
+         // repeatedly dirty the same pages for different cards' histories.
+         rows.sort_unstable_by_key(|row| (row.revlog_id, row.fold_index));
++        let sort_ms = profile_start.elapsed().as_secs_f64() * 1000.0;
++        profile_start = std::time::Instant::now();
+         // Saving derived cache rows in bounded transactions lets collection
+         // reads and cancellation run between batches. Interrupted callers must
+         // retry the job instead of treating the partial cache as complete.
+         let stored =
+             save_fsrs_calibration_rows(self, &session, &rows, || progress.check_cancelled())?;
++        if profile {
++            let save_ms = profile_start.elapsed().as_secs_f64() * 1000.0;
++            eprintln!(
++                "fsrs_profile_stages fetch_ms={fetch_ms:.6} prepare_ms={prepare_ms:.6} rows_ms={rows_ms:.6} sort_ms={sort_ms:.6} save_ms={save_ms:.6}"
++            );
++        }
+         tracing::debug!(
+             predictions = stored,
+             "stored FSRS review retrievability calibration cache"

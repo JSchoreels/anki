@@ -242,6 +242,21 @@ target count and run on Rayon worker lanes. Progress is reported with the same
 `ComputeAllParamsProgress` payload used by deck-options Optimize All, including
 per-preset review counts and iteration progress.
 
+FSRS-7 optimization and parameter evaluation store each card's review history
+once and reference its training targets by prefix. FSRS-6 optimization expands
+those targets because its trainer still requires individual items. Historical
+FSRS calibration also reuses compact histories for final-fit predictions and
+validation-fold training and predictions. The fsrs-rs compact prediction API
+accepts a selected prefix slice without expanding histories, and Anki maps its
+ordered results back to review IDs. The optional optimizer health check
+and time-series evaluation still use fsrs-rs's existing expanded-item API.
+When Dynamic DR is disabled, optimization skips preparing its simulator
+statistics. The health check records target counts before passing expanded
+items to cross-validation, avoiding an additional copy of those items.
+Review filtering, chronological target order, metrics and cached prediction
+rows remain unchanged. See [the compact-history benchmark](fsrs-compact-performance.MD)
+for the measured effects and reproduction steps.
+
 After deck-options Optimize All finishes parameter optimization, Anki reports a
 short per-preset save phase while writing the optimized deck configs. It then
 updates each affected preset's card memory state from the final saved config.

@@ -442,6 +442,19 @@ class RwkvReviewInput:
     fsrs_memory_state: tuple[float, float, float] | None = None
     fsrs_parameters: tuple[float, ...] = ()
     fsrs_historical_retention: float | None = None
+    remaining_steps: int | None = None
+    in_filtered_deck: bool = False
+
+
+@dataclass(frozen=True)
+class RwkvForecastCardInput:
+    """One card of a workload forecast (see `forecast_rwkv_workload`)."""
+
+    review_input: RwkvReviewInput
+    due_day: int | None
+    group: int
+    desired_retention: float
+    scheduler: int
 
 
 def _rwkv_state_update_input(review_input: RwkvReviewInput) -> RwkvReviewInput:
@@ -2524,6 +2537,27 @@ class RwkvStatefulReviewerBackend:
             progress=progress,
         )
 
+    def forecast_workload(self, **kwargs: Any) -> object:
+        """Forecast daily workload bands from the resident warmed state."""
+        forecast = getattr(self._runtime, "forecast_workload", None)
+        if not self._runtime_owns_warm_up_state() or not callable(forecast):
+            raise ValueError("RWKV backend does not support workload forecasts")
+        return forecast(**kwargs)
+
+    def forecast_instant_workload(self, **kwargs: Any) -> object:
+        """Forecast with the Instant model and recorded review timing."""
+        forecast = getattr(self._runtime, "forecast_instant_workload", None)
+        if not self._runtime_owns_warm_up_state() or not callable(forecast):
+            raise ValueError("RWKV backend does not support Instant forecasts")
+        return forecast(**kwargs)
+
+    def forecast_history_predictions(self, **kwargs: Any) -> list[tuple[int, float]]:
+        """Replay calibration history without changing the resident state."""
+        replay = getattr(self._runtime, "forecast_history_predictions", None)
+        if not self._runtime_owns_warm_up_state() or not callable(replay):
+            raise ValueError("RWKV backend does not support forecast calibration")
+        return cast(list[tuple[int, float]], replay(**kwargs))
+
     def compare_workloads(
         self,
         *,
@@ -3679,6 +3713,7 @@ def _invalidate_all_reviewer_backend_runtime_state_locked() -> None:
     _rwkv_memorised_history_identity_cache.clear()
     _rwkv_collection_mutation_undo_entries.clear()
     _rwkv_collection_mutation_redo_entries.clear()
+    _clear_rwkv_forecast_replay_cache()
 
 
 def _invalidate_reviewer_backend_runtime_state_for_profile_open() -> None:
@@ -5331,14 +5366,18 @@ def record_reviewer_answer(
                 return
             if rwkv_review_active(
                 reviewer, card
-            ) and not _prepare_reviewer_backend_for_review(reviewer):
+            ) and not _reviewer_backend_ready_for_review(reviewer):
+                # The answer is already in the collection. Restoring now can
+                # replay it from the review log, so applying it again below
+                # would advance the recurrent state twice. Leave the state
+                # cold and let the next cache preparation replay it once.
                 _invalidate_reviewer_backend_state(
                     reviewer,
-                    reason="review answered before warm-up completed",
+                    reason="review answered while RWKV state was cold",
                     preserve_cold_fallback=True,
                     expected_mutation_context=mutation_context,
                 )
-                logger.debug("RWKV answer update skipped: warm-up pending")
+                logger.debug("RWKV answer update deferred: state is cold")
                 return
             if not _reviewer_backend_mutation_context_is_current(
                 mutation_context,
@@ -8950,6 +8989,11 @@ def rwkv_review_input(
             reviewer=reviewer,
             card=card,
             states=_scheduling_states(reviewer),
+            apply_grade_rules=(
+                ease is None
+                and isinstance(deck_config, dict)
+                and _rwkv_review_config_enabled(deck_config)
+            ),
         ),
         enforce_grade_order=(
             not isinstance(deck_config, dict)
@@ -9160,25 +9204,65 @@ def _rwkv_target_retentions(
     reviewer: object,
     card: object,
     states: SchedulingStates | None,
+    apply_grade_rules: bool,
 ) -> tuple[float | None, float | None, float | None, float | None]:
+    desired_retention = _rwkv_base_target_retention(reviewer, card)
+    retentions: tuple[float, ...] = (desired_retention,) * 4
     if states is not None and getattr(
         states, "dynamic_desired_retention_enabled", False
     ):
-        retentions = tuple(
+        dynamic_retentions = tuple(
             value
             for value in getattr(states, "dynamic_desired_retentions", [])
             if _valid_probability(value)
         )
-        if len(retentions) == 4:
-            return cast(tuple[float, float, float, float], retentions)
+        if len(dynamic_retentions) == 4:
+            retentions = dynamic_retentions
 
+    if apply_grade_rules:
+        grade_retentions = _rwkv_grade_retentions(desired_retention)
+        retentions = tuple(
+            grade_retentions.get(grade, retention)
+            for grade, retention in zip(_RWKV_RATING_FIELDS, retentions, strict=True)
+        )
+    return cast(tuple[float, float, float, float], retentions)
+
+
+def _rwkv_base_target_retention(reviewer: object, card: object) -> float:
     desired_retention = _reviewer_desired_retention_override(reviewer)
     if desired_retention is None:
         desired_retention = _desired_retention_for_card(reviewer, card)
     if desired_retention is None:
         desired_retention = _RWKV_DEFAULT_TARGET_RETENTION
+    return desired_retention
 
-    return (desired_retention, desired_retention, desired_retention, desired_retention)
+
+def _rwkv_grade_retentions(desired_retention: float) -> dict[str, float]:
+    resolver = _dynamic_desired_retention_api_function("review_grade_retentions")
+    if resolver is None:
+        return {}
+    resolved = resolver(current_desired_retention=desired_retention)
+    if not isinstance(resolved, Mapping):
+        return {}
+    return {
+        grade: float(value)
+        for grade in _RWKV_RATING_FIELDS
+        if _valid_probability(value := resolved.get(grade))
+    }
+
+
+def current_reviewer_curve_grade_retentions(
+    reviewer: object, card: object
+) -> dict[str, float] | None:
+    """Return grade targets used for the current Curve prediction, if applied."""
+    prediction = _current_reviewer_prediction(reviewer, card)
+    if (
+        prediction is None
+        or not prediction.interval_override_used
+        or not rwkv_review_enabled(reviewer, card)
+    ):
+        return None
+    return _rwkv_grade_retentions(_rwkv_base_target_retention(reviewer, card))
 
 
 def _reviewer_desired_retention_override(reviewer: object) -> float | None:
@@ -10245,6 +10329,7 @@ def _invalidate_reviewer_backend_state(
             setattr(mw, "_rwkv_state_cache_recovery_failed", False)
         key = _reviewer_backend_warmup_key(reviewer)
         _clear_rwkv_review_queue_score_cache()
+        _clear_rwkv_forecast_replay_cache()
         if (
             key is not None
             and _reviewer_backend is not None
@@ -10373,6 +10458,7 @@ def _mark_reviewer_backend_identity_unknown(
         else:
             _reviewer_backend_cold_fallback_generations.pop(key, None)
         _rwkv_review_queue_score_generations.clear()
+        _clear_rwkv_forecast_replay_cache()
     logger.debug(
         "RWKV resident identity cleared: reason=%s generation=%s",
         reason,
@@ -10410,6 +10496,7 @@ def _invalidate_reviewer_backend_states(
             )
         if matching_keys:
             _clear_rwkv_review_queue_score_cache()
+            _clear_rwkv_forecast_replay_cache()
     if matching_keys:
         logger.debug(
             "RWKV resident states invalidated: reason=%s collections=%s",
@@ -14963,6 +15050,1535 @@ def simulate_rwkv_workload(
             _set_rwkv_workload_progress(progress_total, progress_total)
 
     return response
+
+
+RWKV_FORECAST_SCHEDULER_RWKV = 0
+RWKV_FORECAST_SCHEDULER_FSRS = 1
+RWKV_FORECAST_SCHEDULER_SM2 = 2
+_RWKV_FORECAST_SCHEDULER_NAMES = {
+    RWKV_FORECAST_SCHEDULER_RWKV: "rwkv",
+    RWKV_FORECAST_SCHEDULER_FSRS: "fsrs",
+    RWKV_FORECAST_SCHEDULER_SM2: "sm2",
+}
+_RWKV_FORECAST_BAND_KEYS = ("mean", "p1", "p5", "p50", "p95", "p99")
+_RWKV_FORECAST_METRICS = ("due", "done", "new", "lapses", "seconds")
+# Sampled historical days: minimum answers (with a fallback of two when fewer
+# than the minimum number of days qualify) and shrinkage strengths.
+_RWKV_FORECAST_POOL_MIN_ANSWERS = 10
+_RWKV_FORECAST_POOL_MIN_DAYS = 7
+# Session timing and answer durations drift with the user's habits, so the
+# sampled days and the review-time regression use the most recent days only,
+# unless too few qualifying days fall in that window.
+_RWKV_FORECAST_TIMING_DAYS = 90
+_RWKV_FORECAST_SHARE_PRIOR = 20
+_RWKV_FORECAST_DURATION_PRIOR = 30
+
+
+class _RwkvForecastReplaySource(NamedTuple):
+    """Canonical history rows to replay, and what identifies them in the cache.
+
+    Converting the rows to review inputs is deferred until the calibration cache
+    misses, because it is the second most expensive step after the replay.
+    """
+
+    # None when the history cannot be identified confidently: never cached.
+    history_key: tuple[object, ...] | None
+    profile: tuple[object, ...]
+    state_key: tuple[int, int]
+    state_generation: int
+    # Predictions for answers from this scheduler day on can be targets.
+    window_start: int
+    rows: Sequence[Any]
+
+
+class _RwkvInstantForecastHistory(NamedTuple):
+    patterns: list[tuple[int, list[tuple[int, int]]]]
+    review_model: _RwkvSimulatorReviewModel
+    success_shares_by_day: dict[int, tuple[float, float, float]]
+    recent_card_ids: list[int]
+    latest_answers_today: dict[int, tuple[int, int]]
+    calibration_targets: dict[int, tuple[int, int]]
+    calibration_replay: _RwkvForecastReplaySource | None
+    # First scheduler day of the sampled timing days (the review-time window).
+    timing_window_start: int | None = None
+
+
+def _rwkv_forecast_review_history(
+    reviewer: object,
+    *,
+    deck_ids: set[int],
+    recent_count: int,
+    include_calibration: bool = False,
+) -> _RwkvInstantForecastHistory:
+    """Use Anki's canonical history API to capture real review timing."""
+
+    from aqt.rwkv_forecast_timing import review_timing_patterns
+    from aqt.rwkv_history import history_fingerprint_request
+
+    timing = _timing_today(reviewer)
+    today = getattr(timing, "days_elapsed", None)
+    next_day_at = getattr(timing, "next_day_at", None)
+    if not isinstance(today, int) or not isinstance(next_day_at, int):
+        raise ValueError("Unable to determine the forecast's scheduler day")
+    col = _collection(reviewer)
+    backend = getattr(col, "_backend", None)
+    build = getattr(backend, "rwkv_historical_review_inputs", None)
+    if not callable(build):
+        raise ValueError("RWKV review history is unavailable for the forecast")
+    # Read before the history so that a later state change is never missed.
+    state_key = (id(_reviewer_backend), id(col))
+    with _reviewer_backend_state_lock:
+        state_generation = _reviewer_backend_warmup_generations.get(state_key, 0)
+    history_request = history_fingerprint_request(reviewer, frozenset())
+    history = build(
+        scheduler_pb2.RwkvHistoricalReviewInputsRequest(history=history_request)
+    )
+    rows = [
+        row
+        for row in history.reviews
+        if 1 <= row.ease <= 4 and int(row.deck_id) in deck_ids
+    ]
+    patterns = review_timing_patterns(
+        (
+            (int(row.review_id), int(row.day_offset), int(row.duration_millis))
+            for row in rows
+        ),
+        today=today,
+        next_day_at=next_day_at,
+    )
+    # Prefer days with enough answers to describe a real session; very short
+    # days are only used when too few days qualify.
+    pool = [
+        (day, events)
+        for day, events in patterns
+        if len(events) >= _RWKV_FORECAST_POOL_MIN_ANSWERS
+    ]
+    if len(pool) < _RWKV_FORECAST_POOL_MIN_DAYS:
+        pool = [(day, events) for day, events in patterns if len(events) >= 2]
+    recent_pool = [
+        (day, events)
+        for day, events in pool
+        if day >= today - _RWKV_FORECAST_TIMING_DAYS
+    ]
+    if len(recent_pool) >= _RWKV_FORECAST_POOL_MIN_DAYS:
+        pool = recent_pool
+    patterns = pool
+    if not patterns:
+        raise ValueError("The Instant forecast needs past review timings")
+    # Short days would otherwise have their few durations cycled over hundreds
+    # of simulated answers, so pull them toward the pooled mean duration.
+    pool_answers = sum(len(events) for _, events in patterns)
+    pool_mean_duration = (
+        sum(duration for _, events in patterns for _, duration in events) / pool_answers
+    )
+    patterns = [
+        (
+            day,
+            events
+            if len(events) >= _RWKV_FORECAST_DURATION_PRIOR
+            else [
+                (
+                    second,
+                    max(
+                        1,
+                        round(
+                            (
+                                len(events) * duration
+                                + _RWKV_FORECAST_DURATION_PRIOR * pool_mean_duration
+                            )
+                            / (len(events) + _RWKV_FORECAST_DURATION_PRIOR)
+                        ),
+                    ),
+                )
+                for second, duration in events
+            ],
+        )
+        for day, events in patterns
+    ]
+    counts = [0, 0, 0, 0]
+    totals = [0, 0, 0, 0]
+    for row in rows:
+        if today - 365 <= row.day_offset < today:
+            index = int(row.ease) - 1
+            counts[index] += 1
+            totals[index] += max(0, int(row.duration_millis))
+    success_count = sum(counts[1:])
+    if not success_count:
+        raise ValueError("The Instant forecast needs past successful review answers")
+    shares = cast(
+        tuple[float, float, float, float],
+        (0.0, *(count / success_count for count in counts[1:])),
+    )
+    review_model = _RwkvSimulatorReviewModel(
+        grade_seconds=cast(
+            tuple[float, float, float, float],
+            tuple(
+                totals[index] / counts[index] / 1000
+                if counts[index]
+                else _RWKV_SIMULATOR_DEFAULT_GRADE_SECONDS[index]
+                for index in range(4)
+            ),
+        ),
+        bucket_probabilities={
+            bucket: shares for bucket in range(_RWKV_SIMULATOR_BUCKET_COUNT)
+        },
+    )
+    counts_by_day: dict[int, list[int]] = {}
+    for row in rows:
+        if 2 <= row.ease <= 4:
+            counts_by_day.setdefault(int(row.day_offset), [0, 0, 0])[
+                int(row.ease) - 2
+            ] += 1
+    # Shrink each sampled day's Hard/Good/Easy shares toward the pooled shares
+    # so a day with few successes does not dominate the simulated answers.
+    pooled_counts = [0, 0, 0]
+    for day, _events in patterns:
+        for index, count in enumerate(counts_by_day.get(day, [0, 0, 0])):
+            pooled_counts[index] += count
+    pooled_total = sum(pooled_counts)
+    success_shares_by_day = {}
+    for day, _events in patterns:
+        day_counts = counts_by_day.get(day, [0, 0, 0])
+        total = sum(day_counts)
+        success_shares_by_day[day] = cast(
+            tuple[float, float, float],
+            (
+                tuple(
+                    (count + _RWKV_FORECAST_SHARE_PRIOR * pooled / pooled_total)
+                    / (total + _RWKV_FORECAST_SHARE_PRIOR)
+                    for count, pooled in zip(day_counts, pooled_counts)
+                )
+                if total and pooled_total
+                else shares[1:]
+            ),
+        )
+    recent = (
+        [int(row.card_id) for row in reversed(rows[-recent_count:])]
+        if recent_count
+        else []
+    )
+    latest_today = {
+        int(row.card_id): (int(row.review_kind), int(row.ease))
+        for row in rows
+        if row.day_offset == today
+    }
+    calibration_targets = (
+        {
+            int(row.review_id): (int(row.day_offset), int(row.ease > 1))
+            for row in rows
+            if today - 365 <= row.day_offset < today and row.review_kind == 1
+        }
+        if include_calibration
+        else {}
+    )
+    calibration_counts_by_day: dict[int, int] = {}
+    for day, _ in calibration_targets.values():
+        calibration_counts_by_day[day] = calibration_counts_by_day.get(day, 0) + 1
+    calibratable = (
+        include_calibration
+        and sum(count >= 2 for count in calibration_counts_by_day.values()) >= 2
+    )
+    calibration_replay = (
+        _RwkvForecastReplaySource(
+            _rwkv_forecast_history_key(history_request, history),
+            (id(col), str(getattr(col, "path", None))),
+            state_key,
+            state_generation,
+            today - 365,
+            history.reviews,
+        )
+        if calibratable
+        else None
+    )
+    return _RwkvInstantForecastHistory(
+        patterns,
+        review_model,
+        success_shares_by_day,
+        recent,
+        latest_today,
+        calibration_targets,
+        calibration_replay,
+        min(day for day, _ in patterns),
+    )
+
+
+class _RwkvForecastCalibration(NamedTuple):
+    scale: float
+    days: int
+    observed_sigma: float
+    modeled_sigma: float
+    # Root-mean-square systematic error of the daily residual rate (standard
+    # error of the mean residual plus the measured mean residual).
+    bias_sd: float = 0.0
+    # Modeled answer variance per answer, in units of answers.
+    review_variance: float = 0.0
+
+
+def _rwkv_forecast_bias_sd(days: Mapping[int, tuple[float, float]]) -> float:
+    """Root-mean-square systematic recall error from (residual, count) by day.
+
+    Days are clustered by week when at least four weeks have data, so that
+    correlated errors within a week are not mistaken for independent noise.
+    """
+    clusters: dict[int, list[float]] = {}
+    weeks = {day // 7 for day in days}
+    for day, (residual, count) in days.items():
+        key = day // 7 if len(weeks) >= 4 else day
+        values = clusters.setdefault(key, [0.0, 0.0])
+        values[0] += residual
+        values[1] += count
+    total_count = sum(count for _, count in clusters.values())
+    if len(clusters) < 2 or total_count <= 0:
+        return 0.0
+    mean = sum(residual for residual, _ in clusters.values()) / total_count
+    spread = sum(
+        (residual - mean * count) ** 2 for residual, count in clusters.values()
+    )
+    groups = len(clusters)
+    variance = groups / (groups - 1) * spread / total_count**2
+    return math.sqrt(variance + mean**2)
+
+
+def _rwkv_forecast_history_calibration(
+    targets: Mapping[int, tuple[int, int]],
+    review_ids: Sequence[int],
+    predictions: Iterable[tuple[int, float]],
+) -> _RwkvForecastCalibration | None:
+    """Compare daily residual variance with the answer randomness already modeled."""
+    by_day: dict[int, list[float]] = {}
+    for index, prediction in predictions:
+        if not 0 <= index < len(review_ids) or not 0.0 <= prediction <= 1.0:
+            continue
+        target = targets.get(review_ids[index])
+        if target is not None:
+            day, actual = target
+            values = by_day.setdefault(day, [0.0, 0.0, 0.0])
+            values[0] += actual - prediction
+            values[1] += 1
+            values[2] += prediction * (1.0 - prediction)
+    kept = {day: values for day, values in by_day.items() if values[1] >= 2}
+    daily = [
+        (total / count, variance / count**2) for total, count, variance in kept.values()
+    ]
+    if len(daily) < 2:
+        return None
+    mean = sum(residual for residual, _ in daily) / len(daily)
+    observed_variance = sum((residual - mean) ** 2 for residual, _ in daily) / (
+        len(daily) - 1
+    )
+    modeled_variance = sum(variance for _, variance in daily) / len(daily)
+    if modeled_variance <= 1e-12:
+        return None
+    # A small model-based prior avoids an extreme correction from a few days.
+    prior_days = 20
+    degrees = len(daily) - 1
+    scale = math.sqrt(
+        (degrees * observed_variance + prior_days * modeled_variance)
+        / ((degrees + prior_days) * modeled_variance)
+    )
+    answers = sum(values[1] for values in kept.values())
+    return _RwkvForecastCalibration(
+        scale,
+        len(daily),
+        math.sqrt(observed_variance),
+        math.sqrt(modeled_variance),
+        _rwkv_forecast_bias_sd(
+            {day: (values[0], values[1]) for day, values in kept.items()}
+        ),
+        sum(values[2] for values in kept.values()) / answers,
+    )
+
+
+# Replay predictions that calibration can use, by review. They depend only on the
+# history, the model and the profile (not the search or horizon), so a later
+# forecast skips the whole-history replay. Two entries cover a profile switch.
+_RWKV_FORECAST_REPLAY_CACHE_SIZE = 2
+
+
+class _RwkvForecastReplayPredictions(NamedTuple):
+    window_start: int
+    review_ids: array
+    predictions: array
+    elapsed_ms: float
+
+
+_rwkv_forecast_replay_cache: OrderedDict[
+    tuple[object, ...], _RwkvForecastReplayPredictions
+] = OrderedDict()
+_rwkv_forecast_replay_cache_lock = threading.Lock()
+
+
+def _clear_rwkv_forecast_replay_cache() -> None:
+    with _rwkv_forecast_replay_cache_lock:
+        _rwkv_forecast_replay_cache.clear()
+
+
+def _rwkv_forecast_history_key(
+    request: object, history: object
+) -> tuple[object, ...] | None:
+    """Identify the replayed history: selection, size, last review and a digest.
+
+    The digest covers every field of every row (and so every field the replay
+    reads), not only the review, card, ease and kind. None means unidentifiable.
+    """
+    try:
+        reviews = getattr(history, "reviews")
+        serialize = getattr(history, "SerializeToString", None)
+        digest = hashlib.blake2b(digest_size=16)
+        if callable(serialize):
+            digest.update(serialize(deterministic=True))
+        else:
+            for row in reviews:
+                digest.update(row.SerializeToString())
+        request_digest = hashlib.blake2b(
+            request.SerializeToString(deterministic=True),  # type: ignore[attr-defined]
+            digest_size=16,
+        ).hexdigest()
+        return (
+            len(reviews),
+            max((int(row.review_id) for row in reviews), default=0),
+            request_digest,
+            digest.hexdigest(),
+        )
+    except Exception:
+        logger.debug("unable to identify the forecast history", exc_info=True)
+        return None
+
+
+def _rwkv_forecast_runtime_identity(backend: object) -> tuple[object, ...] | None:
+    """What decides a replayed prediction besides the history; None if unknown."""
+    model = getattr(backend, "model_name", None)
+    precision = getattr(backend, "state_precision", None)
+    if not isinstance(model, str) or not isinstance(precision, str):
+        return None
+    return (
+        id(backend),
+        type(backend).__qualname__,
+        model,
+        getattr(backend, "instant_model_name", None),
+        precision,
+        os.environ.get("ANKI_RWKV_MODEL_PATH"),
+    )
+
+
+def _rwkv_forecast_replay_cache_key(
+    backend: object, source: _RwkvForecastReplaySource
+) -> tuple[object, ...] | None:
+    runtime = _rwkv_forecast_runtime_identity(backend)
+    if runtime is None or source.history_key is None:
+        return None
+    with _reviewer_backend_state_lock:
+        # A state change since the history was read (template edit, sync,
+        # history edit, profile switch, model change) bumps the generation.
+        if (
+            _reviewer_backend_warmup_generations.get(source.state_key, 0)
+            != source.state_generation
+        ):
+            return None
+    return (
+        source.profile,
+        source.state_key,
+        source.state_generation,
+        source.history_key,
+        runtime,
+    )
+
+
+def _rwkv_forecast_replay_predictions(
+    backend: object,
+    replay: Callable[..., Sequence[tuple[int, float]]],
+    source: _RwkvForecastReplaySource,
+    report_progress: RwkvWorkloadProgressCallback,
+    paths: int,
+) -> _RwkvForecastReplayPredictions:
+    """Replay the whole history, keeping only the predictions calibration reads."""
+    from aqt.rwkv_history import review_input_from_row
+
+    started = time.monotonic()
+    key = _rwkv_forecast_replay_cache_key(backend, source)
+    if key is not None:
+        with _rwkv_forecast_replay_cache_lock:
+            cached = _rwkv_forecast_replay_cache.get(key)
+            # Targets are the last 365 days: a window not older than the cached
+            # one is covered (the clock moving backwards is not).
+            if cached is not None and cached.window_start <= source.window_start:
+                _rwkv_forecast_replay_cache.move_to_end(key)
+                logger.debug(
+                    "RWKV Instant forecast replay cache hit: reviews=%s "
+                    "kept=%s saved_ms=%.1f lookup_ms=%.1f",
+                    len(source.rows),
+                    len(cached.review_ids),
+                    cached.elapsed_ms,
+                    (time.monotonic() - started) * 1000,
+                )
+                return cached
+    reviews = [review_input_from_row(row) for row in source.rows]
+    predictions = replay(
+        reviews=reviews,
+        progress=lambda _current, _total: report_progress(0, paths),
+    )
+    del reviews
+    review_ids = array("q")
+    kept = array("d")
+    for index, prediction in predictions:
+        if 0 <= index < len(source.rows) and (
+            int(source.rows[index].day_offset) >= source.window_start
+        ):
+            review_ids.append(int(source.rows[index].review_id))
+            kept.append(float(prediction))
+    result = _RwkvForecastReplayPredictions(
+        source.window_start,
+        review_ids,
+        kept,
+        (time.monotonic() - started) * 1000,
+    )
+    stored = False
+    if key is not None:
+        with _reviewer_backend_state_lock:
+            # Skip the store if the state changed while the replay ran.
+            current = (
+                _reviewer_backend_warmup_generations.get(source.state_key, 0)
+                == source.state_generation
+            )
+        if current:
+            with _rwkv_forecast_replay_cache_lock:
+                _rwkv_forecast_replay_cache[key] = result
+                _rwkv_forecast_replay_cache.move_to_end(key)
+                while (
+                    len(_rwkv_forecast_replay_cache) > _RWKV_FORECAST_REPLAY_CACHE_SIZE
+                ):
+                    _rwkv_forecast_replay_cache.popitem(last=False)
+            stored = True
+    logger.debug(
+        "RWKV Instant forecast replay cache miss: reviews=%s kept=%s stored=%s "
+        "spent_ms=%.1f",
+        len(source.rows),
+        len(kept),
+        stored,
+        result.elapsed_ms,
+    )
+    return result
+
+
+def _rwkv_forecast_calibration(
+    backend: object,
+    history: _RwkvInstantForecastHistory,
+    report_progress: RwkvWorkloadProgressCallback,
+    paths: int,
+    replayed: _RwkvForecastReplayPredictions | None = None,
+) -> _RwkvForecastCalibration | None:
+    replay = getattr(backend, "forecast_history_predictions", None)
+    source = history.calibration_replay
+    if source is None or not source.rows or not callable(replay):
+        return None
+    report_progress(0, paths)
+    if replayed is None:
+        replayed = _rwkv_forecast_replay_predictions(
+            backend, replay, source, report_progress, paths
+        )
+    # Recomputed on every run: the targets depend on today.
+    return _rwkv_forecast_history_calibration(
+        history.calibration_targets,
+        replayed.review_ids,
+        enumerate(replayed.predictions),
+    )
+
+
+class _RwkvForecastReviewTimeModel(NamedTuple):
+    reference_seconds: float
+    grades: tuple[tuple[float, float, float, float, float] | None, ...]
+    samples: int
+
+
+def _rwkv_forecast_review_time_model(
+    history: _RwkvInstantForecastHistory,
+    replayed: _RwkvForecastReplayPredictions | None,
+) -> _RwkvForecastReviewTimeModel | None:
+    """Fit the simulator's per-grade R regressions without reading the live DB."""
+    source = history.calibration_replay
+    if source is None or replayed is None or not history.patterns:
+        return None
+    # The regression level comes from the same days as the sampled durations
+    # it rescales. A grade with too few samples there keeps its sampled
+    # duration, as when the replay is unavailable.
+    window_start = history.timing_window_start
+    targets = {
+        int(row.review_id): (int(row.ease), int(row.duration_millis))
+        for row in source.rows
+        if int(row.review_id) in history.calibration_targets
+        and (window_start is None or int(row.day_offset) >= window_start)
+        and 1 <= row.ease <= 4
+        and 0 < row.duration_millis < _RWKV_SIMULATOR_MAX_TAKEN_MILLIS
+    }
+    samples: list[list[tuple[float, float]]] = [[], [], [], []]
+    for review_id, recall in zip(
+        replayed.review_ids, replayed.predictions, strict=True
+    ):
+        target = targets.get(review_id)
+        if target is not None and 0.0 <= recall <= 1.0:
+            grade, millis = target
+            samples[grade - 1].append((recall, millis / 1000.0))
+    # Days are sampled equally, regardless of how many answers they contain.
+    reference = (
+        sum(
+            sum(duration for _, duration in events) / len(events)
+            for _, events in history.patterns
+        )
+        / len(history.patterns)
+        / 1000.0
+    )
+    if not math.isfinite(reference) or reference <= 0:
+        return None
+    grades: list[tuple[float, float, float, float, float] | None] = []
+    for grade_samples in samples:
+        if len(grade_samples) < 5:
+            grades.append(None)
+            continue
+        mean = sum(seconds for _, seconds in grade_samples) / len(grade_samples)
+        intercept, slope, *_ = _rwkv_simulator_review_time_coeffs(grade_samples, mean)
+        recalls = [recall for recall, _ in grade_samples]
+        grades.append((intercept, slope, min(recalls), max(recalls), mean))
+    if not any(grade is not None for grade in grades):
+        return None
+    return _RwkvForecastReviewTimeModel(
+        reference,
+        tuple(grades),
+        sum(
+            len(group)
+            for group, grade in zip(samples, grades, strict=True)
+            if grade is not None
+        ),
+    )
+
+
+def _rwkv_forecast_prepare_review_time(
+    backend: object,
+    history: _RwkvInstantForecastHistory,
+    report_progress: RwkvWorkloadProgressCallback,
+    paths: int,
+) -> tuple[_RwkvForecastReviewTimeModel | None, _RwkvForecastCalibration | None]:
+    replayed = None
+    replay = getattr(backend, "forecast_history_predictions", None)
+    if history.calibration_replay is not None and callable(replay):
+        report_progress(0, paths)
+        replayed = _rwkv_forecast_replay_predictions(
+            backend, replay, history.calibration_replay, report_progress, paths
+        )
+    model = _rwkv_forecast_review_time_model(history, replayed)
+    logger.debug(
+        "RWKV Instant forecast review-time model: samples=%s grades=%s",
+        model.samples if model else 0,
+        sum(grade is not None for grade in model.grades) if model else 0,
+    )
+    calibration = None
+    if paths == 3:
+        calibration_started = time.monotonic()
+        calibration = _rwkv_forecast_calibration(
+            backend, history, report_progress, paths, replayed
+        )
+        logger.debug(
+            "RWKV Instant forecast answer calibration: days=%s "
+            "observed_sigma=%s modeled_sigma=%s scale=%s elapsed_ms=%.1f",
+            calibration.days if calibration else 0,
+            calibration.observed_sigma if calibration else None,
+            calibration.modeled_sigma if calibration else None,
+            calibration.scale if calibration else None,
+            (time.monotonic() - calibration_started) * 1000,
+        )
+    return model, calibration
+
+
+class _RwkvInstantForecastScope(NamedTuple):
+    decks: list[bytes]
+    deck_configs: list[bytes]
+    study_deck_id: int
+    instant_decks: set[int]
+    curve_decks: set[int]
+    study_config: deck_config_pb2.DeckConfig.Config
+
+
+def _rwkv_instant_forecast_scope(
+    col: object, cards: Sequence[RwkvForecastCardInput]
+) -> _RwkvInstantForecastScope:
+    """Read deck and preset snapshots through Anki's collection APIs."""
+    manager = getattr(col, "decks")
+    backend = getattr(col, "_backend")
+    names = {
+        str(entry.name): int(entry.id)
+        for entry in manager.all_names_and_ids(include_filtered=False)
+    }
+    by_id = {deck_id: name for name, deck_id in names.items()}
+    card_decks = {card.group for card in cards}
+    if not card_decks <= by_id.keys():
+        raise ValueError("The Instant forecast cannot simulate filtered decks")
+    selected = int(manager.selected())
+    selected_name = by_id.get(selected)
+    selected_scope = bool(selected_name) and all(
+        by_id[deck_id] == selected_name
+        or by_id[deck_id].startswith(f"{selected_name}::")
+        for deck_id in card_decks
+    )
+    required_names: set[str] = set()
+    root_for_deck: dict[int, int] = {}
+    include_parents = bool(
+        _rwkv_forecast_col_config(col, "applyAllParentLimits", False)
+    )
+    for deck_id in card_decks:
+        name = by_id[deck_id]
+        pieces = name.split("::")
+        ancestors = ["::".join(pieces[:index]) for index in range(1, len(pieces) + 1)]
+        if selected_scope and not include_parents:
+            ancestors = ancestors[ancestors.index(selected_name) :]
+        required_names.update(ancestor for ancestor in ancestors if ancestor in names)
+        root_for_deck[deck_id] = selected if selected_scope else names[ancestors[0]]
+    required_ids = {names[name] for name in required_names}
+    study_deck_id = (
+        selected
+        if selected in required_ids
+        else root_for_deck[min(card_decks, key=lambda did: by_id[did])]
+    )
+    deck_protos = [backend.get_deck(names[name]) for name in sorted(required_names)]
+    config_ids = {int(deck.normal.config_id) for deck in deck_protos}
+    configs = {
+        config_id: backend.get_deck_config(config_id) for config_id in config_ids
+    }
+    deck_by_id = {int(deck.id): deck for deck in deck_protos}
+    study_config = configs[int(deck_by_id[study_deck_id].normal.config_id)].config
+    instant_decks = {
+        deck_id
+        for deck_id, root in root_for_deck.items()
+        if (
+            configs[
+                int(deck_by_id[root].normal.config_id)
+            ].config.rwkv_review_instant_order_enabled
+            and (
+                configs[
+                    int(deck_by_id[deck_id].normal.config_id)
+                ].config.rwkv_review_instant_order_enabled
+                or configs[
+                    int(deck_by_id[deck_id].normal.config_id)
+                ].config.rwkv_review_enabled
+            )
+        )
+        or (
+            not selected_scope
+            and configs[
+                int(deck_by_id[deck_id].normal.config_id)
+            ].config.rwkv_review_instant_order_enabled
+        )
+    }
+    curve_decks = {
+        deck_id
+        for deck_id in card_decks
+        if configs[int(deck_by_id[deck_id].normal.config_id)].config.rwkv_review_enabled
+    }
+    return _RwkvInstantForecastScope(
+        [deck.SerializeToString() for deck in deck_protos],
+        [config.SerializeToString() for config in configs.values()],
+        study_deck_id,
+        instant_decks,
+        curve_decks,
+        study_config,
+    )
+
+
+def _rwkv_instant_forecast_rebase_cards(
+    cards: Sequence[RwkvForecastCardInput],
+    elapsed_since: Mapping[int, int],
+    *,
+    now: int,
+    today: int,
+    next_day_at: int,
+) -> list[RwkvForecastCardInput]:
+    """Refresh elapsed times after potentially slow history preparation."""
+    rebased = []
+    for card in cards:
+        review = card.review_input
+        since = elapsed_since.get(review.identity.card_id)
+        if since is not None:
+            seconds = max(0, now - since)
+            if review.card_type == CARD_TYPE_NEW:
+                days = seconds // 86_400
+            elif review.card_type == CARD_TYPE_LRN:
+                days = None
+            else:
+                days = max(0, (next_day_at - since) // 86_400)
+            review = replace(
+                review, current_elapsed_seconds=seconds, current_elapsed_days=days
+            )
+        due_day = card.due_day
+        if review.card_queue in (2, 3) and review.card_due is not None:
+            due_day = int(review.card_due) - today
+        rebased.append(
+            replace(
+                card, review_input=replace(review, day_offset=today), due_day=due_day
+            )
+        )
+    return rebased
+
+
+def forecast_rwkv_workload(
+    *,
+    mw: object | None = None,
+    search: str = "",
+    days: int = 30,
+    paths: int = 200,
+    seed: int = 0,
+    state_update_interval: int = 1,
+    fast: bool = False,
+    max_interval: int = 36500,
+    progress: RwkvWorkloadProgressCallback | None = None,
+    partial_progress: Callable[[dict[str, object], int, int, Sequence[float]], None]
+    | None = None,
+    cancel_event: threading.Event | None = None,
+) -> dict[str, object]:
+    """Forecast the daily workload of the cards matched by `search`.
+
+    Add-on API (see docs/rwkv.MD, "Workload forecast"). Simulates `paths`
+    seeded answer paths of `days` days from the current RWKV state, each
+    preset at its own desired retention (Dynamic DR included), scheduler and
+    per-deck limits, and returns plain data: per day, mean/p1/p5/p50/p95/p99
+    of reviews due, reviews done, new cards, lapses and answer seconds.
+    """
+
+    if mw is None:
+        import aqt
+
+        mw = aqt.mw
+    days = int(days)
+    paths = int(paths)
+    if not 1 <= days <= 365:
+        raise ValueError("forecast days must be 1..365")
+    if not 1 <= paths <= 2000:
+        raise ValueError("forecast paths must be 1..2000")
+    reviewer = SimpleNamespace(mw=mw)
+    if not configure_reviewer_backend_from_environment() or _reviewer_backend is None:
+        raise ValueError("RWKV backend is not available")
+    if not _reviewer_backend_warmed_up(reviewer) and not load_rwkv_state_cache(mw):
+        raise ValueError("RWKV state cache is not ready. Build it first.")
+    backend = _reviewer_backend
+    supports_resident = getattr(backend, "supports_resident_workload_simulation", None)
+    forecast = getattr(backend, "forecast_workload", None)
+    if (
+        not callable(supports_resident)
+        or not supports_resident()
+        or not callable(forecast)
+    ):
+        raise ValueError("RWKV backend does not support workload forecasts")
+
+    input_build = _rwkv_review_input_batches_for_search(
+        reviewer=reviewer,
+        search=search,
+        include_suspended_review=False,
+        include_new_cards=True,
+        batch_size_override=None,
+        include_comparison_data=True,
+        track_elapsed_since=True,
+        # FSRS and SM-2 presets are forecast with their own schedulers.
+        include_disabled_decks=True,
+    )
+    if input_build is None:
+        raise ValueError("Unable to load RWKV review inputs for the requested search")
+    input_build = _resolve_dynamic_desired_retentions_for_input_build(
+        reviewer, input_build
+    )
+    col = _collection(reviewer)
+    all_inputs = [
+        review_input
+        for batch in input_build.inputs_by_batch_size.values()
+        for _, review_input in batch
+        if review_input.card_type
+        in (CARD_TYPE_NEW, CARD_TYPE_LRN, CARD_TYPE_REV, CARD_TYPE_RELEARNING)
+        and not review_input.in_filtered_deck
+    ]
+    # Keep the existing Curve forecast unchanged. Instant includes cards in
+    # learning because their next answer can affect the shared model state.
+    all_cards, groups, new_cards_ignore_review_limit = _rwkv_forecast_cards_and_groups(
+        col, all_inputs
+    )
+    scope = None
+    if (
+        all_cards
+        and col is not None
+        and _rwkv_collection_config_state(reviewer).instant_enabled
+    ):
+        scope = _rwkv_instant_forecast_scope(col, all_cards)
+    instant_used = bool(
+        scope and (scope.instant_decks or _rwkv_runtime_models().curve_model is None)
+    )
+    if instant_used:
+        cards = all_cards
+    else:
+        cards, groups, new_cards_ignore_review_limit = _rwkv_forecast_cards_and_groups(
+            col,
+            [
+                review_input
+                for _, review_input, _ in _rwkv_simulation_inputs(input_build)
+            ],
+        )
+    review_model = None if instant_used else _rwkv_simulator_review_model(reviewer)
+    start = time.monotonic()
+    output: object = (paths, [], [], 0)
+    calibration: _RwkvForecastCalibration | None = None
+    review_time_model: _RwkvForecastReviewTimeModel | None = None
+    if cards:
+        restore_cache_snapshot = getattr(backend, "restore_cache_snapshot", None)
+        with _temporary_reviewer_backend_operation(
+            reviewer,
+            backend,
+            cache_snapshot=_no_rwkv_cache_snapshot,
+            restore_cache_snapshot=restore_cache_snapshot or _no_rwkv_cache_restore,
+            restore_required=lambda: False,
+        ) as temporary:
+            if temporary is None:
+                raise ValueError("RWKV backend state is busy")
+            operation, _snapshot = temporary
+
+            def report_progress(current: int, total: int) -> None:
+                _check_rwkv_workload_cancel(cancel_event)
+                operation.require_current()
+                if progress is not None:
+                    progress(current, total)
+
+            try:
+                if instant_used:
+                    instant_forecast = getattr(
+                        backend, "forecast_instant_workload", None
+                    )
+                    if not callable(instant_forecast):
+                        raise ValueError(
+                            "RWKV backend does not support Instant forecasts"
+                        )
+                    if col is None:
+                        raise ValueError("Anki collection is unavailable")
+                    if scope is None:
+                        raise ValueError(
+                            "Unable to determine the Instant forecast's study deck"
+                        )
+                    if scope.curve_decks:
+                        raise ValueError(
+                            "Instant forecasts do not yet support cards scheduled with RWKV-Curve"
+                        )
+                    timing = _timing_today(reviewer)
+                    today = getattr(timing, "days_elapsed", None)
+                    next_day_at = getattr(timing, "next_day_at", None)
+                    if not isinstance(today, int) or not isinstance(next_day_at, int):
+                        raise ValueError(
+                            "Unable to determine the forecast's scheduler day"
+                        )
+                    min_intervening = int(
+                        scope.study_config.rwkv_review_min_intervening_reviews
+                    )
+                    history = _rwkv_forecast_review_history(
+                        reviewer,
+                        deck_ids={card.group for card in cards},
+                        recent_count=min_intervening,
+                        include_calibration=True,
+                    )
+                    review_time_model, calibration = _rwkv_forecast_prepare_review_time(
+                        backend, history, report_progress, paths
+                    )
+                    history = history._replace(
+                        calibration_targets={}, calibration_replay=None
+                    )
+                    intervening: dict[int, int] = {}
+                    for count, card_id in enumerate(history.recent_card_ids):
+                        intervening.setdefault(card_id, count)
+                    day_start = next_day_at - 86_400
+                    now_millis = int(time.time() * 1000)
+                    cards = _rwkv_instant_forecast_rebase_cards(
+                        cards,
+                        getattr(input_build, "elapsed_since_secs_by_card_id", {}),
+                        now=now_millis // 1000,
+                        today=today,
+                        next_day_at=next_day_at,
+                    )
+                    short_term = bool(
+                        _rwkv_forecast_col_config(
+                            col, "fsrsShortTermWithStepsEnabled", True
+                        )
+                    )
+                    root_config = getattr(col, "decks").config_dict_for_deck_id(
+                        scope.study_deck_id
+                    )
+                    refresh_interval = _rwkv_review_refresh_interval(root_config)
+                    precompute = _rwkv_review_precompute_next_card(root_config)
+                    candidate_refresh = _rwkv_review_candidate_refresh_enabled(
+                        root_config
+                    )
+                    order = int(scope.study_config.review_order)
+                    if not precompute and (
+                        order == _REVIEW_ORDER_RETRIEVABILITY_ASCENDING
+                        or _new_gather_uses_retrievability(root_config)
+                    ):
+                        refresh_interval = 1
+                        candidate_refresh = False
+                    learn_ahead = _rwkv_forecast_col_config(col, "learnAheadSecs", 1200)
+                    if not isinstance(learn_ahead, int):
+                        learn_ahead = 1200
+                    partial_metadata: dict[str, object] = {
+                        "version": 1,
+                        "days": days,
+                        "paths": paths,
+                        "seed": int(seed),
+                        "cards": len(cards),
+                        "model": "instant",
+                    }
+                    if paths == 3:
+                        partial_metadata["scenario_kind"] = "stratified"
+                        if calibration:
+                            partial_metadata["scenario_history_days"] = calibration.days
+                            partial_metadata["scenario_bias_sd"] = calibration.bias_sd
+                        else:
+                            partial_metadata["scenario_calibration"] = (
+                                "insufficient_history"
+                            )
+
+                    def report_day(
+                        path: int, day: int, values: Sequence[float]
+                    ) -> None:
+                        _check_rwkv_workload_cancel(cancel_event)
+                        operation.require_current()
+                        if partial_progress is not None:
+                            partial_progress(partial_metadata, path, day, values)
+
+                    output = instant_forecast(
+                        cards=cards,
+                        decks=scope.decks,
+                        deck_configs=scope.deck_configs,
+                        study_deck_id=scope.study_deck_id,
+                        instant_decks=scope.instant_decks,
+                        timing_patterns=[events for _, events in history.patterns],
+                        timing_pattern_success_shares=[
+                            history.success_shares_by_day[day]
+                            for day, _ in history.patterns
+                        ],
+                        intervening_reviews=intervening,
+                        latest_answers_today=history.latest_answers_today,
+                        days=days,
+                        paths=paths,
+                        seed=int(seed) & 0xFFFFFFFF,
+                        today=today,
+                        new_cards_ignore_review_limit=new_cards_ignore_review_limit,
+                        fsrs_enabled=bool(
+                            _rwkv_forecast_col_config(col, "fsrs", False)
+                        ),
+                        fsrs_learning_queues_disabled=bool(
+                            _rwkv_forecast_col_config(
+                                col, "fsrsLearningQueuesDisabled", False
+                            )
+                        ),
+                        fsrs_short_term_with_steps_enabled=short_term,
+                        learn_ahead_secs=max(0, learn_ahead),
+                        day_start_secs=day_start,
+                        now_millis=max(
+                            0, min(86_399_999, now_millis - day_start * 1000)
+                        ),
+                        same_day_allowed=short_term,
+                        min_intervening_reviews=min_intervening,
+                        min_elapsed_secs=int(
+                            scope.study_config.rwkv_review_min_elapsed_secs
+                        ),
+                        refresh_interval=refresh_interval,
+                        candidate_refresh_enabled=candidate_refresh,
+                        candidate_refresh_limit=_rwkv_review_batch_size(root_config),
+                        precompute_next_card=precompute,
+                        review_order=order,
+                        review_model=history.review_model,
+                        progress=report_progress,
+                        **(
+                            {
+                                "review_time_model": (
+                                    review_time_model.reference_seconds,
+                                    review_time_model.grades,
+                                )
+                            }
+                            if review_time_model
+                            else {}
+                        ),
+                        **(
+                            {
+                                "stratified_answers": True,
+                                "stratified_scale": calibration.scale
+                                if calibration
+                                else 1.0,
+                                "stratified_bias_sd": calibration.bias_sd
+                                if calibration
+                                else 0.0,
+                                "stratified_review_variance": (
+                                    calibration.review_variance if calibration else 0.0
+                                ),
+                            }
+                            if paths == 3
+                            else {}
+                        ),
+                        **({"day_progress": report_day} if partial_progress else {}),
+                    )
+                else:
+                    output = forecast(
+                        cards=cards,
+                        groups=groups,
+                        days=days,
+                        paths=paths,
+                        seed=int(seed) & 0xFFFFFFFF,
+                        default_review_limit=9999,
+                        default_new_limit=0,
+                        new_cards_ignore_review_limit=new_cards_ignore_review_limit,
+                        max_interval=max_interval,
+                        review_order=0,
+                        suspend_after_lapses=None,
+                        state_update_interval=state_update_interval,
+                        single_step_answers=bool(fast),
+                        review_model=review_model,
+                        progress=report_progress,
+                    )
+            except _ReviewerBackendWarmupInvalidated as exc:
+                raise InterruptedError(
+                    "RWKV workload forecast invalidated by state change"
+                ) from exc
+            operation.require_current()
+    result = _rwkv_forecast_result(output, cards, days=days, seed=seed)
+    if instant_used:
+        result["review_time_model"] = (
+            "r_and_grade" if review_time_model else "historical"
+        )
+        if review_time_model:
+            result["review_time_samples"] = review_time_model.samples
+    if instant_used and paths == 3:
+        result["scenario_kind"] = "stratified"
+        if calibration:
+            result["scenario_history_days"] = calibration.days
+            result["scenario_bias_sd"] = calibration.bias_sd
+        else:
+            result["scenario_calibration"] = "insufficient_history"
+    result["elapsed_ms"] = (time.monotonic() - start) * 1000
+    result["state_update_interval"] = (
+        1 if instant_used else max(1, int(state_update_interval))
+    )
+    result["fast"] = bool(fast) and not instant_used
+    result["model"] = "instant" if instant_used else "curve"
+    logger.debug(
+        "RWKV workload forecast finished: search=%r cards=%s days=%s paths=%s "
+        "elapsed_ms=%.1f",
+        search,
+        len(cards),
+        days,
+        paths,
+        result["elapsed_ms"],
+    )
+    return result
+
+
+def _no_rwkv_cache_restore(_snapshot: object) -> None:
+    return None
+
+
+def _rwkv_forecast_cards_and_groups(
+    col: object | None,
+    review_inputs: Sequence[RwkvReviewInput],
+) -> tuple[list[RwkvForecastCardInput], list[tuple[int, int, int, int, int]], bool]:
+    """Per card: scheduler, desired retention, due day and deck limit group."""
+
+    decks = getattr(col, "decks", None)
+    today = getattr(getattr(col, "sched", None), "today", None)
+    fsrs_enabled = bool(_rwkv_forecast_col_config(col, "fsrs", False))
+    ignore_review_limit = bool(
+        _rwkv_forecast_col_config(col, "newCardsIgnoreReviewLimit", False)
+    )
+    config_by_deck: dict[int, dict[str, object]] = {}
+    groups: dict[int, tuple[int, int, int, int, int]] = {}
+
+    def deck_config(deck_id: int) -> dict[str, object]:
+        if deck_id not in config_by_deck:
+            config: object = {}
+            getter = getattr(decks, "config_dict_for_deck_id", None)
+            if callable(getter):
+                try:
+                    config = getter(deck_id)
+                except Exception:
+                    logger.debug("forecast: no deck config for deck %s", deck_id)
+            config_by_deck[deck_id] = config if isinstance(config, dict) else {}
+            groups[deck_id] = _rwkv_forecast_group(
+                decks, deck_id, config_by_deck[deck_id], today
+            )
+        return config_by_deck[deck_id]
+
+    cards = []
+    for review_input in review_inputs:
+        deck_id = int(review_input.identity.deck_id or 0)
+        config = deck_config(deck_id)
+        if _rwkv_review_config_active(config):
+            scheduler = RWKV_FORECAST_SCHEDULER_RWKV
+        elif fsrs_enabled:
+            scheduler = RWKV_FORECAST_SCHEDULER_FSRS
+        else:
+            scheduler = RWKV_FORECAST_SCHEDULER_SM2
+        retention: object = review_input.target_retentions[2]
+        if not _rwkv_forecast_retention_valid(retention):
+            retention = config.get("desiredRetention")
+        if not _rwkv_forecast_retention_valid(retention):
+            retention = 0.9
+        cards.append(
+            RwkvForecastCardInput(
+                review_input=review_input,
+                due_day=_rwkv_forecast_due_day(review_input),
+                group=deck_id,
+                desired_retention=float(cast(float, retention)),
+                scheduler=scheduler,
+            )
+        )
+    return cards, list(groups.values()), ignore_review_limit
+
+
+def _rwkv_forecast_retention_valid(value: object) -> bool:
+    return _valid_probability(value) and 0 < float(cast(float, value)) < 1
+
+
+def _rwkv_forecast_col_config(col: object | None, key: str, default: object) -> object:
+    getter = getattr(col, "get_config", None)
+    if not callable(getter):
+        return default
+    try:
+        return getter(key, default)
+    except Exception:
+        return default
+
+
+def _rwkv_forecast_group(
+    decks: object,
+    deck_id: int,
+    config: dict[str, object],
+    today: int | None,
+) -> tuple[int, int, int, int, int]:
+    def per_day(section: str, default: int) -> int:
+        value = config.get(section)
+        limit = value.get("perDay") if isinstance(value, dict) else None
+        return max(0, int(limit)) if isinstance(limit, (int, float)) else default
+
+    deck: object = None
+    getter = getattr(decks, "get", None)
+    if callable(getter):
+        try:
+            deck = getter(deck_id, default=False)
+        except Exception:
+            deck = None
+
+    def done_today(key: str) -> int:
+        value = deck.get(key) if isinstance(deck, dict) else None
+        if (
+            isinstance(value, (list, tuple))
+            and len(value) == 2
+            and today is not None
+            and value[0] == today
+        ):
+            return max(0, int(value[1]))
+        return 0
+
+    return (
+        deck_id,
+        per_day("rev", 9999),
+        per_day("new", 20),
+        done_today("revToday"),
+        done_today("newToday"),
+    )
+
+
+def _rwkv_forecast_due_day(review_input: RwkvReviewInput) -> int | None:
+    """Days until due from today; None lets the curve derive it."""
+
+    if review_input.card_type == CARD_TYPE_NEW:
+        return 0
+    queue = review_input.card_queue
+    if queue in (1, 4):
+        # Intraday (re)learning cards are due today.
+        return 0
+    if queue in (2, 3) and review_input.card_due is not None:
+        if review_input.day_offset is None:
+            return None
+        return max(0, int(review_input.card_due) - int(review_input.day_offset))
+    return None
+
+
+def _rwkv_forecast_result(
+    output: object,
+    cards: Sequence[RwkvForecastCardInput],
+    *,
+    days: int,
+    seed: int,
+) -> dict[str, object]:
+    rows = cast(tuple[Any, ...], output)
+    path_count, day_rows, group_rows, estimated = cast(
+        tuple[int, list[tuple[Any, ...]], list[tuple[Any, ...]], int], rows[:4]
+    )
+    schedulers: dict[str, int] = {}
+    for card in cards:
+        name = _RWKV_FORECAST_SCHEDULER_NAMES[card.scheduler]
+        schedulers[name] = schedulers.get(name, 0) + 1
+    result: dict[str, object] = {
+        "version": 1,
+        "days": int(days),
+        "paths": int(path_count),
+        "seed": int(seed),
+        "cards": len(cards),
+        "cards_by_scheduler": schedulers,
+        "estimated_fsrs_states": int(estimated),
+        "daily": [
+            {
+                "day": int(row[0]),
+                **{
+                    metric: dict(zip(_RWKV_FORECAST_BAND_KEYS, map(float, band)))
+                    for metric, band in zip(_RWKV_FORECAST_METRICS, row[1:])
+                },
+            }
+            for row in day_rows
+        ],
+        "groups": [
+            {
+                "deck_id": int(group),
+                "due_mean": [float(value) for value in due],
+                "done_mean": [float(value) for value in done],
+                "new_mean": [float(value) for value in new],
+            }
+            for group, due, done, new in group_rows
+        ],
+    }
+    if len(rows) == 5:
+        scenario_paths = cast(Sequence[Sequence[Sequence[float]]], rows[4])
+        result["scenario_daily"] = [
+            {
+                "day": day,
+                **{
+                    metric: [float(path[day][index]) for path in scenario_paths]
+                    for index, metric in enumerate(_RWKV_FORECAST_METRICS)
+                },
+            }
+            for day in range(days)
+        ]
+    return result
+
+
+def rwkv_workload_forecast_available(mw: object | None = None) -> bool:
+    """Capability check for add-ons: True when this build and the current
+    RWKV backend can run `forecast_rwkv_workload`."""
+
+    del mw
+    if not configure_reviewer_backend_from_environment() or _reviewer_backend is None:
+        return False
+    supports_resident = getattr(
+        _reviewer_backend, "supports_resident_workload_simulation", None
+    )
+    runtime = getattr(_reviewer_backend, "_runtime", None)
+    process = getattr(runtime, "_process", None)
+    return (
+        callable(supports_resident)
+        and bool(supports_resident())
+        and callable(getattr(_reviewer_backend, "forecast_workload", None))
+        and callable(getattr(process, "forecast_workload_from_warm_up", None))
+    )
+
+
+@dataclass
+class _RwkvForecastPartial:
+    metadata: dict[str, object]
+    # Day -> path -> due, done, new, lapses, seconds.
+    rows: dict[int, dict[int, tuple[float, ...]]] = field(default_factory=dict)
+    completed: int = 0
+
+
+def _rwkv_partial_forecast_result(partial: _RwkvForecastPartial) -> dict[str, object]:
+    """Summarize the days reported so far without inventing missing scenarios."""
+    is_scenario = (
+        "scenario_sigma" in partial.metadata
+        or partial.metadata.get("scenario_kind") == "stratified"
+    )
+    daily: list[dict[str, object]] = []
+    scenario_daily: list[dict[str, object]] = []
+
+    def band(values: list[float]) -> dict[str, float]:
+        values.sort()
+
+        def quantile(q: float) -> float:
+            position = (len(values) - 1) * q
+            lower = math.floor(position)
+            upper = math.ceil(position)
+            return values[lower] + (values[upper] - values[lower]) * (position - lower)
+
+        return {
+            "mean": sum(values) / len(values),
+            "p1": quantile(0.01),
+            "p5": quantile(0.05),
+            "p50": quantile(0.5),
+            "p95": quantile(0.95),
+            "p99": quantile(0.99),
+        }
+
+    for day, samples in sorted(partial.rows.items()):
+        if not samples or (is_scenario and 1 not in samples):
+            continue
+        daily.append(
+            {
+                "day": day,
+                **{
+                    metric: band([row[index] for row in samples.values()])
+                    for index, metric in enumerate(_RWKV_FORECAST_METRICS)
+                },
+            }
+        )
+        if is_scenario:
+            scenario_daily.append(
+                {
+                    "day": day,
+                    **{
+                        metric: [
+                            samples[path][index] if path in samples else None
+                            for path in range(3)
+                        ]
+                        for index, metric in enumerate(_RWKV_FORECAST_METRICS)
+                    },
+                }
+            )
+    result: dict[str, object] = {**partial.metadata, "partial": True, "daily": daily}
+    if is_scenario:
+        result["scenario_daily"] = scenario_daily
+    return result
+
+
+@dataclass
+class _RwkvWorkloadForecastJob:
+    job_id: int
+    cancel: threading.Event
+    current: int = 0
+    total: int = 0
+    unit: str = "paths"
+    done: bool = False
+    error: str | None = None
+    result: dict[str, object] | None = None
+    partial: _RwkvForecastPartial | None = None
+
+
+_rwkv_workload_forecast_jobs_lock = threading.Lock()
+_rwkv_workload_forecast_jobs: dict[int, _RwkvWorkloadForecastJob] = {}
+_rwkv_workload_forecast_next_job_id = 1
+
+
+def start_rwkv_workload_forecast(
+    mw: object | None = None, **kwargs: Any
+) -> dict[str, object]:
+    """Start `forecast_rwkv_workload(**kwargs)` on a background thread and
+    return its first progress dict; poll `rwkv_workload_forecast_progress`.
+    Starting a new forecast cancels the running one."""
+
+    global _rwkv_workload_forecast_next_job_id
+    if mw is None:
+        import aqt
+
+        mw = aqt.mw
+    with _rwkv_workload_forecast_jobs_lock:
+        for previous in _rwkv_workload_forecast_jobs.values():
+            previous.cancel.set()
+        _rwkv_workload_forecast_jobs.clear()
+        job = _RwkvWorkloadForecastJob(
+            job_id=_rwkv_workload_forecast_next_job_id,
+            cancel=threading.Event(),
+        )
+        _rwkv_workload_forecast_next_job_id += 1
+        _rwkv_workload_forecast_jobs[job.job_id] = job
+
+    def report(current: int, total: int) -> None:
+        with _rwkv_workload_forecast_jobs_lock:
+            if job.unit == "paths":
+                job.current, job.total = current, total
+
+    def report_day(
+        metadata: dict[str, object], path: int, day: int, values: Sequence[float]
+    ) -> None:
+        with _rwkv_workload_forecast_jobs_lock:
+            if job.partial is None:
+                job.partial = _RwkvForecastPartial(metadata=metadata)
+            rows = job.partial.rows.setdefault(day, {})
+            if path not in rows:
+                job.partial.completed += 1
+            rows[path] = tuple(values)
+            job.current = job.partial.completed
+            job.total = cast(int, metadata["paths"]) * cast(int, metadata["days"])
+            job.unit = "days"
+
+    def run() -> None:
+        try:
+            result = forecast_rwkv_workload(
+                mw=mw,
+                progress=report,
+                partial_progress=report_day,
+                cancel_event=job.cancel,
+                **kwargs,
+            )
+            with _rwkv_workload_forecast_jobs_lock:
+                job.result = result
+        except Exception as exc:
+            with _rwkv_workload_forecast_jobs_lock:
+                job.error = (
+                    "cancelled"
+                    if job.cancel.is_set()
+                    else str(exc) or type(exc).__name__
+                )
+        finally:
+            with _rwkv_workload_forecast_jobs_lock:
+                job.partial = None
+                job.done = True
+
+    threading.Thread(target=run, name="rwkv-workload-forecast", daemon=True).start()
+    return rwkv_workload_forecast_progress(job.job_id)
+
+
+def rwkv_workload_forecast_progress(job_id: int) -> dict[str, object]:
+    """JSON-able job state; `result` is set once `phase` is "complete"."""
+
+    with _rwkv_workload_forecast_jobs_lock:
+        job = _rwkv_workload_forecast_jobs.get(int(job_id))
+        if job is None:
+            return {"job_id": job_id, "phase": "missing", "done": True, "error": None}
+        phase = (
+            "running"
+            if not job.done
+            else "failed"
+            if job.error is not None
+            else "complete"
+        )
+        partial = (
+            _RwkvForecastPartial(
+                metadata=dict(job.partial.metadata),
+                rows={day: dict(rows) for day, rows in job.partial.rows.items()},
+                completed=job.partial.completed,
+            )
+            if phase == "running" and job.partial is not None
+            else None
+        )
+        current, total, unit, done, error, result = (
+            job.current,
+            job.total,
+            job.unit,
+            job.done,
+            job.error,
+            job.result,
+        )
+    return {
+        "job_id": job.job_id,
+        "phase": phase,
+        "current": current,
+        "total": total,
+        "unit": unit,
+        "done": done,
+        "error": error,
+        "result": result if phase == "complete" else None,
+        "partial_result": _rwkv_partial_forecast_result(partial) if partial else None,
+    }
+
+
+def cancel_rwkv_workload_forecast(job_id: int) -> None:
+    with _rwkv_workload_forecast_jobs_lock:
+        job = _rwkv_workload_forecast_jobs.get(int(job_id))
+    if job is not None:
+        job.cancel.set()
 
 
 def _rwkv_simulation_inputs(
@@ -20947,7 +22563,7 @@ def _rwkv_runtime_models_for_profile(mw: object) -> RwkvRuntimeModels:
     model = model_for_profile(profile)
     if os.environ.get("ANKI_RWKV_MODEL_PATH"):
         # A custom checkpoint serves both schedulers, in place of the
-        # choice's full model (Tiny's is the default small model).
+        # choice's full model (a size's two-head model).
         return RwkvRuntimeModels(curve_model_for_choice(model))
     config_state = _rwkv_collection_config_state(SimpleNamespace(mw=mw))
     return runtime_models(
@@ -20987,11 +22603,12 @@ def _require_rwkv_workload_curve() -> None:
 def refresh_rwkv_runtime_models_after_preset_change(mw: object) -> bool:
     """Drop an instant-only runtime once a preset uses RWKV-Curve.
 
-    The show-time instant-only model, stage 2 (SM98) alone has no curve, so
+    A size's Instant-Only model alone (SM99, SM98 or SM101) has no curve, so
     an RWKV-Curve preset (as scheduler or as RWKV-Instant's fallback) saved
     while it runs would otherwise get FSRS intervals until the next profile
     open. The next backend use creates the runtime the profile now needs
-    (the pair, or the release alone with the opt-out), whose replay key
+    (the pair, or the size's two-head model alone with the opt-out), whose
+    replay key
     differs, so state rebuilds once. Every other change still waits for the
     next profile open. Returns whether the backend was dropped.
     """
@@ -24780,6 +26397,8 @@ def _rwkv_review_input_batches_for_search(
     batch_size_override: int | None = None,
     use_enabled_deck_filter: bool = True,
     include_comparison_data: bool = False,
+    include_disabled_decks: bool = False,
+    track_elapsed_since: bool = False,
 ) -> RwkvReviewInputBatchBuild | None:
     if not use_enabled_deck_filter:
         return None
@@ -24796,6 +26415,7 @@ def _rwkv_review_input_batches_for_search(
         include_suspended_review=include_suspended_review,
         include_new_cards=include_new_cards,
         include_comparison_data=include_comparison_data,
+        include_disabled_decks=include_disabled_decks,
     )
     if response is None:
         return None
@@ -24807,6 +26427,7 @@ def _rwkv_review_input_batches_for_search(
         load_start=load_start,
         source_label="search_cards",
         source_size=_rwkv_backend_uint(response, "searched_cards"),
+        track_elapsed_since=track_elapsed_since,
     )
 
 
@@ -25413,6 +27034,7 @@ def _rwkv_review_input_rows_for_search_backend_response(
     include_suspended_review: bool,
     include_new_cards: bool = False,
     include_comparison_data: bool = False,
+    include_disabled_decks: bool = False,
 ) -> object | None:
     get_rows_raw = getattr(backend, "rwkv_review_input_rows_for_search_raw", None)
     if callable(get_rows_raw) and hasattr(
@@ -25425,6 +27047,7 @@ def _rwkv_review_input_rows_for_search_backend_response(
                 include_suspended_review=include_suspended_review,
                 include_new_cards=include_new_cards,
                 include_comparison_data=include_comparison_data,
+                include_disabled_decks=include_disabled_decks,
             )
             raw = get_rows_raw(request.SerializeToString())
             response = scheduler_pb2.RwkvReviewInputRowsForCardsResponse()
@@ -25445,7 +27068,7 @@ def _rwkv_review_input_rows_for_search_backend_response(
         kwargs: dict[str, object] = dict(
             search=search,
             include_suspended_review=include_suspended_review,
-            include_disabled_decks=False,
+            include_disabled_decks=include_disabled_decks,
         )
         if include_new_cards:
             kwargs["include_new_cards"] = True
@@ -25548,6 +27171,8 @@ def _rwkv_review_input_from_backend_row(row: object) -> RwkvReviewInput | None:
         ease_factor=_rwkv_backend_int(row, "ease_factor"),
         reps=_rwkv_backend_int(row, "reps"),
         lapses=_rwkv_backend_int(row, "lapses"),
+        remaining_steps=_rwkv_backend_optional_int(row, "remaining_steps"),
+        in_filtered_deck=_rwkv_backend_bool(row, "in_filtered_deck", False),
         day_offset=_rwkv_backend_int(row, "day_offset"),
         current_state_kind=state_kind,
         current_normal_state_kind=normal_state_kind,
@@ -25633,6 +27258,10 @@ def _rwkv_review_input_from_backend_proto_row(
         ease_factor=row.ease_factor,
         reps=row.reps,
         lapses=row.lapses,
+        remaining_steps=row.remaining_steps
+        if row.HasField("remaining_steps")
+        else None,
+        in_filtered_deck=row.in_filtered_deck,
         day_offset=row.day_offset,
         current_state_kind=state_kind,
         current_normal_state_kind=normal_state_kind,

@@ -197,11 +197,7 @@ impl QueueBuilder {
         let scored_card_ids = ranked_scores.iter().map(|(card_id, _)| *card_id).collect();
         self.gather_due_review_cards_without_rwkv_scores(col, &scored_card_ids)?;
         if !self.review_limit_stops_gathering() && self.limits.any_rwkv_review_minimum_remaining() {
-            self.gather_rwkv_review_minimum_cards(
-                col,
-                &ranked_scores,
-                relative_overdueness.then_some(&priorities),
-            )?;
+            self.gather_rwkv_review_minimum_cards(col, &ranked_scores)?;
         }
         self.sort_review_cards_by_rwkv_priority(&priorities);
         Ok(())
@@ -298,51 +294,55 @@ impl QueueBuilder {
                     (None, None) => std::cmp::Ordering::Equal,
                 }
             });
-            for card in pull_candidates {
-                if !self.limits.any_rwkv_review_minimum_remaining() {
-                    break;
-                }
-                if self.review_limit_stops_gathering() {
-                    break;
-                }
-                if !self
-                    .limits
-                    .rwkv_review_minimum_remaining(card.current_deck_id)?
-                    || !matches!(
-                        eligibility_by_card.get(&card.id),
-                        Some(RwkvReviewScoreEligibility::Blocked)
-                    )
-                    || self.card_ignores_review_limit(card)
-                {
-                    continue;
-                }
-                let score = scores.get(&card.id).or_not_found(card.id)?;
-                let metadata = metadata.get(&card.id).or_not_found(card.id)?;
-                let eligibility = rwkv_review_score_eligibility_ignoring_retention(
-                    score.retrievability,
-                    metadata,
-                    self.context
-                        .sort_options
-                        .rwkv_review_min_intervening_reviews,
-                    self.context.sort_options.rwkv_review_min_elapsed_secs,
-                    score.intervening_reviews,
-                );
-                match eligibility {
-                    RwkvReviewScoreEligibility::Eligible => {}
-                    RwkvReviewScoreEligibility::Deferred { .. } => {
-                        self.deferred_rwkv_reviews.insert(
-                            card.id,
-                            DeferredRwkvReview::from_eligibility(
-                                eligibility,
-                                self.context.timing.now,
-                            )
-                            .unwrap(),
-                        );
+            let mut attempted = HashSet::new();
+            for depth in self.limits.rwkv_review_minimum_depths() {
+                for card in pull_candidates.iter().copied() {
+                    if !self.limits.any_rwkv_review_minimum_remaining()
+                        || self.review_limit_stops_gathering()
+                    {
+                        break;
+                    }
+                    if attempted.contains(&card.id)
+                        || !self
+                            .limits
+                            .rwkv_review_minimum_remaining_at_depth(card.current_deck_id, depth)?
+                        || !matches!(
+                            eligibility_by_card.get(&card.id),
+                            Some(RwkvReviewScoreEligibility::Blocked)
+                        )
+                        || self.card_ignores_review_limit(card)
+                    {
                         continue;
                     }
-                    RwkvReviewScoreEligibility::Blocked => continue,
+                    let score = scores.get(&card.id).or_not_found(card.id)?;
+                    let metadata = metadata.get(&card.id).or_not_found(card.id)?;
+                    let eligibility = rwkv_review_score_eligibility_ignoring_retention(
+                        score.retrievability,
+                        metadata,
+                        self.context
+                            .sort_options
+                            .rwkv_review_min_intervening_reviews,
+                        self.context.sort_options.rwkv_review_min_elapsed_secs,
+                        score.intervening_reviews,
+                    );
+                    match eligibility {
+                        RwkvReviewScoreEligibility::Eligible => {}
+                        RwkvReviewScoreEligibility::Deferred { .. } => {
+                            self.deferred_rwkv_reviews.insert(
+                                card.id,
+                                DeferredRwkvReview::from_eligibility(
+                                    eligibility,
+                                    self.context.timing.now,
+                                )
+                                .unwrap(),
+                            );
+                            continue;
+                        }
+                        RwkvReviewScoreEligibility::Blocked => continue,
+                    }
+                    self.add_rwkv_review_card(card)?;
+                    attempted.insert(card.id);
                 }
-                self.add_rwkv_review_card(card)?;
             }
         }
 
@@ -364,54 +364,68 @@ impl QueueBuilder {
         &mut self,
         col: &mut Collection,
         ranked_scores: &[(CardId, RwkvReviewQueueScoreEntry)],
-        relative_overdueness_priorities: Option<&HashMap<CardId, f32>>,
     ) -> Result<()> {
         let mut pull_scores = ranked_scores.to_vec();
         pull_scores.sort_unstable_by(|(card_id_a, score_a), (card_id_b, score_b)| {
-            let priority_a = relative_overdueness_priorities
-                .and_then(|priorities| priorities.get(card_id_a))
-                .copied()
-                .unwrap_or(score_a.retrievability);
-            let priority_b = relative_overdueness_priorities
-                .and_then(|priorities| priorities.get(card_id_b))
-                .copied()
-                .unwrap_or(score_b.retrievability);
-            priority_a
-                .total_cmp(&priority_b)
+            score_a
+                .retrievability
+                .total_cmp(&score_b.retrievability)
                 .then_with(|| card_id_a.cmp(card_id_b))
         });
-        for score_chunk in pull_scores.chunks(RWKV_REVIEW_GATHER_MIN_CHUNK_SIZE) {
-            if self.review_limit_stops_gathering() {
-                break;
-            }
-            let chunk_card_ids: Vec<_> = score_chunk.iter().map(|(card_id, _)| *card_id).collect();
-            let mut cards_by_id = HashMap::with_capacity(score_chunk.len());
-            col.storage
-                .for_each_review_card_in_active_decks_with_ids(&chunk_card_ids, |card| {
-                    cards_by_id.insert(card.id, card);
-                    Ok(true)
-                })?;
-            let active_card_ids: Vec<_> = cards_by_id.keys().copied().collect();
-            let metadata =
-                rwkv_review_candidate_metadata(col, &active_card_ids, self.context.timing)?;
-
-            for &(card_id, score) in score_chunk {
-                if self.review_limit_stops_gathering() {
+        let mut attempted = HashSet::new();
+        for depth in self.limits.rwkv_review_minimum_depths() {
+            for score_chunk in pull_scores.chunks(RWKV_REVIEW_GATHER_MIN_CHUNK_SIZE) {
+                if !self.limits.has_rwkv_review_minimum_at_depth(depth)
+                    || self.review_limit_stops_gathering()
+                {
                     break;
                 }
-                let Some(card) = cards_by_id.get(&card_id).copied() else {
-                    continue;
-                };
-                if !self
-                    .limits
-                    .rwkv_review_minimum_remaining(card.current_deck_id)?
-                    || self.card_ignores_review_limit(card)
-                {
-                    continue;
-                }
-                let metadata = metadata.get(&card_id).or_not_found(card_id)?;
-                if !matches!(
-                    rwkv_review_score_eligibility(
+                let chunk_card_ids: Vec<_> =
+                    score_chunk.iter().map(|(card_id, _)| *card_id).collect();
+                let mut cards_by_id = HashMap::with_capacity(score_chunk.len());
+                col.storage.for_each_review_card_in_active_decks_with_ids(
+                    &chunk_card_ids,
+                    |card| {
+                        cards_by_id.insert(card.id, card);
+                        Ok(true)
+                    },
+                )?;
+                let active_card_ids: Vec<_> = cards_by_id.keys().copied().collect();
+                let metadata =
+                    rwkv_review_candidate_metadata(col, &active_card_ids, self.context.timing)?;
+
+                for &(card_id, score) in score_chunk {
+                    if self.review_limit_stops_gathering() {
+                        break;
+                    }
+                    let Some(card) = cards_by_id.get(&card_id).copied() else {
+                        continue;
+                    };
+                    if attempted.contains(&card_id)
+                        || !self
+                            .limits
+                            .rwkv_review_minimum_remaining_at_depth(card.current_deck_id, depth)?
+                        || self.card_ignores_review_limit(card)
+                    {
+                        continue;
+                    }
+                    let metadata = metadata.get(&card_id).or_not_found(card_id)?;
+                    if !matches!(
+                        rwkv_review_score_eligibility(
+                            score.retrievability,
+                            metadata,
+                            self.context
+                                .sort_options
+                                .rwkv_review_min_intervening_reviews,
+                            self.context.sort_options.rwkv_review_min_elapsed_secs,
+                            score.intervening_reviews,
+                            score.target_retention,
+                        ),
+                        RwkvReviewScoreEligibility::Blocked
+                    ) {
+                        continue;
+                    }
+                    let eligibility = rwkv_review_score_eligibility_ignoring_retention(
                         score.retrievability,
                         metadata,
                         self.context
@@ -419,37 +433,25 @@ impl QueueBuilder {
                             .rwkv_review_min_intervening_reviews,
                         self.context.sort_options.rwkv_review_min_elapsed_secs,
                         score.intervening_reviews,
-                        score.target_retention,
-                    ),
-                    RwkvReviewScoreEligibility::Blocked
-                ) {
-                    continue;
-                }
-                let eligibility = rwkv_review_score_eligibility_ignoring_retention(
-                    score.retrievability,
-                    metadata,
-                    self.context
-                        .sort_options
-                        .rwkv_review_min_intervening_reviews,
-                    self.context.sort_options.rwkv_review_min_elapsed_secs,
-                    score.intervening_reviews,
-                );
-                match eligibility {
-                    RwkvReviewScoreEligibility::Eligible => {}
-                    RwkvReviewScoreEligibility::Deferred { .. } => {
-                        self.deferred_rwkv_reviews.insert(
-                            card_id,
-                            DeferredRwkvReview::from_eligibility(
-                                eligibility,
-                                self.context.timing.now,
-                            )
-                            .unwrap(),
-                        );
-                        continue;
+                    );
+                    match eligibility {
+                        RwkvReviewScoreEligibility::Eligible => {}
+                        RwkvReviewScoreEligibility::Deferred { .. } => {
+                            self.deferred_rwkv_reviews.insert(
+                                card_id,
+                                DeferredRwkvReview::from_eligibility(
+                                    eligibility,
+                                    self.context.timing.now,
+                                )
+                                .unwrap(),
+                            );
+                            continue;
+                        }
+                        RwkvReviewScoreEligibility::Blocked => continue,
                     }
-                    RwkvReviewScoreEligibility::Blocked => continue,
+                    self.add_rwkv_review_card(card)?;
+                    attempted.insert(card_id);
                 }
-                self.add_rwkv_review_card(card)?;
             }
         }
         Ok(())

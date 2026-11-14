@@ -14,7 +14,8 @@ import aqt.errors
 import aqt.main
 import aqt.rwkv_scheduler
 import aqt.sync
-from anki.collection import OpChanges
+from anki.collection import Collection, OpChanges
+from anki.sync import SyncOutput
 from aqt.main import (
     OUTDATED_FSRS7_PREVIEW_WARNING_MAX_PRESETS,
     AnkiQt,
@@ -423,6 +424,107 @@ def test_sync_resets_ui_before_refreshing_rwkv_for_remote_collection_changes(
         "rwkv refresh",
         "done",
     ]
+
+
+@pytest.mark.parametrize(
+    ("required", "remote_changes", "refresh_expected"),
+    [
+        (SyncOutput.NO_CHANGES, False, False),
+        (SyncOutput.NO_CHANGES, True, True),
+        (SyncOutput.FULL_DOWNLOAD, False, True),
+    ],
+)
+def test_addon_sync_reconciles_rwkv_after_remote_changes(
+    monkeypatch, required: int, remote_changes: bool, refresh_expected: bool
+) -> None:
+    calls: list[str] = []
+    output = SyncOutput(required=required, remote_collection_changed=remote_changes)
+    col = SimpleNamespace(
+        db=object(), _backend=SimpleNamespace(sync_collection=lambda **_kwargs: output)
+    )
+    mw = AnkiQt.__new__(AnkiQt)
+    mw.col = col
+    mw.state = "deckBrowser"
+    mw._rwkv_builtin_sync_finishing = False
+    monkeypatch.setattr(
+        aqt.rwkv_scheduler,
+        "refresh_rwkv_state_after_sync",
+        lambda _mw, on_done: (calls.append("refresh"), on_done()),
+    )
+
+    # Background Auto Sync calls Collection.sync_collection directly and
+    # announces completion with the standard GUI hooks.
+    mw._rwkv_sync_will_start()
+    assert Collection.sync_collection(col, None, False) is output
+    mw._rwkv_sync_did_finish()
+
+    assert calls == (["refresh"] if refresh_expected else [])
+
+
+def test_addon_sync_reconciles_rwkv_when_sync_outcome_is_unknown(monkeypatch) -> None:
+    calls: list[str] = []
+    mw = AnkiQt.__new__(AnkiQt)
+    mw.col = SimpleNamespace(db=object())
+    mw.state = "deckBrowser"
+    mw._rwkv_builtin_sync_finishing = False
+    monkeypatch.setattr(
+        aqt.rwkv_scheduler,
+        "refresh_rwkv_state_after_sync",
+        lambda _mw, on_done: (calls.append("refresh"), on_done()),
+    )
+
+    mw._rwkv_sync_will_start()
+    mw._rwkv_sync_did_finish()
+
+    assert calls == ["refresh"]
+
+
+def test_builtin_sync_hook_does_not_duplicate_rwkv_refresh(monkeypatch) -> None:
+    calls: list[str] = []
+    mw = AnkiQt.__new__(AnkiQt)
+    mw.col = SimpleNamespace(_last_sync_remote_collection_changed=True)
+    mw._rwkv_builtin_sync_finishing = True
+    monkeypatch.setattr(
+        aqt.rwkv_scheduler,
+        "refresh_rwkv_state_after_sync",
+        lambda _mw, _on_done: calls.append("refresh"),
+    )
+
+    mw._rwkv_sync_did_finish()
+
+    assert calls == []
+
+
+@pytest.mark.parametrize("collection_changed", [False, True])
+def test_addon_sync_refreshes_active_reviewer_only_for_same_collection(
+    monkeypatch, collection_changed: bool
+) -> None:
+    callbacks: list[Callable[[], None]] = []
+    queue_updates: list[bool] = []
+    mw = AnkiQt.__new__(AnkiQt)
+    mw.col = SimpleNamespace(db=object(), _last_sync_remote_collection_changed=True)
+    mw.state = "review"
+    mw._rwkv_builtin_sync_finishing = False
+    mw.reviewer = SimpleNamespace(
+        op_executed=lambda changes, _handler, focused: queue_updates.append(
+            changes.study_queues and focused
+        )
+    )
+    monkeypatch.setattr(
+        aqt.rwkv_scheduler,
+        "refresh_rwkv_state_after_sync",
+        lambda _mw, on_done: callbacks.append(on_done),
+    )
+    monkeypatch.setattr(
+        aqt.rwkv_scheduler, "_rwkv_resident_state_ready", lambda _: True
+    )
+
+    mw._rwkv_sync_did_finish()
+    if collection_changed:
+        mw.col = SimpleNamespace(db=object())
+    callbacks.pop()()
+
+    assert queue_updates == ([] if collection_changed else [True])
 
 
 def test_profile_load_marks_rwkv_startup_before_loading_collection(

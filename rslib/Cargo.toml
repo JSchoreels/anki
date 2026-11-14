@@ -27,6 +27,10 @@ name = "fsrs"
 harness = false
 required-features = ["bench"]
 
+[[example]]
+name = "instant_forecast_bench"
+required-features = ["bench"]
+
 [build-dependencies]
 anki_io.workspace = true
 anki_proto.workspace = true

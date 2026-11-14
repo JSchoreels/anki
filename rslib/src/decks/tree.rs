@@ -765,9 +765,102 @@ mod test {
     }
 
     #[test]
-    fn rwkv_deck_browser_counts_include_ancestor_minimums() -> Result<()> {
-        for (apply_parent_limits, studied, expected_count, expected_uncapped) in
-            [(true, 3, 17, 22), (false, 3, 0, 0), (true, 25, 0, 0)]
+    fn rwkv_deck_tree_counts_use_each_selected_deck_minimum() -> Result<()> {
+        let mut col = Collection::new();
+        let mut parent = col.get_or_create_normal_deck("Parent")?;
+        let mut lower = col.get_or_create_normal_deck("Parent::Lower")?;
+        let mut higher = col.get_or_create_normal_deck("Parent::Higher")?;
+        for deck in [&mut parent, &mut lower, &mut higher] {
+            enable_rwkv_review_counts(&mut col, deck, false)?;
+            let mut config = col
+                .get_deck_config(deck.config_id().unwrap(), false)?
+                .unwrap();
+            config.inner.rwkv_review_minimum_reviews_per_day = 1;
+            col.add_or_update_deck_config(&mut config)?;
+        }
+        let timing = col.timing_today()?;
+        let lower_card = add_review_card(
+            &mut col,
+            lower.id,
+            timing.days_elapsed as i32 + 7,
+            0.75,
+            None,
+        )?;
+        let higher_card = add_review_card(
+            &mut col,
+            higher.id,
+            timing.days_elapsed as i32 + 7,
+            0.75,
+            None,
+        )?;
+        let scores = HashMap::from([(lower_card, 0.80), (higher_card, 0.95)]);
+        for deck in [&parent, &lower, &higher] {
+            col.set_rwkv_deck_count_scores(deck.id, scores.clone())?;
+        }
+
+        let tree = col.deck_tree(Some(timing.now))?;
+        assert_eq!(
+            get_deck_in_tree(tree.clone(), parent.id)
+                .unwrap()
+                .review_count,
+            1
+        );
+        assert_eq!(
+            get_deck_in_tree(tree.clone(), lower.id)
+                .unwrap()
+                .review_count,
+            1
+        );
+        assert_eq!(get_deck_in_tree(tree, higher.id).unwrap().review_count, 1);
+
+        parent.set_rwkv_respect_subdeck_minimums(true)?;
+        col.add_or_update_deck(&mut parent)?;
+        for deck in [&parent, &lower, &higher] {
+            col.set_rwkv_deck_count_scores(deck.id, scores.clone())?;
+        }
+        let tree = col.deck_tree(Some(timing.now))?;
+        assert_eq!(get_deck_in_tree(tree, parent.id).unwrap().review_count, 2);
+        Ok(())
+    }
+
+    #[test]
+    fn rwkv_deck_tree_minimum_ignores_reviews_blocked_by_subdeck_limit() -> Result<()> {
+        let mut col = Collection::new();
+        let mut parent = col.get_or_create_normal_deck("Parent")?;
+        let mut blocked = col.get_or_create_normal_deck("Parent::Blocked")?;
+        let available = col.get_or_create_normal_deck("Parent::Available")?;
+        enable_rwkv_review_counts(&mut col, &mut parent, false)?;
+        let mut config = col
+            .get_deck_config(parent.config_id().unwrap(), false)?
+            .unwrap();
+        config.inner.rwkv_review_minimum_reviews_per_day = 1;
+        col.add_or_update_deck_config(&mut config)?;
+        blocked.normal_mut()?.review_limit = Some(0);
+        col.add_or_update_deck(&mut blocked)?;
+
+        let timing = col.timing_today()?;
+        let blocked_card =
+            add_review_card(&mut col, blocked.id, timing.days_elapsed as i32, 0.75, None)?;
+        let available_card = add_review_card(
+            &mut col,
+            available.id,
+            timing.days_elapsed as i32 + 7,
+            0.75,
+            None,
+        )?;
+        let scores = HashMap::from([(blocked_card, 0.65), (available_card, 0.95)]);
+        col.set_rwkv_review_queue_scores(parent.id, scores.clone())?;
+        assert_eq!(col.build_queues(parent.id)?.counts().review, 1);
+        col.set_rwkv_deck_count_scores(parent.id, scores)?;
+        let tree = col.deck_tree(Some(timing.now))?;
+        assert_eq!(get_deck_in_tree(tree, parent.id).unwrap().review_count, 1);
+        Ok(())
+    }
+
+    #[test]
+    fn rwkv_deck_browser_counts_use_selected_minimum_with_parent_limits() -> Result<()> {
+        for (apply_parent_limits, studied, expected_child_count) in
+            [(true, 3, 3), (false, 3, 3), (true, 25, 0)]
         {
             let mut col = Collection::new();
             col.set_config_bool(BoolKey::ApplyAllParentLimits, apply_parent_limits, false)?;
@@ -777,7 +870,7 @@ mod test {
             let timing = col.timing_today()?;
             for (deck, minimum, daily_limit) in [
                 (&mut parent, 25, 20),
-                (&mut child, 0, 9999),
+                (&mut child, 3, 9999),
                 (&mut leaf, 0, 9999),
             ] {
                 enable_rwkv_review_counts(&mut col, deck, false)?;
@@ -807,7 +900,9 @@ mod test {
                 col.set_rwkv_deck_count_scores(deck.id, scores.clone())?;
             }
             let tree = col.deck_tree(Some(timing.now))?;
-            for deck in [&child, &leaf] {
+            for (deck, expected_count, expected_uncapped) in
+                [(&child, expected_child_count, 3), (&leaf, 0, 0)]
+            {
                 col.set_rwkv_review_queue_scores(deck.id, scores.clone())?;
                 assert_eq!(
                     col.build_queues(deck.id)?.counts().review,

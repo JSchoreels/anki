@@ -33,8 +33,9 @@ export type DeckOptionsId = bigint;
 export const RWKV_MODEL_BIG = "legacy";
 export const RWKV_MODEL_SMALL = "sm72e25";
 export const RWKV_MODEL_TINY = "tiny";
-/** Older small models: still run until a save, which stores Small instead. */
-export const RWKV_OLDER_SMALL_MODELS = ["sm40", "sm36", "sm55", "sm56", "sm72", "sm72e20"];
+/** Older small models (and the default small model (SM63) by its own value):
+ * still run until a save, which stores Small instead. */
+export const RWKV_OLDER_SMALL_MODELS = ["sm40", "sm36", "sm55", "sm56", "sm72", "sm72e20", "sm63"];
 
 export interface ConfigWithCount {
     config: DeckConfig;
@@ -80,7 +81,12 @@ type AllConfigs =
             | "reviewFuzzFactorLong"
         >
     >
-    & { currentConfig: DeckConfig_Config; rwkvProfileSettings: RwkvProfileSettings };
+    & {
+        currentConfig: DeckConfig_Config;
+        rwkvProfileSettings: RwkvProfileSettings;
+        rwkvRespectSubdeckMinimums: boolean;
+        rwkvApplyRespectSubdeckMinimumsToChildren: boolean;
+    };
 
 export class DeckOptionsState {
     readonly currentConfig: Writable<DeckConfig_Config>;
@@ -90,6 +96,8 @@ export class DeckOptionsState {
     readonly cardStateCustomizer: Writable<string>;
     readonly currentDeck: DeckConfigsForUpdate_CurrentDeck;
     readonly deckLimits: Writable<DeckConfigsForUpdate_CurrentDeck_Limits>;
+    readonly rwkvRespectSubdeckMinimums: Writable<boolean>;
+    readonly rwkvApplyRespectSubdeckMinimumsToChildren: Writable<boolean> = writable(false);
     readonly defaults: DeckConfig_Config;
     readonly addonComponents: Writable<DynamicSvelteComponent[]>;
     readonly newCardsIgnoreReviewLimit: Writable<boolean>;
@@ -150,6 +158,9 @@ export class DeckOptionsState {
         this.sortConfigs();
         this.cardStateCustomizer = writable(data.cardStateCustomizer);
         this.deckLimits = writable(data.currentDeck?.limits ?? createLimits());
+        this.rwkvRespectSubdeckMinimums = writable(
+            data.currentDeck?.limits?.rwkvRespectSubdeckMinimums ?? false,
+        );
         this.newCardsIgnoreReviewLimit = writable(data.newCardsIgnoreReviewLimit);
         this.loadBalancerEnabled = writable(data.loadBalancerEnabled);
         this.applyAllParentLimits = writable(data.applyAllParentLimits);
@@ -412,7 +423,12 @@ export class DeckOptionsState {
             configs,
             mode,
             cardStateCustomizer: get(this.cardStateCustomizer),
-            limits: get(this.deckLimits),
+            limits: {
+                ...get(this.deckLimits),
+                rwkvRespectSubdeckMinimums: get(this.rwkvRespectSubdeckMinimums),
+                rwkvApplyRespectSubdeckMinimumsToChildren: mode !== UpdateDeckConfigsMode.COMPUTE_ALL_PARAMS
+                    && get(this.rwkvApplyRespectSubdeckMinimumsToChildren),
+            },
             newCardsIgnoreReviewLimit: get(this.newCardsIgnoreReviewLimit),
             loadBalancerEnabled: get(this.loadBalancerEnabled),
             applyAllParentLimits: get(this.applyAllParentLimits),
@@ -440,6 +456,7 @@ export class DeckOptionsState {
         } else {
             await updateDeckConfigs(request);
         }
+        this.rwkvApplyRespectSubdeckMinimumsToChildren.set(false);
     }
 
     private onCurrentConfigChanged(config: DeckConfig_Config): void {
@@ -533,6 +550,8 @@ export class DeckOptionsState {
             reviewFuzzFactorLong: get(this.reviewFuzzFactorLong),
             currentConfig: get(this.currentConfig),
             rwkvProfileSettings: get(this.rwkvProfileSettings),
+            rwkvRespectSubdeckMinimums: get(this.rwkvRespectSubdeckMinimums),
+            rwkvApplyRespectSubdeckMinimumsToChildren: get(this.rwkvApplyRespectSubdeckMinimumsToChildren),
         });
     }
 

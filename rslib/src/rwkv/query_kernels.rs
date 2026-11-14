@@ -19,7 +19,7 @@ use super::HEADS;
 use super::HEAD_SIZE;
 
 // The head kernels place one head per vector lane.
-const _: () = assert!(HEADS == 4 && HEAD_SIZE % 16 == 0);
+const _: () = assert!(HEADS == 4 && HEAD_SIZE.is_multiple_of(16));
 
 /// Transposes a 4x4 block held as four row vectors into four column vectors.
 #[inline(always)]

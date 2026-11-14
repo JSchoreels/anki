@@ -35,16 +35,20 @@ fn weights(folder: &str) -> PathBuf {
     }
 }
 
-/// `(name, main model, instant model beside it)`.
-const RUNTIMES: [(&str, &str, Option<&str>); 8] = [
+/// `(name, main model, instant model beside it)`: each size's runtimes of
+/// the RWKV family release (the family wiring (SM114)), plus the default
+/// small model (SM63) alone, which no size runs any more.
+const RUNTIMES: [(&str, &str, Option<&str>); 10] = [
     ("big", "legacy", None),
     ("big-pair", "legacy", Some("sm99")),
     ("big-instant", "sm99", None),
-    ("small", "sm72e25", None),
-    ("small-pair", "sm72e25", Some("sm98")),
+    ("small", "sm92", None),
+    ("small-pair", "sm92", Some("sm98")),
     ("small-instant", "sm98", None),
-    ("tiny-pair", "sm72e25", Some("sm101")),
+    ("tiny", "sm106", None),
+    ("tiny-pair", "sm106", Some("sm101")),
     ("tiny-instant", "sm101", None),
+    ("sm63", "sm72e25", None),
 ];
 
 fn load(main: &str, instant: Option<&str>) -> Option<RwkvRuntime> {

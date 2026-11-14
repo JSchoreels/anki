@@ -233,6 +233,30 @@ test("RWKV comparison shows agreement for both answer models and multiple horizo
     await expect(first).toBeVisible();
 });
 
+test("RWKV subdeck minimums can be saved and applied to descendants", async ({ page }) => {
+    let saved: UpdateDeckConfigsRequest | undefined;
+    await page.route("**/_anki/getDeckConfigsForUpdate", async (route) => {
+        const response = await route.fetch();
+        const data = DeckConfigsForUpdate.fromBinary(await response.body());
+        const config = data.allConfig.find((entry) => entry.config!.id === data.currentDeck!.configId)!.config!.config!;
+        config.rwkvReviewInstantOrderEnabled = true;
+        data.currentDeck!.limits!.rwkvRespectSubdeckMinimums = false;
+        await route.fulfill({ response, body: Buffer.from(data.toBinary()) });
+    });
+    await page.route("**/_anki/updateDeckConfigsAndClose", async (route) => {
+        saved = decodeRequestBody(route.request(), UpdateDeckConfigsRequest);
+        await route.fulfill({ body: Buffer.from(new OpChanges().toBinary()) });
+    });
+    await page.goto("/deck-options/1");
+    const setting = page.getByRole("checkbox", { name: "Also honor subdeck minimums", exact: true });
+    await expect(setting).not.toBeChecked();
+    await setting.check();
+    await page.getByRole("checkbox", { name: "Apply this setting to all subdecks on save", exact: true }).check();
+    await page.getByRole("button", { name: "Save", exact: true }).click();
+    await expect.poll(() => saved?.limits?.rwkvRespectSubdeckMinimums).toBe(true);
+    expect(saved?.limits?.rwkvApplyRespectSubdeckMinimumsToChildren).toBe(true);
+});
+
 test(
     "RWKV Advanced hides model, queue and comparison controls and preserves precision on Save",
     async ({ page }, testInfo) => {
@@ -270,7 +294,7 @@ test(
         const small = group.getByRole("radio", { name: "Small", exact: true });
         const tiny = group.getByRole("radio", { name: "Tiny", exact: true });
         const singleModel = group.getByRole("checkbox", {
-            name: "Use one model for RWKV (about half the memory, slightly worse RWKV-Instant predictions)",
+            name: "Use one model for RWKV",
             exact: true,
         });
         const model = big;
@@ -288,11 +312,12 @@ test(
         await page.setViewportSize({ width: 1280, height: 900 });
         await openAdvanced.focus();
         await page.keyboard.press("Enter");
-        // The saved Big choice ("legacy"): one model, no opt-out.
+        // The saved Big choice ("legacy") offers its own Instant model and opt-out.
         await expect(big).toBeChecked();
         await expect(small).not.toBeChecked();
         await expect(tiny).not.toBeChecked();
-        await expect(singleModel).toHaveCount(0);
+        await expect(singleModel).toBeVisible();
+        await expect(singleModel).not.toBeChecked();
         await expect(group.getByRole("radio")).toHaveCount(3);
         await expect(group.getByText("Legacy - Bigger Model", { exact: true })).toHaveCount(0);
         await expect(compare).toBeVisible();
@@ -305,11 +330,23 @@ test(
         await expect(comparison).toBeHidden();
         await expect(group.getByRole("button", { name: "About prediction models", exact: true })).toHaveCount(0);
         await expect(group.getByText("Use Smaller Model", { exact: true })).toHaveCount(0);
-        await expect(group).toContainText("Uses the most memory and takes the longest");
-        await expect(group).toContainText("Much less memory and faster than Big");
-        await expect(group).toContainText(
-            "Tiny only shrinks RWKV-Instant's state; RWKV-Curve uses the same model as Small.",
+        await expect(big).toHaveAccessibleDescription(
+            /trained on the time since the last review.*card is shown.*19\.6 KB with one model.*39\.1 KB/,
         );
+        await expect(small).toHaveAccessibleDescription(
+            /3\.5 KB with Instant only.*82% less than Big.*7\.1 KB.*82% less/,
+        );
+        await expect(small).toHaveAccessibleDescription(/Curve 0\.31% higher, Instant 0\.11% higher/);
+        await expect(tiny).toHaveAccessibleDescription(
+            /2\.6 KB with Instant only.*26% less than Small, 87% less than Big.*5\.3 KB.*26% less than Small, 87% less than Big/,
+        );
+        await expect(tiny).toHaveAccessibleDescription(
+            /Curve 0\.42% higher, Instant 0\.30% higher \(0\.11% and 0\.19% higher than Small\)/,
+        );
+        await expect(tiny).toHaveAccessibleDescription(/Tiny has no answer-time estimate/);
+        await expect(group).toContainText("With both schedulers, comparisons assume separate models");
+        await expect(group).toContainText("default precision (INT4 cards + INT8 notes)");
+        await expect(group).toContainText("Factory LogLoss is from 722 users; lower is better");
         // Short descriptions without internal model IDs.
         for (const description of await group.locator(".size-description").allTextContents()) {
             expect(description).not.toMatch(/SM\d/);
@@ -325,6 +362,8 @@ test(
         );
         await tiny.check();
         await expect(singleModel).toBeVisible();
+        await expect(group).toContainText("Turn this on to use the size's Curve model for both");
+        await expect(group).toContainText("the size's Instant model always runs alone");
         await page.setViewportSize({ width: 736, height: 1000 });
         await card.screenshot({ path: testInfo.outputPath("rwkv-options-advanced.png") });
         await page.evaluate(() => document.documentElement.classList.add("night-mode"));
@@ -336,22 +375,30 @@ test(
         await expect(model).toBeChecked();
         // Big -> Small -> Tiny -> Big, each saved and reloaded.
         for (
-            const [radio, value, opt_out] of [
-                [small, "sm72e25", true],
-                [tiny, "tiny", true],
-                [big, "legacy", false],
+            const [radio, value] of [
+                [small, "sm72e25"],
+                [tiny, "tiny"],
+                [big, "legacy"],
             ] as const
         ) {
             await radio.check();
+            const singleModelEnabled = value === "legacy";
+            await singleModel.setChecked(singleModelEnabled);
             await page.getByRole("button", { name: "Save", exact: true }).click();
             await expect.poll(() => saved?.rwkvProfileSettings).toMatchObject({
                 model: value,
                 statePrecision: "int8",
+                singleModel: singleModelEnabled,
             });
             await page.reload();
             await openAdvanced.click();
             await expect(radio).toBeChecked();
-            await expect(singleModel).toHaveCount(opt_out ? 1 : 0);
+            await expect(singleModel).toBeVisible();
+            if (singleModelEnabled) {
+                await expect(singleModel).toBeChecked();
+            } else {
+                await expect(singleModel).not.toBeChecked();
+            }
         }
     },
 );
@@ -392,7 +439,7 @@ test("RWKV keeps a saved SM92 choice as a fourth option until another size is pi
     await expect(group.getByRole("radio")).toHaveCount(3);
 });
 
-for (const model of ["sm40", "sm36", "sm55", "sm56", "sm72", "sm72e20"]) {
+for (const model of ["sm40", "sm36", "sm55", "sm56", "sm72", "sm72e20", "sm63"]) {
     test(`saving older RWKV model ${model} chooses Small without changing hidden precision`, async ({ page }) => {
         let saved: UpdateDeckConfigsRequest | undefined;
         await page.route("**/_anki/getDeckConfigsForUpdate", async (route) => {

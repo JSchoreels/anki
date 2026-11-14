@@ -1,0 +1,34 @@
+diff --git a/src/inference.rs b/src/inference.rs
+index aa6497e..546a49b 100644
+--- a/src/inference.rs
++++ b/src/inference.rs
+@@ -618,2 +618,6 @@ impl FSRS {
+     {
++        let profile = std::env::var_os("ANKI_FSRS_PROFILE_COMPACT_API").is_some();
++        let started = std::time::Instant::now();
++        let mut sorting = std::time::Duration::ZERO;
++        let mut walking = std::time::Duration::ZERO;
+         if prefixes.is_empty() {
+@@ -622,3 +626,7 @@ impl FSRS {
+         validate_card_prefixes(cards, prefixes)?;
++        let validation_ms = started.elapsed().as_secs_f64() * 1000.0;
+         let mut by_card = prefixes_by_card(cards.len(), prefixes);
++        let grouping_ms = started.elapsed().as_secs_f64() * 1000.0 - validation_ms;
++        let group_bytes = by_card.capacity() * std::mem::size_of::<Vec<(usize, usize)>>()
++            + by_card.iter().map(|group| group.capacity() * std::mem::size_of::<(usize, usize)>()).sum::<usize>();
+         let mut predictions = vec![0.0; prefixes.len()];
+@@ -632,4 +640,8 @@ impl FSRS {
+             }
++            let timer = profile.then(std::time::Instant::now);
+             group.sort_by_key(|&(_, len)| len);
++            if let Some(timer) = timer { sorting += timer.elapsed(); }
++            let timer = profile.then(std::time::Instant::now);
+             self.walk_trajectory(&card.reviews, group.iter().copied(), &mut predictions)?;
++            if let Some(timer) = timer { walking += timer.elapsed(); }
+             progress_info.current += group.len();
+@@ -639,2 +651,5 @@ impl FSRS {
+         }
++        if profile {
++            eprintln!("fsrs_compact_api_profile cards={} targets={} validation_ms={validation_ms:.3} grouping_ms={grouping_ms:.3} sorting_ms={:.3} walking_ms={:.3} total_ms={:.3} group_bytes={group_bytes} prediction_bytes={}", cards.len(), prefixes.len(), sorting.as_secs_f64() * 1000.0, walking.as_secs_f64() * 1000.0, started.elapsed().as_secs_f64() * 1000.0, predictions.capacity() * std::mem::size_of::<f32>());
++        }
+         Ok(predictions)

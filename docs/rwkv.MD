@@ -67,21 +67,32 @@ it is turned off again.
 Deck Options → RWKV → **Advanced** offers three model sizes for the entire
 local profile (since 2026-11-11, replacing the **Use Smaller Model** switch):
 
-| Size | Profile value | RWKV-Curve, intervals, S90, answer time | RWKV-Instant |
-| --- | --- | --- | --- |
-| **Big** | `legacy` | the show-time big model (SM91s2) | the same model |
-| **Small** (default) | `sm72e25` | the default small model (SM63) | the show-time instant-only model, stage 2 (SM98), see below |
-| **Tiny** | `tiny` | the default small model (SM63) | the smaller instant-only model (SM101, one card layer), see below |
+What each size runs, by the schedulers the profile's presets use (since 2026-11-13,
+the family wiring (SM114); [report](rwkv-sm114-2026-11-13.MD)). Each size runs
+exactly the two models of the RWKV family release (anki-rwkv `rwkv-family-2026-11-13`)
+and never another size's model (`RWKV_SIZE_MODELS` in `qt/aqt/rwkv_model.py`):
 
-Tiny only shrinks RWKV-Instant's state: it is Small with the smaller instant-only
-model (SM101) in the place of the show-time instant-only model, stage 2 (SM98), so
-RWKV-Curve, the intervals, S90, the workload simulation and the answer-time
-estimate are exactly Small's. The big model (2,762,884 parameters; since 2026-11-11
-the show-time big model (SM91s2), see below), the 331,511-parameter small models
+| Presets use | Big (`legacy`) | Small (`sm72e25`, default) | Tiny (`tiny`) |
+| --- | --- | --- | --- |
+| RWKV-Instant and RWKV-Curve (default) | the show-time big model (SM91s2) for the curve, intervals and S90, beside the show-time instant-only big model (SM99) for RWKV-Instant | the show-time retrain (SM92) beside the Small Instant-Only model (SM98) | the Tiny two-head model (SM106) beside the Tiny Instant-Only model (SM101) |
+| RWKV-Instant and RWKV-Curve, one-model opt-out on | the show-time big model (SM91s2) alone | the show-time retrain (SM92) alone | the Tiny two-head model (SM106) alone |
+| RWKV-Instant without RWKV-Curve (opt-out ignored) | the show-time instant-only big model (SM99) alone | the Small Instant-Only model (SM98) alone | the Tiny Instant-Only model (SM101) alone |
+| RWKV-Curve only, or neither | the show-time big model (SM91s2) alone | the show-time retrain (SM92) alone | the Tiny two-head model (SM106) alone |
+
+In every size the two-head model gives RWKV-Curve, the intervals, S90, the workload
+simulation and the answer-time estimate, and the Instant-Only model gives
+RWKV-Instant's recall and button probabilities. Only Small's two-head model, the
+show-time retrain (SM92), has an answer-time head: Big and Tiny show no RWKV
+answer-time estimate. The default small model (SM63, model key `sm72e25`) is no
+longer run by any size; it stays bundled, and a profile value `sm63` runs it alone
+for both schedulers until the next Deck Options save (like the older small models).
+Profiles holding the show-time retrain (SM92) or an older small model run that one
+model alone in every case. The big models (2,762,884 parameters each: the show-time big model (SM91s2)
+and the show-time instant-only big model (SM99), see below), the 331,511-parameter small models
 SM40, SM36 Muon, SM55, SM56, the small model, leak-free (SM72, cool-down from epoch
 15, from epoch 20 and from epoch 25), the show-time retrain of the release (SM92),
-the instant-only models SM57 and SM98 and the 311,786-parameter smaller
-instant-only model (SM101) are bundled. Only the models the size and the presets'
+the instant-only models SM57 and SM98 and the 311,786-parameter Tiny
+Instant-Only model (SM101) and Tiny two-head model (SM106) are bundled. Only the models the size and the presets'
 schedulers need, and their states, are loaded.
 
 Each size is a radio button with a one-line description; SM40, SM36, SM55, SM56
@@ -94,13 +105,13 @@ Its links open the upstream [Model Factory results](https://jschoreels.github.io
 and the matched five-model backup comparison in the SM56 report, which uses f32 compute and mixed
 INT4-card/INT8-note storage.
 
-The profile key is `rwkvModel`, with `legacy`, `sm40`, `sm36`, `sm55`, `sm56`, `sm72`, `sm72e20`, `sm72e25`, `sm92` and `tiny` as
+The profile key is `rwkvModel`, with `legacy`, `sm40`, `sm36`, `sm55`, `sm56`, `sm72`, `sm72e20`, `sm63`, `sm72e25`, `sm92` and `tiny` as
 supported values (`RWKV_MODELS`; the three sizes are `RWKV_MODEL_SIZES`). Big and Small keep the values earlier
 builds stored, so existing profiles keep their choice with no migration step; an earlier build reads `tiny` as
-unknown and falls back to Small. Missing or unsupported values (including the model keys `sm57`, `sm98` and `sm101`,
+unknown and falls back to Small. Missing or unsupported values (including the model keys `sm57`, `sm98`, `sm99`, `sm101` and `sm106`,
 which are never a profile value) resolve to `sm72e25` in existing and new profiles.
 Opening Deck Options does not change a saved choice. On a successful ordinary
-Deck Options save, older `sm40`, `sm36`, `sm55`, `sm56`, `sm72` and `sm72e20` choices switch to `sm72e25` (Small); `legacy`,
+Deck Options save, older `sm40`, `sm36`, `sm55`, `sm56`, `sm72`, `sm72e20` and `sm63` choices switch to `sm72e25` (Small); `legacy`,
 `sm72e25`, `tiny` and `sm92` are preserved. Until that save the older models keep running alone as before. The older models remain supported by the runtime. Profile
 creation explicitly stores `sm72e25`. Neither model choice nor state precision is synced.
 The model control has moved from Preferences into Advanced in the RWKV card.
@@ -127,6 +138,17 @@ leak-free epoch)'s show-time LogLoss, paired user bootstrap 95% CI) it scores Cu
 +0.12%, Instant +0.10%), but the fork gives show-time inputs. The file name and
 profile key stay; the hash changed, so Big profiles rebuild their state once. See
 the [Big on the show-time big model report](rwkv-sm107-2026-11-11.MD).
+
+Since 2026-11-12, Big runs the show-time instant-only big model (SM99) for
+RWKV-Instant: alone when no preset uses RWKV-Curve, or beside SM91s2 when both
+schedulers are in use. With both, the one-model opt-out runs SM91s2 alone;
+RWKV-Curve alone also uses SM91s2. At the default state precision, one Big model
+stores 19,554 B per card and note and the pair stores 39,146 B. SM99's curve is
+untrained, and an Instant-only profile uses the FSRS fallback for due dates and
+memory states. Changing the active layout rebuilds its state from retained review
+history. See the [Big pair integration report](rwkv-sm109-2026-11-12.MD) for the
+weights, accuracy, state layouts and verification.
+
 From 2026-11-10 to 2026-11-11 the file held the big model (1 leak-free epoch): the original big model
 (fork RWKV) trained one more epoch on leak-free inputs, same architecture and format,
 with the leak-free input rule below. On 722 users of the 732-user set (leak-free
@@ -173,12 +195,12 @@ the per-model step list differs (a `&'static` slice on the model instead of the
 constant). `ModelKind` checks the card layers of the weights it loads (`sm101`: 1,
 every other small key: 2) and refuses a mismatch. `rwkv-sm40` selects the primary
 engine used by the offline benchmark API, and `--no-default-features` selects
-Legacy for those comparisons; all nine models are available at runtime in
-either build. SM40, SM36, SM55, SM56, the three SM72 cool-downs and SM92 share the small architecture's specialization;
-only two engines are compiled. The standard format/check targets also cover the
+Legacy for those comparisons; all bundled models are available at runtime in
+either build. SM91s2 and SM99 share the big engine; the remaining bundled models
+use the small architecture's specialization. Only two engines are compiled. The standard format/check targets also cover the
 included engine source.
 
-SM40, SM36, SM55, SM56, the three SM72 cool-downs and SM92 have width 64, four 16-wide heads and card/deck/note/preset/user depths
+SM40, SM36, SM55, SM56, the three SM72 cool-downs, SM92, SM57 and SM98 have width 64, four 16-wide heads and card/deck/note/preset/user depths
 2/4/1/3/3. Its 13 layer steps are interleaved, each stream carries its own
 layer-zero value residual, and only four layers retain channel mixers. Its input
 feature 22 is zeroed in every inference path. The feature builder's timing,
@@ -188,20 +210,20 @@ four-rating classifier.
 
 ### Instant Model for RWKV-Instant: the Show-Time Instant-Only Model, Stage 2 (SM98)
 
-Since 2026-11-10, with the small model, leak-free, cool-down from epoch 25 (SM63)
-selected, every profile that uses RWKV-Instant runs it on the show-time instant-only
-model, stage 2 (SM98, folder `qt/aqt/rwkv_inference/sm98/`, model kind `sm98`, never
-a profile's `rwkvModel` value): alone when no preset uses RWKV-Curve, beside the
-small model (SM63) when presets use both. The
+With the small model, leak-free, cool-down from epoch 25 (SM63) selected, presets
+using both schedulers run RWKV-Instant on the show-time instant-only model, stage 2
+(SM98, folder `qt/aqt/rwkv_inference/sm98/`, model kind `sm98`, never a profile's
+`rwkvModel` value) beside the small model (SM63). Since 2026-11-13, Instant alone
+uses the Tiny Instant-Only model (SM101) instead. The
 show-time instant-only model, stage 2 (SM98) is the release trained further with the
 curve loss off and with show-time intervals (the interval runs up to the moment the
 card is shown, which is what RWKV-Instant gives the model): the show-time
 instant-only small model (SM96)'s epoch 31, four more instant-only epochs and the
 release's one-epoch 32k Muon cool-down. Its curve head is untrained, so it never
 serves a curve: beside it, the small model (SM63) keeps the curve recall, intervals,
-S90, the workload simulation and the answer-time estimate; alone, those are not
-computed at all and the presets' FSRS fallback gives the due dates, intervals and
-memory states.
+S90, the workload simulation and the answer-time estimate. An instant-only model
+alone does not compute those, and the presets' FSRS fallback gives the due dates,
+intervals and memory states.
 
 Upstream scoring on show-time inputs, 722 users of the 732-user held-out set,
 w8+s8, leak-free, paired user bootstrap 95% CI; % of the big model (1 leak-free
@@ -214,20 +236,25 @@ instant-only small model (SM96, never bundled) −0.035% [−0.041, −0.029]. O
 −0.512% [−0.564, −0.469] of the release's own LogLoss. Source: anki-rwkv branch
 `sm98`, `artifacts/small-model/sm98/sm98-result.md`.
 
-With Small selected (Tiny alike, with its smaller instant-only model (SM101) in place of SM98), the runtime models follow the presets'
+Until 2026-11-13 (before the family wiring (SM114)) Small paired the default
+small model (SM63) with SM98; since then Small pairs the show-time retrain (SM92)
+with it, see the size table above.
+
+With Small selected (see the size table above for Tiny and Big), the runtime models follow the presets'
 schedulers and one Advanced opt-out, read at profile open. A preset "uses
 RWKV-Curve" when RWKV-Curve is its scheduler or RWKV-Instant's **Fallback : Due-Date
 Calculator** (both set `rwkv_review_enabled`):
 
 | Presets use | Opt-out | RWKV-Instant | RWKV-Curve, intervals, S90, answer time | Model states |
 | --- | --- | --- | --- | --- |
-| RWKV-Instant, no RWKV-Curve | ignored | the show-time instant-only model, stage 2 (SM98), alone (`InstantOnly`) | none: FSRS fallback for due dates and memory states | one |
-| both | off (default) | the show-time instant-only model, stage 2 (SM98) | the small model (SM63) | two |
+| RWKV-Instant, no RWKV-Curve | ignored | the Small Instant-Only model (SM98), alone (`InstantOnly`; the Tiny Instant-Only model (SM101) in SM112) | none: FSRS fallback for due dates and memory states | one |
+| both | off (default) | the show-time instant-only model, stage 2 (SM98) | the show-time retrain (SM92) (the small model (SM63) until SM114) | two |
 | both | on | the show-time retrain of the release (SM92) | the show-time retrain of the release (SM92) | one |
-| RWKV-Curve only, or neither | ignored | (none) | the small model (SM63) | one |
+| RWKV-Curve only, or neither | ignored | (none) | the show-time retrain (SM92) (the small model (SM63) until SM114) | one |
 
-**RWKV-Instant without RWKV-Curve (the smart switch).** The show-time instant-only
-model, stage 2 (SM98) alone gives RWKV-Instant's recall and button probabilities
+**RWKV-Instant without RWKV-Curve (the smart switch).** The size's Instant-Only
+model alone (the show-time instant-only big model (SM99) for Big, the Small
+Instant-Only model (SM98) for Small, the Tiny Instant-Only model (SM101) for Tiny) gives RWKV-Instant's recall and button probabilities
 (queue order, minimum daily reviews, repeat spacing, Card Info's RWKV recall and
 after-review rows, the stats and Browser RWKV recall). It has no curve recall,
 intervals, S90 or answer time: scheduling keeps the FSRS states, nothing writes an
@@ -252,11 +279,11 @@ are the standard for all scoring. On 722 users of the 732-user held-out set, % o
 big model (1 leak-free epoch)'s LogLoss, SM92 minus SM63 is −0.019% [−0.092, +0.085]
 on the curve (a tie) and −0.305% [−0.405, −0.232] on Instant (better). The state key
 changes for these profiles (`model` `sm92`, no `instantModel`), so they rebuild their
-state once. Small and Tiny behave alike here.
+state once. Since 2026-11-13 Tiny runs the Tiny two-head model (SM106) alone here
+instead (see below).
 
-The opt-out, **Use one model for RWKV (about half the memory, slightly worse
-RWKV-Instant predictions)**, is shown under Advanced whenever the small model (SM63)
-is selected and is stored in the profile as `rwkvSingleModel` (default off, not
+The opt-out, **Use one model for RWKV**, is shown under Advanced whenever Big, Small
+or Tiny is selected and is stored in the profile as `rwkvSingleModel` (default off, not
 synced, saved with the model choice through `rwkv_profile_settings.single_model`).
 It only matters when presets use both RWKV-Instant and RWKV-Curve, and its
 description says so (the runtime follows every preset's scheduler, not just the
@@ -271,10 +298,11 @@ update rebuilds the state from history once for every profile that now runs the
 pair, and states of other pairs are never reused. The show-time instant-only model,
 stage 2 (SM98) alone has its own replay key (`model` `sm98`, no `instantModel`), so a
 profile that switches between the pair and the show-time instant-only model, stage 2 (SM98) alone rebuilds its state once, and a
-pair's state never serves a single model or the other way round. The native paired mode accepts any distinct small model with the same
-leak-free input rule beside a full release; an instant-only model loaded alone always
-runs in the `InstantOnly` mode, never as a full model. A profile whose model is the
-show-time retrain (SM92), Legacy or an older small model serves both schedulers
+pair's state never serves a single model or the other way round. The native paired
+mode accepts a full release and a different instant model of the same architecture
+and with the same leak-free input rule; small pairs require the small-model feature.
+An instant-only model loaded alone always runs in an instant-only mode, never as a
+full model. A profile whose model is the show-time retrain (SM92) or an older small model serves both schedulers
 alone.
 
 The show-time retrain (SM92, `RWKV_INSTANT_MODEL`, still a selectable profile model,
@@ -305,6 +333,73 @@ leak-free epoch)'s normal-input instant LogLoss): SM101 minus SM98 +0.192% [+0.1
 +0.215], minus the show-time retrain (SM92) −0.057% [−0.079, −0.034]. The replay
 keys of SM101 alone (`model` `sm101`) and of its pair (`instantModel` `sm101`) are
 their own. See the [Big / Small / Tiny integration report](rwkv-sm101-2026-11-11.MD).
+
+### Tiny's One Model and RWKV-Instant Alone (SM112)
+
+Since 2026-11-13 (the user's decision of 2026-11-12):
+
+- **Tiny with the one-model opt-out** runs the Tiny two-head model (SM106, folder
+  `qt/aqt/rwkv_inference/sm106/`, model kind `sm106`, `RWKV_TINY_SINGLE_MODEL`) alone
+  instead of the show-time retrain (SM92). The Tiny two-head model (SM106) is the
+  show-time retrain (SM92)'s constant-LR epoch 26 cut to one card layer (the tiny plan
+  of the Tiny Instant-Only model (SM101)), three more epochs with both heads and the
+  release's one-epoch 32k Muon cool-down, all on show-time inputs: a full model (curve,
+  intervals, S90, instant recall and buttons) without an answer-time head, so Card
+  Info shows no RWKV answer-time rows there. Upstream (722 users of the 732-user set,
+  show-time inputs, % of the big model (1 leak-free epoch)'s LogLoss): curve 0.300676,
+  +0.37% [+0.18, +0.57]; instant 0.277369, +0.08% [−0.03, +0.16]; against the
+  show-time retrain (SM92) curve +0.11% [+0.07, +0.14] and instant +0.18% [+0.16,
+  +0.20]. State: 2,622 B per card and note at the default storage precision (the
+  show-time retrain (SM92): 3,530 B).
+- **RWKV-Instant without RWKV-Curve** runs the Tiny Instant-Only model (SM101) alone
+  for Small too (`RWKV_INSTANT_ALONE_MODEL`), not the Small Instant-Only model (SM98);
+  Big keeps the show-time instant-only big model (SM99) alone
+  (`RWKV_CHOICE_INSTANT_ALONE_MODELS`). Small's pair stays the default small model
+  (SM63) beside the Small Instant-Only model (SM98). Small and Tiny then run the same
+  runtime, so switching between them keeps the state.
+
+The replay key holds `model` (`sm101`, `sm106`), and the model cache key the weights'
+SHA-256 (the Tiny Instant-Only model (SM101) and the Tiny two-head model (SM106) have
+the same file size), so a Small RWKV-Instant-only state built on the Small
+Instant-Only model (SM98) and a Tiny opt-out state built on the show-time retrain
+(SM92) rebuild once from the review history. See the [report](rwkv-sm112-2026-11-13.MD).
+The family wiring (SM114, below) replaced the size-crossing rule of the second
+point: Small runs its own Small Instant-Only model (SM98) alone again.
+
+### The RWKV Family Release in Every Size (SM114)
+
+Since 2026-11-13 (the user's decision of 2026-11-13: the fork must run exactly the
+models of the published family release, and a size never falls back to another
+size's model), `runtime_models()` picks, for each size, only between the size's
+two-head model and its Instant-Only model (`RWKV_SIZE_MODELS`):
+
+| Size | Two-head model (RWKV-Curve, intervals, S90; both schedulers with the opt-out) | Instant-Only model (RWKV-Instant) |
+| --- | --- | --- |
+| Big (`legacy`) | the show-time big model (SM91s2), no answer-time head | the show-time instant-only big model (SM99) |
+| Small (`sm72e25`) | the show-time retrain (SM92), with an answer-time head | the Small Instant-Only model (SM98) |
+| Tiny (`tiny`) | the Tiny two-head model (SM106), no answer-time head | the Tiny Instant-Only model (SM101) |
+
+Both schedulers by default run the pair, with the opt-out the two-head model alone;
+RWKV-Instant without RWKV-Curve the Instant-Only model alone; RWKV-Curve only (or
+neither) the two-head model alone. The removed constants `RWKV_INSTANT_ALONE_MODEL`,
+`RWKV_CHOICE_INSTANT_ALONE_MODELS`, `RWKV_CHOICE_CURVE_MODELS`,
+`RWKV_CHOICE_INSTANT_MODELS` and `RWKV_CHOICE_SINGLE_MODELS` held the cross-size
+rules. A custom checkpoint (`ANKI_RWKV_MODEL_PATH`) replaces the size's two-head
+model, so under Tiny it must have Tiny's one card layer. Show-time curve LogLoss on
+722 users of the 732-user set (w8+s8, lower is better): the default small model (SM63)
+0.300414, the show-time retrain (SM92) 0.300356, the Tiny two-head model (SM106)
+0.300676; the instant models are unchanged. State per card and note at the default
+precision: Small 3,530 B with RWKV-Instant alone (2,622 B in SM112, which ran SM101
+there) and 7,098 B with both; Tiny 2,622 B and 5,282 B (6,190 B in SM112, with SM63
+on the curve).
+
+Eight of the 18 size × scheduler × opt-out combinations changed and rebuild their
+state once (their replay key and model hash differ): Small with RWKV-Instant alone
+(with and without the opt-out, SM101 → SM98), Small with both (SM63 + SM98 → SM92 +
+SM98), Small with RWKV-Curve only or neither (SM63 → SM92), Tiny with both (SM63 +
+SM101 → SM106 + SM101), Tiny with RWKV-Curve only or neither (SM63 → SM106). Big,
+Small's and Tiny's opt-out with both schedulers and Tiny with RWKV-Instant alone keep
+their state. See the [report](rwkv-sm114-2026-11-13.MD).
 
 ### Show-Time Retrain of the Release (SM92)
 
@@ -388,7 +483,7 @@ Upstream LogLoss on held-out users, scored with INT8 per-channel weights and
 INT8 card/note state (w8+s8) and leak-free inputs for every model (lower is
 better; brackets are 95% review-weighted user-bootstrap intervals):
 
-| Held-out set | Big model (1 leak-free epoch), Curve / Instant | Shipped big model (Legacy), Curve / Instant | SM72 (cool-down from epoch 25), Curve / Instant | vs big model (1 leak-free epoch) | vs shipped big model |
+| Held-out set | Big model (1 leak-free epoch), Curve / Instant | Original big model, Curve / Instant | SM72 (cool-down from epoch 25), Curve / Instant | vs big model (1 leak-free epoch) | vs original big model |
 | --- | ---: | ---: | ---: | ---: | ---: |
 | 464-user set (458 users) | 0.29530 / 0.27215 | 0.29591 / 0.27260 | 0.29641 / 0.27293 | +0.38% [+0.18, +0.63] / +0.29% [+0.25, +0.33] | +0.17% / +0.12% |
 | 732-user set (722 users) | 0.29897 / 0.27576 | 0.29966 / 0.27620 | 0.30003 / 0.27654 | +0.36% [+0.20, +0.53] / +0.28% [+0.25, +0.31] | +0.12% / +0.12% |
@@ -409,7 +504,7 @@ not measured for SM72 (cool-down from epoch 25); the matched backup comparison l
 predates SM72 and does not include it.
 
 **Leak-free input rule.** When any SM72 cool-down, SM92 or Legacy (Big, the show-time
-big model (SM91s2)) is selected, and for the instant-only models SM57 and SM98, the
+big model (SM91s2)) is selected, and for the instant-only models SM57, SM98, SM99 and SM101, the
 runtime forces inputs 13, 14 and 15 to zero on every row, in the per-review, query,
 batched-query and bulk-replay paths, because those models never saw them set in
 training. The earlier small models (SM40, SM36, SM55, SM56) keep their own feature
@@ -950,11 +1045,13 @@ just rwkv-history-fingerprint-bench \
   --rounds 5
 ```
 
-After collection sync, Anki reconciles resident RWKV state only when sync
-downloaded collection changes. A no-change sync, or a sync that only uploads
-desktop changes, preserves the resident state and skips the post-sync
-operation. The normal UI reset runs before reconciliation so it cannot
-invalidate the newly refreshed state. If synchronized reviews only extend the
+After collection sync, Anki reconciles resident RWKV state when sync downloaded
+collection changes. A no-change sync, or a sync that only uploads desktop
+changes, preserves the resident state and skips the post-sync operation. This
+also covers add-ons that call `Collection.sync_collection` and fire the standard
+sync hooks. When an add-on's sync outcome is unknown or requires a full sync,
+Anki reconciles conservatively. The normal UI reset runs before reconciliation
+so it cannot invalidate the newly refreshed state. If synchronized reviews only extend the
 cached history, they are replayed incrementally. If a synchronized review
 belongs in the middle of history, Anki validates checkpoint structure and
 identity without loading the stored state payloads, restores only the newest
@@ -967,7 +1064,14 @@ the resulting state includes those reviews. A cache created by an older version
 that recorded excluded synchronized reviews is also rebuilt once on its next
 load, including any reviews still retained in the collection. A failed post-sync rebuild
 leaves resident state unready; it does not restore a pre-sync state that could
-overwrite a newer refresh.
+overwrite a newer refresh. When a reviewer answer is saved while the resident
+state is cold, the live update is deferred: the next preparation replays the
+saved history, including that answer, once. This also applies after a template
+edit invalidates the resident state.
+During resident retrievability scoring, an invalid compact state is reported as
+an error with the state scope and detected validation failure; the affected
+queue refresh is skipped. The error does not replace the state with an invented
+memory estimate or establish why it became invalid.
 Rebuilding the RWKV state cache from deck options always writes a fresh,
 compacted state store. Cache format version 12 introduces delta state segments,
 so older local state caches rebuild once after upgrading.
@@ -1041,22 +1145,36 @@ answered during the current scheduler day remains available after the maximum
 review limit is reached. It does not reserve review-limit capacity, and
 answering it again does not increment the deck's completed-review counter.
 
-`rwkv_review_minimum_reviews_per_day` sets a floor for the number of reviews
-RWKV-Instant offers in a scheduler day. Normally eligible review and interday
-learning cards, plus reviews already completed today, count toward the floor.
-If the floor has not been met, RWKV pulls forward scored review cards above
-their target-retention threshold, starting with the lowest retrievability.
-Ordinary maximum review limits, sibling burying, and same-day/repeat-spacing
-guards still take precedence. Limit-exempt same-day repeats may bypass the
-maximum, but do not satisfy the minimum. A deck's completed and queued reviews
-also count toward every ancestor deck's floor; when a parent deck is studied,
-unmet subdeck floors are enforced within their respective subtrees. When
-**Limits start from top** is enabled, studying a subdeck also applies its
-ancestors' unmet floors, using cards from the selected subtree. Deck browser
-counts include these inherited minimums, just like the review queue. Cards
-currently in a filtered deck's review or interday-learning queue count toward
-the floor of their original deck and its ancestors. This accounting is
-transient and does not mark those cards as reviewed today.
+`rwkv_review_minimum_reviews_per_day` sets the selected deck's floor for a
+scheduler day. Normally eligible review and interday learning cards, plus
+reviews already completed today in the selected deck and its subdecks, count
+toward it. If more reviews are needed, RWKV pulls forward scored review cards
+from the selected subtree in ascending retrievability, independently of the
+configured display order. Ordinary maximum review limits, sibling burying, and
+same-day/repeat-spacing guards still take precedence. Limit-exempt same-day
+repeats may bypass the maximum, but do not satisfy the minimum.
+
+The deck-specific **Also honor subdeck minimums** option is off by default.
+When enabled, the selected deck also enforces the minimum of each direct
+subdeck. Each of those subdecks independently decides whether to enforce its own
+direct children's minimums, allowing some branches to remain pooled while
+others are subdivided. The minimum amounts come from each deck's preset; the
+option itself belongs to the deck. **Apply this setting to all subdecks on
+save** copies only the option to every descendant without changing their
+presets or their other settings. More specific minimums are satisfied first,
+so those reviews also count toward their ancestors' minimums before the
+remaining parent-wide target is filled. This can add reviews beyond the parent
+minimum when the subdeck minimums together require more.
+
+Ancestor maximums still apply when **Limits start from top** is enabled, but
+ancestor minimums do not apply while studying a subdeck. Deck browser counts
+and Instant forecasts use the same selected-deck and recursive minimum rules.
+Cards currently in a filtered deck's review or interday-learning queue count
+toward their original deck's applicable minimums. This accounting is transient
+and does not mark those cards as reviewed today. The deck-specific option is
+stored in the deck's `other` metadata under
+`jschoreels.rwkv.respect_subdeck_minimums`, which preserves it through legacy
+deck serialization without changing shared presets.
 
 Due review cards without an RWKV score remain eligible through the normal
 due-card path. When the new-card gather order is `Ascending
@@ -1403,6 +1521,13 @@ per-grade Dynamic DR targets and uses the matching target for Again, Hard, Good,
 and Easy. Otherwise it uses the resolved preset desired retention, with
 deck-config desired retention and `0.9` as fallbacks.
 
+When a compatible Dynamic Desired Retention add-on supplies answer-button grade
+rules, each configured rule replaces that grade's target before RWKV-Curve is
+queried. Unconfigured grades retain their native Dynamic DR or base targets.
+The add-on leaves the resulting Curve intervals intact and applies any field
+interval bounds afterward. If Curve cannot supply all four answer intervals,
+the normal FSRS fallback continues to apply the grade rules.
+
 The same per-grade RWKV-Curve is also evaluated at `90%` retrievability. That
 interval is the RWKV S90 equivalent. The selected answer's S90 is written to the
 card memory-state payload as `memory_state.stability`, which is the user-facing
@@ -1530,6 +1655,313 @@ runtime operates from resident warmed state, and a development backend without
 that simulator falls back to the Python loop. Optional smoothing applies a
 centered moving window to neighboring retention points. Both simulator paths
 report progress while running.
+
+### Workload Forecast (add-on API)
+
+The workload forecast answers "how many reviews will I have tomorrow, the day
+after, ..." with a mean line and widening confidence bands. It is a backend
+for add-ons such as Search Stats Extended; Anki itself shows no graph for it.
+
+**Instant algorithm.** When the search includes a deck studied with
+RWKV-Instant, each path starts from the resident Instant model state and
+simulates the actual matched cards. Each simulated day samples one complete
+study day from the previous 365 scheduler days with at least two answers. Its
+answer timestamps set the session timing, and its Hard/Good/Easy shares
+set the successful-answer mix; the current Instant recall probability decides
+whether an answer is Again. If the recorded day has no successful answers, the
+overall historical successful-answer mix is used. If more answers are needed
+than were recorded, the simulation continues at that day's median gap of at
+most one minute (or one second if no such gap exists), until the day ends.
+Day 0 starts no earlier than the current time. Missing usable historical timing
+or successful answers is reported instead of inventing a session. When no card
+is selectable, a gap of at least 30 minutes between recorded answers marks the
+start of the next simulated session; shorter gaps are not treated as new
+sessions after the queue has emptied.
+
+Instant review eligibility uses the model's current prediction and target,
+including future-due cards and the daily minimum's pull-forward rule; the
+untrained Instant-only curve head is not used. The selected study deck's review
+minimum, its recursively enabled subdeck minimums, each deck's maximum, today's
+counts, and the new-card limit and **New cards ignore review limit** setting
+are applied through Anki's limit tree. A selected deck's ancestor maximums
+participate when **Limits start from top** is enabled. A search spanning
+independent deck trees applies each tree's maximums separately. Cards in
+non-Instant trees retain normal due-date eligibility. For a search spanning
+trees, cards in Instant-enabled subdecks use Instant eligibility even if their
+top-level deck uses another preset. The selected study deck sets the queue
+order, mix and refresh policy when it is in scope; otherwise the first tree in
+name order supplies that policy. Reviews use the configured
+refresh interval, candidate window and precomputation setting; queued scores
+can stay stale as they do during study, but the simulated answer probability is
+evaluated at the answer time. A precomputed card is checked against the
+remaining deck and parent limits before it is answered. Paths run concurrently within the workload state
+memory budget and support cancellation. The forecast reuses bounded decoded
+copies of compressed card and note states across paths and retains a bounded
+number of decoded per-path updates. It also reuses new-card ordering when the
+gather order does not depend on retrievability. These caches do not change the
+configured refresh cadence, selection, or compressed-state precision.
+
+One local macOS measurement (2026-11-07), using an all-collection search on a
+copy with 28,925 matched cards and resident SM57 state warmed from 225,482 reviews at the
+default INT4-card/INT8-note precision, compared the same seeded two-day path
+with a full refresh after each answer. The forecast took 66.5 s before and
+45.7 s after the cache and queue changes (31% less), with identical complete
+output. This is one measurement, not an estimate for a 50-path forecast.
+
+Each path also logs per-phase wall time at debug level (`RWKV Instant forecast
+path phases`). On a synthetic 10,000-card benchmark (`cargo run -p anki --release
+--features bench --example instant_forecast_bench`), scoring the queue after
+every answer took about 98% of path time. Per-queue card indexes and skipping
+the answered card's score, when a full refresh rescores it before any read,
+leave the output byte-identical but remove only a small part of the remaining
+time. For faster approximate runs, the Rust-only `approximate_refresh_answers`
+setting refreshes queued scores every k answers. On that benchmark k = 8 was
+about 7x faster, with daily done and lapse counts within seed-to-seed
+variation; due counts drift with k (about 5-12% at k = 2-16 over 7 days). It is
+not exposed in Anki or the add-on API. The calibration replay that estimates
+the forecast's recall bias is cached per history digest, runtime and state
+generation, so repeated forecasts do not replay the whole history again.
+
+New, learning and relearning cards use Anki scheduling states and the preset's
+FSRS or SM-2 settings. Intraday learning does not consume a review limit;
+interday learning does. Future Dynamic DR targets are held at their initial
+resolved values. Searches containing cards scheduled with RWKV-Curve are not
+yet supported by the Instant forecast and return a message. Suspended and
+filtered cards, reviews outside the search, sibling burying, future collection changes, load balancing,
+and custom review-fuzz settings are not modeled. A run may be slow when it
+must refresh a large queue after every answer. The simulation does not predict
+skipped days, partial sessions, or model error.
+
+**Curve algorithm.** For the cards matched by a search, the forecast runs `paths`
+independent simulated futures of `days` days. Every path starts from the same
+resident RWKV state, the cards' real due dates and today's remaining deck
+limits, and replays the DR workload simulator's day loop: due reviews in due-day
+order (presets' own review orders are not modeled), then new cards in card-ID order, each deck capped by its preset's review
+and new limits (minus what was already done today on day 0). Grades are always
+drawn from the RWKV curve model's recall probability with the
+historical Hard/Good/Easy mix and time per grade. The next interval comes from
+the card's own preset:
+
+- RWKV-Curve presets: RWKV curve intervals at the card's desired retention.
+- FSRS presets (collection FSRS on, preset not on RWKV): FSRS next states from
+  the card's memory state and parameters at its desired retention; missing
+  memory states are estimated from the SM-2 interval and ease
+  (`estimated_fsrs_states` counts them).
+- SM-2 presets: ease-factor intervals (Again 1 day, Hard x1.2, Good x ease,
+  Easy x ease x 1.3, ease -200/-150/+150 permille), without fuzz or interval
+  modifiers.
+
+A mixed collection is therefore simulated as one population: each card keeps
+its own scheduler and desired retention (the input's target retention, which
+carries Dynamic DR when it is active, else the preset's DR), every deck keeps
+its own limits, and all cards share the one RWKV learner. Paths differ only in
+their grade seed (path `i` uses `seed + i`; seed 0 reproduces the DR workload
+simulator's draws exactly, and the Rust test
+`one_path_with_seed_zero_matches_the_dr_workload_simulation` checks equality of
+review count and total cost with it). The bands are per-day quantiles over the
+paths (linear interpolation between sorted values).
+
+**Python entry points** (`aqt.rwkv_scheduler`, all return JSON-able data):
+
+- `rwkv_workload_forecast_available(mw) -> bool`: capability check. False on
+  builds without the forecast or when the RWKV backend is not running; hide the
+  graph then. Check `hasattr(aqt.rwkv_scheduler, "forecast_rwkv_workload")`
+  first for older builds.
+- `forecast_rwkv_workload(*, mw=None, search="", days=30, paths=200, seed=0,
+  state_update_interval=1, fast=False, max_interval=36500, progress=None,
+  cancel_event=None) -> dict`: blocking; run it off the UI thread. For Curve,
+  `fast=True`
+  takes RWKV intervals from the selected grade's curve alone (no grade-order
+  check over all four grades), about 1.5x faster; see Speed. `search` is
+  an Anki search (`""` = whole collection; SSE can pass `cid:1,2,3`). `days`
+  1..365, `paths` 1..2000. `progress(current_path, total_paths)` is called as
+  paths finish; setting `cancel_event` stops the run with an exception. Raises
+  `ValueError` when the RWKV state cache is not ready.
+- `start_rwkv_workload_forecast(mw, **same keyword arguments) -> progress dict`,
+  `rwkv_workload_forecast_progress(job_id) -> dict`,
+  `cancel_rwkv_workload_forecast(job_id)`: the same as a background job (one at
+  a time; starting a new one cancels the old one), for web pages that poll.
+  The progress dict is `{"job_id", "phase": "running" | "complete" | "failed" |
+  "missing", "current", "total", "done", "error", "result"}`; `result` is the
+  forecast dict once `phase` is `"complete"`. Instant jobs additionally publish
+  `partial_result` while running, updating one completed path-day at a time;
+  `unit` is `"days"` and `current` / `total` count path-days. Missing scenario
+  values are `null` until their paths reach that day. Curve jobs continue to
+  report completed paths and return their chart at completion.
+
+**Result** (`version` 1):
+
+```json
+{
+  "version": 1, "days": 30, "paths": 200, "seed": 0, "cards": 31537,
+  "cards_by_scheduler": {"rwkv": 30000, "fsrs": 1537},
+  "estimated_fsrs_states": 12, "elapsed_ms": 9000.0, "state_update_interval": 1,
+  "fast": false, "model": "instant",
+  "daily": [
+    {"day": 0,
+     "due": {"mean": 0, "p1": 0, "p5": 0, "p50": 0, "p95": 0, "p99": 0},
+     "done": {...}, "new": {...}, "lapses": {...}, "seconds": {...}}
+  ],
+  "groups": [
+    {"deck_id": 1, "due_mean": [...], "done_mean": [...], "new_mean": [...]}
+  ]
+}
+```
+
+Units and meaning, per day (`day` 0 = today, then tomorrow, ...):
+
+- `due`: review cards due that day before limits, including backlog carried
+  over from earlier days (new cards excluded). Today's cards already answered
+  are not included; today's due count is today's remaining review queue.
+- `done`: review cards answered that day after deck limits.
+- `new`: new cards introduced that day.
+- `lapses`: review answers graded Again.
+- `seconds`: estimated answer time of all that day's answers. Instant includes
+  learning and relearning, with R- and grade-adjusted historical durations for
+  review answers; Curve uses
+  the per-grade time model for reviews and new cards.
+- `groups`: per deck (limit group), the mean over paths of due, done and new
+  per day (no bands).
+
+**What the Curve bands cover.** Only answer randomness under the model: which cards
+the user fails or passes, and how that moves later due dates. They assume the
+user does every review the limits allow, every day, in the simulated order.
+They do not cover skipping days, doing only part of the reviews, changing
+limits, presets or retention, adding new notes, model error (the RWKV recall
+predictions being wrong for this user), or learning/relearning steps within a
+day (a day-level simulation: a lapse becomes due the next day). Day 0 is nearly
+certain (its due cards are known; only lapses and time vary), and day 1 is
+close to it; the bands widen as answers compound. Parent-deck limits, the
+new/review mix setting, easy days, burying of siblings and live fuzz are not
+modeled, and cards that are in (re)learning right now or suspended are left
+out (the same card set as the DR workload simulator).
+
+Instant bands also include the sampled historical day and its answer timings
+and successful-answer mix. The sampled days are those with at least 10 answers
+(or at least 2 if fewer than 7 days qualify). Only those within the last 90
+scheduler days are used when at least 7 of them qualify; otherwise the whole
+year is kept. Answer times drift with study habits. On one user's backtest
+(2026-11-09, 14 cut dates), the whole year put the forecast's seconds per
+review 21% above the actual figure (+7% on the 7 cuts whose settings did not
+change afterwards). With 90 days it was 9% above (+5%). On a 100-path
+forecast of 10 days, the mean was 12.3 s per review before and 9.6 s after,
+against 9.6 s actual. Windows of 45-90 days, or recency weights with a
+half-life of 45-60 days, gave similar levels in an offline screen. A day's
+Hard/Good/Easy shares are
+shrunk toward the pooled shares with a prior of 20 successful answers, and the
+durations of a day with fewer than 30 answers are shrunk toward the pooled mean
+duration with a prior of 30 answers (the simulation cycles through a day's
+durations, so a tiny day would otherwise repeat a handful of values hundreds of
+times). `done` counts review-queue answers; `new` counts introductions.
+
+For Instant review answers, a separate regression per grade estimates answer
+seconds from the model's pre-answer R, using the same linear R model as the
+RWKV workload simulator. It fits eligible review answers from the selected
+decks on the sampled days' window (the last 90 days, or the last year when the
+whole year is sampled), paired with replayed pre-answer Instant predictions;
+durations of zero or at least 10 minutes are excluded. Each grade needs at
+least five samples. Predictions are limited to the R range seen for that
+grade, and invalid predictions fall back to that grade's historical mean.
+The sampled duration is multiplied by the fitted prediction divided by the
+mean of the sampled days' mean durations, retaining session-to-session
+variation. New, learning and relearning answers retain their sampled duration.
+When a grade lacks enough data, or the replay is unavailable, its sampled
+duration is used unchanged. The sampled timestamps and gaps do not change,
+so adjusted durations are estimates rather than a rescheduled timeline. The
+`review_time_model` result is `"r_and_grade"` when at least one regression is
+available and `"historical"` otherwise; `review_time_samples` counts the
+eligible fitted answers when a model is present.
+
+With exactly three Instant paths, the API runs lower, central and higher
+paths with the same historical sessions and the model's unmodified recall
+probabilities, and a different target for each path's daily answer outcomes.
+All days have the same weight: a simulated day lasts until the queue is empty
+or the limits are hit, so the length of the sampled historical session does not
+predict that day's answer count. Each path shares one set of daily noise, which
+sums to zero, plus a shift that separates the paths by one standard deviation of
+the aggregate answer outcome. The shift is allocated with a cumulative
+envelope, `sqrt(scale^2 * t + kappa^2 * t^2 / days)` after `t` days, so the
+separation of the paths at any day equals the one-sigma spread of the
+cumulative residual up to that day. A linear allocation would make the bands
+too narrow early in the horizon. `scale` is the calibration scale below and
+`kappa` expresses the systematic recall error below in units of the model's
+aggregate sigma. At the first non-empty queue of each day, a preview of up to
+512 eligible cards estimates the variance in answer outcomes. For every
+simulated answer, its current model prediction and the residual observed so far
+inform an approximate conditional draw toward that day's target. The adjustment
+is updated as answers arrive, instead of adding the same offset to every recall
+prediction. Review, new and learning answers contribute, and the queue and its
+refreshes continue to use the unconditioned model predictions. The estimate of
+remaining answers is necessarily approximate because future queues and learning
+steps can change.
+
+For eligible review days in the last year, a separate replay compares actual
+answers with pre-answer model predictions. The variance of daily mean residuals
+is compared with the expected Bernoulli variance of those same answers. Their
+ratio scales the simulated outcome deviations; the residual variance is not
+added on top of answer randomness a second time. The variance estimate blends
+in 20 model-based prior days to reduce unstable corrections from little history.
+At least two days with two eligible reviews and nonzero predicted variance are
+required; otherwise the scale defaults to one.
+
+The same replay measures a systematic recall error that is perfectly correlated
+across days and therefore grows linearly in cumulative terms. `bias_sd` is the
+root-mean-square of the standard error of the mean residual per answer
+(computed from clusters of weeks when at least four weeks have data, otherwise
+days) and the measured mean residual itself. It is deliberately symmetric: the
+central path is not corrected for the measured bias, and the lower and higher
+paths are separated by it. The paths' separation therefore corresponds to one
+true aggregate standard deviation when the calibration is right.
+
+What the spread covers: answer-outcome randomness and systematic recall error.
+It does not cover the per-day range of `done`, `new`, `lapses` and `seconds`
+that comes from the queue, the limits and the sampled days; three paths are not
+enough to estimate that, and at least 100 independent paths are needed. It is an
+approximation, not a calibrated probability interval for workload. In
+particular, the recurrent model and changing queues can make workload paths
+cross or produce a large spread.
+The API adds `scenario_kind: "stratified"`, `scenario_history_days` and
+`scenario_bias_sd` when calibration succeeds, and `scenario_daily`; each
+metric's array is in `[lower, central, higher]` answer-outcome order. `daily`
+and `groups` retain their existing summary format; consumers should use the
+middle scenario for the central line rather than assume it is the median. If
+calibration is not available, `scenario_calibration` is `"insufficient_history"`.
+Other Instant path counts and all Curve forecasts continue to return stochastic
+path summaries.
+
+**Curve speed.** Cost is proportional to paths x simulated answers per path; each
+answer runs several RWKV steps (recall query, interval curves, state update),
+and answers within a path are sequential because every answer updates shared
+deck/preset/global streams. Paths run in parallel. Measured 2026-11-07 on a
+temporary copy of a 31,537-card collection (13,621 reviewed cards, 214,654
+reviews; warm-up 4.1 s) with the release model (SM63), 30 days, 20 paths,
+`RAYON_NUM_THREADS=8` on a machine busy with other jobs, due dates derived from
+the curve (a 10,535-card day-0 backlog):
+
+| mode | limit/deck | answers/path | time | answers/s |
+| --- | --- | ---: | ---: | ---: |
+| exact | 400 | 21,929 | 52.9 s | 8.3k |
+| `fast=True` | 400 | 21,930 | 35.2 s | 12.5k |
+| `state_update_interval=8` | 400 | 24,431 | 42.2 s | 11.6k |
+| exact | none | 64,038 | 167.6 s | 7.6k |
+| `fast=True` | none | 66,258 | 120.2 s | 11.0k |
+| `state_update_interval=8` | none | 68,963 | 118.5 s | 11.6k |
+
+So 200 paths of a ~700-answers/day collection take about 9 minutes exact and 6
+minutes fast on 8 busy threads: run it as a background job with progress, and
+use 50-100 paths for a quick look (p1/p99 need about 100 paths to mean much).
+With the 400 limit, `fast=True` matched the exact forecast (same seeds) to
+within 0.1% of total answers and day-7/day-14 means; with the day-0 backlog and
+no limit it gave 3.5% more answers in total and a 10% higher day-29 mean.
+`state_update_interval` > 1 updates the RWKV state only every n-th answer, so
+later recall predictions ignore the skipped answers: at 8 it was no faster than
+`fast=True` and biased (+11% answers with the limit; day-7 mean due +38% and
+day-29 -27% without), so keep it at 1. Benchmark (copied collections only):
+`ANKI_RWKV_FORECAST_BENCH_COLLECTION=<copy.anki2>
+ANKI_RWKV_FORECAST_BENCH_MODEL=qt/aqt/rwkv_inference/sm72e25/weights.f32.bin
+[ANKI_RWKV_FORECAST_BENCH_PATHS=20 ANKI_RWKV_FORECAST_BENCH_REVIEW_LIMIT=400
+ANKI_RWKV_FORECAST_BENCH_SINGLE_STEP=1]
+cargo test -p anki --release rwkv::tests::rwkv_workload_forecast_collection_benchmark -- --ignored --nocapture`.
 
 After an answer, the reviewer updates the in-memory RWKV state. With **Precompute
 next card before this card answer** enabled (the default), the next card is

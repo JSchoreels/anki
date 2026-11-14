@@ -116,6 +116,7 @@ test.each([
     ["sm56", "sm72e25"],
     ["sm72", "sm72e25"],
     ["sm72e20", "sm72e25"],
+    ["sm63", "sm72e25"],
     ["sm72e25", "sm72e25"],
     ["sm92", "sm92"],
     ["tiny", "tiny"],
@@ -326,6 +327,22 @@ test("saving", () => {
     out = state.dataForSaving(UpdateDeckConfigsMode.APPLY_TO_CHILDREN);
     expect(out.removedConfigIds).toStrictEqual([1618570764780n]);
     expect(out.configs!.map((c) => c.name)).toStrictEqual(["Default"]);
+});
+
+test("subdeck minimum option is deck-specific and can be applied to descendants", async () => {
+    const state = startingState();
+    state.resolveOriginalConfigs();
+    expect(await state.isModified()).toBe(false);
+    state.rwkvRespectSubdeckMinimums.set(true);
+    state.rwkvApplyRespectSubdeckMinimumsToChildren.set(true);
+    expect(await state.isModified()).toBe(true);
+    const request = state.dataForSaving(UpdateDeckConfigsMode.NORMAL);
+    expect(request.limits?.rwkvRespectSubdeckMinimums).toBe(true);
+    expect(request.limits?.rwkvApplyRespectSubdeckMinimumsToChildren).toBe(true);
+    expect(
+        state.dataForSaving(UpdateDeckConfigsMode.COMPUTE_ALL_PARAMS).limits
+            ?.rwkvApplyRespectSubdeckMinimumsToChildren,
+    ).toBe(false);
 });
 
 test("clears incompatible FSRS params across presets for optimize all", () => {

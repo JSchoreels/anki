@@ -14,6 +14,9 @@ const PRECISIONS: [(StatePrecision, [bool; 3]); 4] = [
 /// The tiny model (the smaller instant-only model, SM101): one card layer.
 const TINY_MODEL_PATH: &str = "../qt/aqt/rwkv_inference/sm101/weights.f32.bin";
 
+/// The Tiny two-head model (SM106): the tiny plan with a trained curve head.
+const TINY_TWO_HEAD_MODEL_PATH: &str = "../qt/aqt/rwkv_inference/sm106/weights.f32.bin";
+
 /// The engine's test model and, in the small engine, the tiny model: every
 /// state precision must run both layer plans.
 fn models() -> Vec<PathBuf> {
@@ -196,18 +199,22 @@ fn rwkv_state_precision_queries_and_undo_read_packed_history() {
         assert_eq!(
             inference
                 .model
-                .review_retrievability_query_refs_scalar(&items),
+                .review_retrievability_query_refs_scalar(&items)
+                .unwrap(),
             inference
                 .model
                 .review_retrievability_query_refs_scalar(&expected)
+                .unwrap()
         );
         assert_eq!(
             inference
                 .model
-                .review_retrievability_query_refs_batched(&items),
+                .review_retrievability_query_refs_batched(&items)
+                .unwrap(),
             inference
                 .model
                 .review_retrievability_query_refs_batched(&expected)
+                .unwrap()
         );
         let heads = inference.model.review(&features, packed.as_ref());
         let expected_heads = inference.model.review(&features, decoded.as_ref());
@@ -239,6 +246,59 @@ fn rwkv_state_precision_queries_and_undo_read_packed_history() {
             )
             .unwrap();
         assert_eq!(snapshot_bytes(&inference), before);
+    }
+}
+
+#[test]
+fn rwkv_state_precision_queue_scoring_reports_invalid_resident_state() {
+    for weights in models() {
+        check_queue_scoring_reports_invalid_resident_state(&weights);
+    }
+}
+
+fn check_queue_scoring_reports_invalid_resident_state(weights: &Path) {
+    let mut inference = runtime(weights, StatePrecision::Int4CardsInt8Notes, [false; 3]);
+    let mut answer = reviews(1).remove(0);
+    // Malformed historical data can produce a non-finite in-memory state.
+    answer.duration_millis = Some(-10);
+    inference
+        .warm_up_reviews(vec![answer.clone()], false)
+        .unwrap();
+
+    let mut query = answer;
+    query.is_query = true;
+    query.ease = None;
+    query.duration_millis = None;
+    let error = inference
+        .predict_retrievability_many_from_warm_up(vec![query.clone()])
+        .unwrap_err();
+
+    assert_eq!(error.kind(), io::ErrorKind::InvalidData);
+    assert_eq!(
+        error.to_string(),
+        "RWKV card state: invalid RWKV compact state: non-finite shift"
+    );
+
+    // macOS uses the batched path, while other platforms use the scalar path.
+    let features = inference.features.features_for(&query);
+    let items = [ReviewPredictionQueryRef {
+        features: &features,
+        state: inference.warm_up_states.state_ref(&query),
+    }];
+    for result in [
+        inference
+            .model
+            .review_retrievability_query_refs_scalar(&items),
+        inference
+            .model
+            .review_retrievability_query_refs_batched(&items),
+    ] {
+        let error = result.unwrap_err();
+        assert_eq!(error.kind(), io::ErrorKind::InvalidData);
+        assert_eq!(
+            error.to_string(),
+            "RWKV card state: invalid RWKV compact state: non-finite shift"
+        );
     }
 }
 
@@ -323,9 +383,10 @@ fn stored_layer_bytes(precision: StatePrecision, channel_mixer: bool) -> usize {
     }
 }
 
-/// Stored card and note state per precision: the tiny model keeps one card
-/// layer (the one with a channel mixer), the small model two; notes are the
-/// same. Per card + note, int8: small 4,554 B, tiny 3,134 B; int4 cards +
+/// Stored card and note state per precision: the tiny models (the Tiny
+/// Instant-Only model (SM101) and the Tiny two-head model (SM106)) keep one
+/// card layer (the one with a channel mixer), the small model two; notes are
+/// the same. Per card + note, int8: small 4,554 B, tiny 3,134 B; int4 cards +
 /// int8 notes: 3,530 B and 2,622 B; f32: 13,640 B and 9,276 B.
 #[test]
 fn rwkv_state_precision_stored_sizes_of_the_small_and_tiny_models() {
@@ -334,7 +395,11 @@ fn rwkv_state_precision_stored_sizes_of_the_small_and_tiny_models() {
     }
     let root = PathBuf::from(env!("CARGO_MANIFEST_DIR"));
     let mut per_card_and_note = Vec::new();
-    for (weights, card_layers) in [(root.join(MODEL_PATH), 2), (root.join(TINY_MODEL_PATH), 1)] {
+    for (weights, card_layers) in [
+        (root.join(MODEL_PATH), 2),
+        (root.join(TINY_MODEL_PATH), 1),
+        (root.join(TINY_TWO_HEAD_MODEL_PATH), 1),
+    ] {
         for (precision, card, note) in [
             (
                 StatePrecision::F32,
@@ -386,6 +451,6 @@ fn rwkv_state_precision_stored_sizes_of_the_small_and_tiny_models() {
     }
     assert_eq!(
         per_card_and_note,
-        [13_640, 4_554, 3_530, 9_276, 3_134, 2_622]
+        [13_640, 4_554, 3_530, 9_276, 3_134, 2_622, 9_276, 3_134, 2_622]
     );
 }

@@ -57,6 +57,24 @@ type RwkvWarmUpSnapshot = (
 );
 type RwkvWorkloadPointTuple = (u32, f32, f32, f32, u32);
 type RwkvWorkloadOutput = (f32, f32, Vec<RwkvWorkloadPointTuple>);
+type RwkvForecastBandTuple = (f32, f32, f32, f32, f32, f32);
+type RwkvForecastDayTuple = (
+    u32,
+    RwkvForecastBandTuple,
+    RwkvForecastBandTuple,
+    RwkvForecastBandTuple,
+    RwkvForecastBandTuple,
+    RwkvForecastBandTuple,
+);
+type RwkvForecastGroupTuple = (i64, Vec<f32>, Vec<f32>, Vec<f32>);
+type RwkvForecastOutputTuple = (
+    u32,
+    Vec<RwkvForecastDayTuple>,
+    Vec<RwkvForecastGroupTuple>,
+    u32,
+);
+type RwkvInstantReviewTimeGradeTuple = (f32, f32, f32, f32, f32);
+type RwkvInstantReviewTimeModelTuple = (f32, Vec<Option<RwkvInstantReviewTimeGradeTuple>>);
 
 create_exception!(_rsbridge, BackendError, PyException);
 
@@ -549,6 +567,23 @@ impl RwkvInference {
         .map_err(|err| PyException::new_err(err.to_string()))
     }
 
+    fn forecast_history_predictions_packed(
+        &self,
+        py: Python<'_>,
+        reviews: &Bound<'_, PyBytes>,
+        progress: Option<&Bound<'_, PyAny>>,
+    ) -> PyResult<Vec<(usize, f32)>> {
+        let parsed_reviews = parse_packed_rwkv_review_inputs(reviews.as_bytes())?;
+        let progress = progress.map(|callback| callback.clone().unbind());
+        let mut progress_callback =
+            |current, total| report_rwkv_workload_progress(progress.as_ref(), current, total);
+        py.detach(|| {
+            self.inner
+                .forecast_history_predictions(parsed_reviews, &mut progress_callback)
+        })
+        .map_err(|err| PyException::new_err(err.to_string()))
+    }
+
     fn warm_up_reviews_post_packed(
         &mut self,
         py: Python<'_>,
@@ -930,6 +965,293 @@ impl RwkvInference {
             )
         })
         .map_err(|err| PyException::new_err(err.to_string()))
+    }
+
+    /// Day-by-day workload forecast over `paths` seeded answer paths, from the
+    /// resident warmed state (left unchanged). Returns
+    /// `(paths, days, groups, estimated_fsrs_states)` where each day is
+    /// `(day, due, done, new, lapses, seconds)` and each of those a
+    /// `(mean, p1, p5, p50, p95, p99)` band; each group is
+    /// `(group, due_mean, done_mean, new_mean)` with one value per day.
+    #[allow(clippy::too_many_arguments)]
+    fn forecast_workload_from_warm_up(
+        &self,
+        py: Python<'_>,
+        inputs: &Bound<'_, PyAny>,
+        groups: &Bound<'_, PyAny>,
+        days: u32,
+        paths: u32,
+        seed: u32,
+        default_review_limit: u32,
+        default_new_limit: u32,
+        new_cards_ignore_review_limit: bool,
+        max_interval: u32,
+        review_order: i32,
+        suspend_after_lapses: Option<u32>,
+        state_update_interval: u32,
+        single_step_answers: bool,
+        grade_seconds: &Bound<'_, PyAny>,
+        bucket_probabilities: &Bound<'_, PyAny>,
+        progress: Option<&Bound<'_, PyAny>>,
+    ) -> PyResult<RwkvForecastOutputTuple> {
+        let mut parsed_inputs = Vec::new();
+        for value in inputs.try_iter()? {
+            let value = value?;
+            let tuple = value.cast::<PyTuple>()?;
+            if tuple.len() != 8 {
+                return Err(PyException::new_err(
+                    "RWKV forecast input must contain 8 fields",
+                ));
+            }
+            let scheduler = match tuple.get_item(4)?.extract::<i32>()? {
+                0 => rwkv::RwkvForecastScheduler::Rwkv,
+                1 => rwkv::RwkvForecastScheduler::Fsrs,
+                2 => rwkv::RwkvForecastScheduler::Sm2,
+                _ => return Err(PyException::new_err("invalid forecast scheduler")),
+            };
+            parsed_inputs.push(rwkv::RwkvForecastCard {
+                input: parse_rwkv_workload_simulation_input(&tuple.get_item(0)?)?,
+                due_day: tuple.get_item(1)?.extract()?,
+                group: tuple.get_item(2)?.extract()?,
+                desired_retention: tuple.get_item(3)?.extract()?,
+                scheduler,
+                fsrs_memory: tuple.get_item(5)?.extract()?,
+                fsrs_parameters: tuple.get_item(6)?.extract()?,
+                historical_retention: tuple.get_item(7)?.extract()?,
+            });
+        }
+        let mut parsed_groups = Vec::new();
+        for value in groups.try_iter()? {
+            let (group, review_limit, new_limit, reviews_done_today, new_done_today) =
+                value?.extract::<(i64, u32, u32, u32, u32)>()?;
+            parsed_groups.push(rwkv::RwkvForecastGroup {
+                group,
+                review_limit,
+                new_limit,
+                reviews_done_today,
+                new_done_today,
+            });
+        }
+        let config = rwkv::RwkvWorkloadForecastConfig {
+            days,
+            paths,
+            seed,
+            groups: parsed_groups,
+            default_review_limit,
+            default_new_limit,
+            new_cards_ignore_review_limit,
+            max_interval,
+            review_order: review_order
+                .try_into()
+                .unwrap_or(anki::deckconfig::ReviewCardOrder::Day),
+            suspend_after_lapses,
+            state_update_interval,
+            single_step_answers,
+            review_model: rwkv::RwkvWorkloadReviewModel {
+                grade_seconds: parse_f32_quad(grade_seconds, "grade seconds")?,
+                bucket_probabilities: parse_rwkv_workload_bucket_probabilities(
+                    bucket_probabilities,
+                )?,
+            },
+        };
+        let progress = progress.map(|callback| callback.clone().unbind());
+        let mut progress_callback = |current: u32, total: u32| {
+            report_rwkv_workload_progress(progress.as_ref(), current, total)
+        };
+        py.detach(|| {
+            self.inner
+                .forecast_workload_from_warm_up(parsed_inputs, config, &mut progress_callback)
+        })
+        .map(rwkv_forecast_output)
+        .map_err(|err| PyException::new_err(err.to_string()))
+    }
+
+    #[allow(clippy::too_many_arguments)]
+    #[pyo3(signature = (
+        inputs, decks, deck_configs, study_deck_id, timing_patterns,
+        timing_pattern_success_shares, days, paths, seed, today,
+        new_cards_ignore_review_limit, fsrs_learning_queues_disabled,
+        fsrs_short_term_with_steps_enabled, learn_ahead_secs, now_millis,
+        same_day_allowed, min_intervening_reviews, min_elapsed_secs,
+        refresh_interval, candidate_refresh_enabled, candidate_refresh_limit,
+        precompute_next_card, review_order, grade_seconds, bucket_probabilities,
+        progress=None, scenario_sigma=None, day_progress=None, stratified_answers=false,
+        stratified_scale=1.0, stratified_bias_sd=0.0, stratified_review_variance=0.0,
+        review_time_model=None
+    ))]
+    fn forecast_instant_workload_from_warm_up(
+        &self,
+        py: Python<'_>,
+        inputs: &Bound<'_, PyAny>,
+        decks: Vec<Vec<u8>>,
+        deck_configs: Vec<Vec<u8>>,
+        study_deck_id: i64,
+        timing_patterns: Vec<Vec<(u32, u32)>>,
+        timing_pattern_success_shares: Vec<(f32, f32, f32)>,
+        days: u32,
+        paths: u32,
+        seed: u32,
+        today: u32,
+        new_cards_ignore_review_limit: bool,
+        fsrs_learning_queues_disabled: bool,
+        fsrs_short_term_with_steps_enabled: bool,
+        learn_ahead_secs: u32,
+        now_millis: u32,
+        same_day_allowed: bool,
+        min_intervening_reviews: u32,
+        min_elapsed_secs: u32,
+        refresh_interval: u32,
+        candidate_refresh_enabled: bool,
+        candidate_refresh_limit: usize,
+        precompute_next_card: bool,
+        review_order: i32,
+        grade_seconds: &Bound<'_, PyAny>,
+        bucket_probabilities: &Bound<'_, PyAny>,
+        progress: Option<&Bound<'_, PyAny>>,
+        scenario_sigma: Option<f32>,
+        day_progress: Option<&Bound<'_, PyAny>>,
+        stratified_answers: bool,
+        stratified_scale: f32,
+        stratified_bias_sd: f32,
+        stratified_review_variance: f32,
+        review_time_model: Option<RwkvInstantReviewTimeModelTuple>,
+    ) -> PyResult<Py<PyAny>> {
+        let mut parsed_inputs = Vec::new();
+        for value in inputs.try_iter()? {
+            let value = value?;
+            let tuple = value.cast::<PyTuple>()?;
+            if tuple.len() != 15 {
+                return Err(PyException::new_err(
+                    "Instant forecast input must contain 15 fields",
+                ));
+            }
+            parsed_inputs.push(rwkv::RwkvInstantForecastCard {
+                input: parse_rwkv_workload_simulation_input(&tuple.get_item(0)?)?,
+                due_day: tuple.get_item(1)?.extract()?,
+                group: tuple.get_item(2)?.extract()?,
+                desired_retention: tuple.get_item(3)?.extract()?,
+                intervening_reviews: tuple.get_item(4)?.extract()?,
+                queue: tuple.get_item(5)?.extract()?,
+                learning_due_millis: tuple.get_item(6)?.extract()?,
+                remaining_steps: tuple.get_item(7)?.extract()?,
+                new_position: tuple.get_item(8)?.extract()?,
+                fsrs_memory: tuple.get_item(9)?.extract()?,
+                fsrs_parameters: tuple.get_item(10)?.extract()?,
+                fsrs_enabled: tuple.get_item(11)?.extract()?,
+                instant_enabled: tuple.get_item(12)?.extract()?,
+                last_kind_and_grade: tuple.get_item(13)?.extract()?,
+                fsrs_historical_retention: tuple.get_item(14)?.extract()?,
+            });
+        }
+        let (decks, deck_configs) = rwkv::decode_instant_forecast_decks(decks, deck_configs)
+            .map_err(|error| PyException::new_err(error.to_string()))?;
+        let review_time_model = review_time_model
+            .map(|(reference_seconds, grades)| {
+                let grades: [Option<rwkv::RwkvInstantReviewTimeGrade>; 4] = grades
+                    .into_iter()
+                    .map(|grade| {
+                        grade.map(
+                            |(intercept, slope, min_recall, max_recall, fallback_seconds)| {
+                                rwkv::RwkvInstantReviewTimeGrade {
+                                    intercept,
+                                    slope,
+                                    min_recall,
+                                    max_recall,
+                                    fallback_seconds,
+                                }
+                            },
+                        )
+                    })
+                    .collect::<Vec<_>>()
+                    .try_into()
+                    .map_err(|_| {
+                        PyException::new_err("Instant review-time model must contain four grades")
+                    })?;
+                Ok::<_, PyErr>(rwkv::RwkvInstantReviewTimeModel {
+                    reference_seconds,
+                    grades,
+                })
+            })
+            .transpose()?;
+        let config = rwkv::RwkvInstantForecastConfig {
+            days,
+            paths,
+            scenario_sigma,
+            stratified_answers,
+            stratified_scale,
+            stratified_bias_sd,
+            stratified_review_variance,
+            report_days: day_progress.is_some(),
+            seed,
+            decks,
+            deck_configs,
+            study_deck_id,
+            today,
+            new_cards_ignore_review_limit,
+            fsrs_learning_queues_disabled,
+            fsrs_short_term_with_steps_enabled,
+            learn_ahead_secs,
+            timing_patterns,
+            timing_pattern_success_shares: timing_pattern_success_shares
+                .into_iter()
+                .map(|(hard, good, easy)| [0.0, hard, good, easy])
+                .collect(),
+            review_time_model,
+            now_millis,
+            same_day_allowed,
+            min_intervening_reviews,
+            min_elapsed_secs,
+            refresh_interval,
+            approximate_refresh_answers: 0,
+            candidate_refresh_enabled,
+            candidate_refresh_limit,
+            precompute_next_card,
+            review_order: review_order
+                .try_into()
+                .unwrap_or(anki::deckconfig::ReviewCardOrder::Day),
+            review_model: rwkv::RwkvWorkloadReviewModel {
+                grade_seconds: parse_f32_quad(grade_seconds, "grade seconds")?,
+                bucket_probabilities: parse_rwkv_workload_bucket_probabilities(
+                    bucket_probabilities,
+                )?,
+            },
+        };
+        let progress = progress.map(|callback| callback.clone().unbind());
+        let day_progress = day_progress.map(|callback| callback.clone().unbind());
+        let mut progress_callback = |current: u32, total: u32| {
+            report_rwkv_workload_progress(progress.as_ref(), current, total)
+        };
+        let mut day_callback = |path: u32, day: u32, values: [f32; 5]| {
+            if let Some(callback) = &day_progress {
+                Python::attach(|py| callback.call1(py, (path, day, values))).map_err(|err| {
+                    std::io::Error::new(std::io::ErrorKind::Other, err.to_string())
+                })?;
+            }
+            Ok(())
+        };
+        let mut output = py
+            .detach(|| {
+                self.inner.forecast_instant_workload_from_warm_up(
+                    parsed_inputs,
+                    config,
+                    &mut progress_callback,
+                    &mut day_callback,
+                )
+            })
+            .map_err(|err| PyException::new_err(err.to_string()))?;
+        let scenarios = output.scenarios.take();
+        let (paths, days, groups, estimated) = rwkv_forecast_output(output);
+        if let Some(scenarios) = scenarios {
+            Ok((paths, days, groups, estimated, scenarios)
+                .into_pyobject(py)?
+                .into_any()
+                .unbind())
+        } else {
+            Ok((paths, days, groups, estimated)
+                .into_pyobject(py)?
+                .into_any()
+                .unbind())
+        }
     }
 
     fn reset_warm_up_state(&mut self) {
@@ -1375,6 +1697,36 @@ fn report_rwkv_workload_progress(
             .map_err(|err| std::io::Error::new(std::io::ErrorKind::Other, err.to_string()))?;
     }
     Ok(())
+}
+
+fn rwkv_forecast_band(band: rwkv::RwkvForecastBand) -> RwkvForecastBandTuple {
+    (band.mean, band.p1, band.p5, band.p50, band.p95, band.p99)
+}
+
+fn rwkv_forecast_output(output: rwkv::RwkvWorkloadForecastOutput) -> RwkvForecastOutputTuple {
+    (
+        output.paths,
+        output
+            .days
+            .into_iter()
+            .map(|day| {
+                (
+                    day.day,
+                    rwkv_forecast_band(day.due),
+                    rwkv_forecast_band(day.done),
+                    rwkv_forecast_band(day.new),
+                    rwkv_forecast_band(day.lapses),
+                    rwkv_forecast_band(day.seconds),
+                )
+            })
+            .collect(),
+        output
+            .groups
+            .into_iter()
+            .map(|group| (group.group, group.due_mean, group.done_mean, group.new_mean))
+            .collect(),
+        output.estimated_fsrs_states,
+    )
 }
 
 fn rwkv_workload_output(output: rwkv::RwkvWorkloadSimulationOutput) -> RwkvWorkloadOutput {
