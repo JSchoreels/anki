@@ -62,6 +62,23 @@ from aqt.rwkv_answer_time import (
 from aqt.rwkv_model import RwkvRuntimeModels
 
 logger = logging.getLogger(__name__)
+
+
+def debug_caller_chain(frames: Sequence[traceback.FrameSummary]) -> str:
+    """Format frames as `parentdir/file.py:line:func`, most recent first.
+
+    Meant for DEBUG logs that need to name who triggered expensive work
+    (often an add-on under `addons21/<id>/`). Pass
+    `traceback.extract_stack(limit=N)[:-1]` to skip the logging frame.
+    """
+
+    return " <- ".join(
+        f"{os.path.basename(os.path.dirname(frame.filename))}/"
+        f"{os.path.basename(frame.filename)}:{frame.lineno}:{frame.name}"
+        for frame in reversed(frames)
+    )
+
+
 _T = TypeVar("_T")
 
 
@@ -7082,7 +7099,7 @@ def _prepare_reviewer_backend_for_review(reviewer: object) -> bool:
     return _prepare_reviewer_backend_from_cache(reviewer)
 
 
-def _prepare_reviewer_backend_from_cache(
+def _prepare_reviewer_backend_from_cache(  # noqa: PLR0911
     reviewer: object,
     *,
     progress: RwkvStateCacheProgressCallback | None = None,
@@ -7110,6 +7127,7 @@ def _prepare_reviewer_backend_from_cache(
 
     _reviewer_backend_execution_lock.acquire()
     claimed = False
+    revalidated = False
     try:
         with _reviewer_backend_state_lock:
             col = _collection(reviewer)
@@ -7149,6 +7167,15 @@ def _prepare_reviewer_backend_from_cache(
 
         start = time.monotonic()
         try:
+            if _publish_revalidated_resident_reviewer_backend_state(
+                reviewer,
+                key,
+                warmup_generation,
+                is_current=is_current,
+                source="cache-prepare",
+            ):
+                revalidated = True
+                return True
             restored_identity = _restore_reviewer_backend_cache(
                 reviewer,
                 backend=backend,
@@ -7189,6 +7216,10 @@ def _prepare_reviewer_backend_from_cache(
             try:
                 if claimed:
                     _finish_reviewer_backend_warmup(key, warmup_generation)
+                if revalidated:
+                    # The restore path records the collection marker itself;
+                    # the in-place path does it once the claim is released.
+                    _refresh_ready_rwkv_state_cache_collection_mod(reviewer)
             finally:
                 _reviewer_backend_execution_lock.release()
 
@@ -10740,6 +10771,54 @@ def _revalidate_resident_reviewer_backend_state(
         return None
 
 
+def _publish_revalidated_resident_reviewer_backend_state(
+    reviewer: object,
+    key: tuple[int, int],
+    warmup_generation: int,
+    *,
+    is_current: Callable[[], bool],
+    source: str,
+) -> bool:
+    """Publish the resident state in place when its candidate is still exact.
+
+    The caller holds the execution lock and has claimed `warmup_generation`.
+    Returns False (with the candidate dropped) when there is nothing to reuse
+    or publication was superseded, so the caller falls back to its restore.
+    Raises `_ReviewerBackendWarmupInvalidated` when the claim went stale.
+    """
+
+    start = time.monotonic()
+    identity = _revalidate_resident_reviewer_backend_state(
+        reviewer, key, warmup_generation
+    )
+    if identity is None:
+        return False
+    if not is_current():
+        with _reviewer_backend_state_lock:
+            _reviewer_backend_revalidation_candidates.pop(key, None)
+        raise _ReviewerBackendWarmupInvalidated
+    if _publish_reviewer_backend_state(
+        key,
+        identity,
+        expected_generation=warmup_generation,
+        reviewer=reviewer,
+    ):
+        logger.debug(
+            "RWKV resident state revalidated in place: source=%s elapsed_ms=%.1f",
+            source,
+            (time.monotonic() - start) * 1000,
+        )
+        return True
+    with _reviewer_backend_state_lock:
+        _reviewer_backend_revalidation_candidates.pop(key, None)
+    logger.debug(
+        "RWKV resident state revalidation skipped: reason=publication superseded "
+        "source=%s",
+        source,
+    )
+    return False
+
+
 def _warm_up_reviewer_backend(  # noqa: PLR0911
     reviewer: object,
     *,
@@ -10790,32 +10869,19 @@ def _warm_up_reviewer_backend(  # noqa: PLR0911
     revalidated = False
     full_warm_up_completed = False
     try:
-        if not force_rebuild and not discard_resident_state:
-            identity = _revalidate_resident_reviewer_backend_state(
-                reviewer, key, warmup_generation
+        if (
+            not force_rebuild
+            and not discard_resident_state
+            and _publish_revalidated_resident_reviewer_backend_state(
+                reviewer,
+                key,
+                warmup_generation,
+                is_current=is_current,
+                source="warm-up",
             )
-            if identity is not None:
-                if not is_current():
-                    with _reviewer_backend_state_lock:
-                        _reviewer_backend_revalidation_candidates.pop(key, None)
-                    raise _ReviewerBackendWarmupInvalidated
-                if _publish_reviewer_backend_state(
-                    key,
-                    identity,
-                    expected_generation=warmup_generation,
-                    reviewer=reviewer,
-                ):
-                    revalidated = True
-                    logger.debug(
-                        "RWKV resident state revalidated in place: elapsed_ms=%.1f",
-                        (time.monotonic() - start) * 1000,
-                    )
-                    return True
-                with _reviewer_backend_state_lock:
-                    _reviewer_backend_revalidation_candidates.pop(key, None)
-                logger.debug(
-                    "RWKV resident state revalidation skipped: reason=publication superseded"
-                )
+        ):
+            revalidated = True
+            return True
         if revalidate_only:
             return False
         _drop_reviewer_backend_revalidation_candidates(backend)
@@ -23679,14 +23745,20 @@ def study_queues_did_change(
 
     _invalidate_resolved_preset_id_cache(transient_reviewer)
     clear_deck_browser_rwkv_count_scores(mw)
-    logger.debug(
-        "RWKV study queue caches invalidated: generation=%s initiator=%s "
-        "resident_state_preserved=%s mutation_reconciled=%s",
-        generation,
-        type(initiator).__name__ if initiator is not None else None,
-        resident_state_preserved,
-        mutation_reconciled,
-    )
+    if logger.isEnabledFor(logging.DEBUG):
+        logger.debug(
+            "RWKV study queue caches invalidated: generation=%s initiator=%s "
+            "resident_state_preserved=%s mutation_reconciled=%s changes=%s",
+            generation,
+            type(initiator).__name__ if initiator is not None else None,
+            resident_state_preserved,
+            mutation_reconciled,
+            (
+                [field.name for field, value in changes.ListFields() if value is True]
+                if changes is not None
+                else None
+            ),
+        )
 
 
 def _resolve_dynamic_desired_retentions_for_inputs(
@@ -26531,6 +26603,13 @@ def _rwkv_review_input_batches_for_search(
     include_disabled_decks: bool = False,
     track_elapsed_since: bool = False,
 ) -> RwkvReviewInputBatchBuild | None:
+    if logger.isEnabledFor(logging.DEBUG):
+        logger.debug(
+            "RWKV review input search requested: search=%r thread=%s caller=%s",
+            search[:120],
+            threading.current_thread().name,
+            debug_caller_chain(traceback.extract_stack(limit=8)[:-1]),
+        )
     if not use_enabled_deck_filter:
         return None
 

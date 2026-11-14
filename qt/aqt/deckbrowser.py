@@ -5,6 +5,8 @@ from __future__ import annotations
 
 import html
 import json
+import logging
+import traceback
 from copy import deepcopy
 from dataclasses import dataclass
 from typing import Any
@@ -29,6 +31,8 @@ from aqt.qt import *
 from aqt.sound import av_player
 from aqt.toolbar import BottomBar
 from aqt.utils import getOnlyText, openLink, shortcut, showInfo, tr
+
+logger = logging.getLogger(__name__)
 
 
 class DeckBrowserBottomBar:
@@ -166,6 +170,14 @@ class DeckBrowser:
 """
 
     def _renderPage(self, reuse: bool = False) -> None:
+        if logger.isEnabledFor(logging.DEBUG):
+            logger.debug(
+                "deck browser render requested: reuse=%s caller=%s",
+                reuse,
+                aqt.rwkv_scheduler.debug_caller_chain(
+                    traceback.extract_stack(limit=8)[:-1]
+                ),
+            )
         if not reuse:
             self.cancel_rwkv_count_refresh()
             generation = self._rwkv_count_generation
