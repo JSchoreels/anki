@@ -55,6 +55,8 @@ Changes since the last normal release, [build 110](https://github.com/JSchoreels
 
 - **Balance Instant minimum reviews across the selected deck.** The minimum chooses the lowest-recall cards across its subdecks. The deck-specific **Also honor subdeck minimums** option retains separate minimums where desired.
 
+- **Avoid unnecessary RWKV state reloads.** When a change such as selecting a deck leaves the review history untouched, Anki can confirm that the resident state still matches instead of loading it again. One collection avoided about 1.4 seconds of CPU work.
+
 - **Keep RWKV state reliable after template changes and sync.** Fix a crash caused by applying an answer twice after editing a card template, and refresh state after a sync add-on receives remote changes.
 
 - **Improve Instant forecasts.** Respect daily limits, use the model's actual queue scores, estimate answer duration from recent review history and recall, and calibrate the range of answer outcomes. In one 28,925-card measurement, a two-day single-path forecast fell from 66.5 to 45.7 seconds; in a separate backtest, the estimated review time improved from 12.3 to 9.6 seconds against 9.6 seconds observed.

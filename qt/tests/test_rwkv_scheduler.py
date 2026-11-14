@@ -12,6 +12,7 @@ import sqlite3
 import struct
 import threading
 import time
+import traceback
 import weakref
 from collections.abc import Callable, Iterator, Mapping, Sequence
 from concurrent.futures import Future
@@ -995,6 +996,153 @@ def test_warmup_does_not_publish_candidate_invalidated_during_fingerprint(
     )
     assert state.key not in rwkv_scheduler._reviewer_backend_warmup_states
     assert state.key not in rwkv_scheduler._reviewer_backend_revalidation_candidates
+
+
+@pytest.mark.parametrize(
+    "prepare",
+    [
+        rwkv_scheduler._prepare_reviewer_backend_from_cache,
+        rwkv_scheduler._prepare_reviewer_backend_for_stats,
+    ],
+)
+def test_cache_prepare_reuses_exact_resident_state_without_restore(
+    resident_revalidation: SimpleNamespace,
+    prepare: Callable[[object], bool],
+) -> None:
+    state = resident_revalidation
+    assert state.key not in rwkv_scheduler._reviewer_backend_warmup_states
+    assert rwkv_scheduler._reviewer_backend_revalidation_candidates[state.key] == (
+        1,
+        state.identity,
+    )
+
+    assert prepare(state.reviewer)
+
+    assert rwkv_scheduler._reviewer_backend_warmup_states[state.key] == state.identity
+    assert state.key not in rwkv_scheduler._reviewer_backend_revalidation_candidates
+    assert state.key not in rwkv_scheduler._reviewer_backend_warmup_pending_generations
+    assert state.key not in rwkv_scheduler._reviewer_backend_cold_fallback_generations
+    assert state.refreshed_markers == [state.identity]
+
+
+@pytest.mark.parametrize(
+    "failure",
+    [
+        "historyHash",
+        "metadata-incompatible",
+        "fingerprint-identity",
+        "generation",
+        "invalidation-during-fingerprint",
+        "publication-superseded",
+        "stale-claim",
+    ],
+)
+def test_cache_prepare_restores_when_resident_state_changed(
+    resident_revalidation: SimpleNamespace,
+    monkeypatch: pytest.MonkeyPatch,
+    failure: str,
+) -> None:
+    state = resident_revalidation
+    if failure == "historyHash":
+        state.metadata[failure] = "changed"
+    elif failure == "metadata-incompatible":
+        state.compatible = False
+    elif failure == "fingerprint-identity":
+        state.fingerprint = state.fingerprint._replace(
+            identity=state.fingerprint.identity._replace(review_count=3)
+        )
+    elif failure == "generation":
+        # The candidate's generation no longer matches the claimed one.
+        generation, identity = rwkv_scheduler._reviewer_backend_revalidation_candidates[
+            state.key
+        ]
+        rwkv_scheduler._reviewer_backend_revalidation_candidates[state.key] = (
+            generation - 1,
+            identity,
+        )
+    elif failure == "invalidation-during-fingerprint":
+
+        def fingerprint(*_args: object, **_kwargs: object) -> object:
+            rwkv_scheduler._invalidate_reviewer_backend_state(
+                state.reviewer, reason="concurrent mutation"
+            )
+            return state.fingerprint
+
+        monkeypatch.setattr(
+            rwkv_scheduler, "_rwkv_historical_review_fingerprint", fingerprint
+        )
+    elif failure == "publication-superseded":
+
+        def pending_restarts(*_args: object, **_kwargs: object) -> dict:
+            rwkv_scheduler._reviewer_backend_warmup_generations[state.key] += 1
+            return {}
+
+        monkeypatch.setattr(
+            rwkv_scheduler, "_pending_rwkv_learning_restarts", pending_restarts
+        )
+    else:
+        monkeypatch.setattr(
+            rwkv_scheduler,
+            "_reviewer_backend_warmup_is_current",
+            lambda *_args: False,
+        )
+    claim_invalidated = failure in (
+        "invalidation-during-fingerprint",
+        "publication-superseded",
+        "stale-claim",
+    )
+    restored_identity = replace(state.identity, review_count=3)
+    restores: list[object] = []
+
+    def restore(
+        _reviewer: object, **_kwargs: object
+    ) -> rwkv_scheduler.RwkvResidentStateIdentity:
+        assert state.key not in rwkv_scheduler._reviewer_backend_revalidation_candidates
+        restores.append(_reviewer)
+        return restored_identity
+
+    monkeypatch.setattr(rwkv_scheduler, "_restore_reviewer_backend_cache", restore)
+
+    assert rwkv_scheduler._prepare_reviewer_backend_from_cache(state.reviewer) is (
+        not claim_invalidated
+    )
+
+    # A stale claim is treated as invalidated without restoring; every other
+    # failure falls through to exactly one restore.
+    assert restores == ([] if failure == "stale-claim" else [state.reviewer])
+    assert rwkv_scheduler._reviewer_backend_warmup_states.get(state.key) == (
+        None if claim_invalidated else restored_identity
+    )
+    assert state.key not in rwkv_scheduler._reviewer_backend_revalidation_candidates
+    assert state.key not in rwkv_scheduler._reviewer_backend_warmup_pending_generations
+    assert state.refreshed_markers == []
+
+
+def test_cache_prepare_clears_pending_generation_when_revalidation_raises(
+    resident_revalidation: SimpleNamespace, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    state = resident_revalidation
+
+    def publish(*_args: object, **_kwargs: object) -> bool:
+        raise RuntimeError("publish failed")
+
+    monkeypatch.setattr(rwkv_scheduler, "_publish_reviewer_backend_state", publish)
+
+    assert not rwkv_scheduler._prepare_reviewer_backend_from_cache(state.reviewer)
+
+    assert state.key not in rwkv_scheduler._reviewer_backend_warmup_states
+    assert state.key not in rwkv_scheduler._reviewer_backend_warmup_pending_generations
+    assert state.refreshed_markers == []
+
+
+def test_debug_caller_chain_formats_most_recent_frame_first() -> None:
+    frames = [
+        traceback.FrameSummary("/x/addons21/123/__init__.py", 7, "outer"),
+        traceback.FrameSummary("/x/aqt/deckbrowser.py", 42, "inner"),
+    ]
+    assert rwkv_scheduler.debug_caller_chain(frames) == (
+        "aqt/deckbrowser.py:42:inner <- 123/__init__.py:7:outer"
+    )
 
 
 def test_stale_revalidation_keeps_candidate_rearmed_by_newer_reset(
