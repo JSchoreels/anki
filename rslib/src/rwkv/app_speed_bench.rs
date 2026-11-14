@@ -40,7 +40,7 @@
 //!   `tiny-one-new=sm101@D:/models/new/weights.f32.bin` or
 //!   `x=sm72e25+sm101@D:/w.bin` (main model, then the RWKV-Instant model
 //!   beside it). `kind` is a `ModelKind` key; a path replaces the bundled
-//!   weights of that kind. Default `big-pair,small-pair`.
+//!   weights of that kind. Default `big-pair,small-pair`; `tiny-pair` = SM106 + SM101.
 //! - `ANKI_SPEED_OPS`: comma list of `build`, `load`, `score`, `state`
 //!   (default `build`). `load` and `score` reuse the store / state of a
 //!   `build` earlier in the process, else the store a previous process
@@ -82,23 +82,31 @@ const CHECKPOINT_MAX_AGE_MILLIS: i64 = 8 * 86_400_000;
 const SCORE_BATCH: usize = 2_048;
 
 /// `(name, main model, RWKV-Instant model beside it)` as
-/// `qt/aqt/rwkv_model.py::runtime_models` picks them on 2026-11-12.
-const NAMED: [(&str, &str, Option<&str>); 9] = [
-    // Big: both schedulers (default), the one-model choice / RWKV-Curve
-    // only, RWKV-Instant alone.
+/// `qt/aqt/rwkv_model.py::runtime_models` picks them since the family wiring
+/// (SM114, 2026-11-13): each size runs only its own models.
+const NAMED: [(&str, &str, Option<&str>); 12] = [
+    // Big: the show-time big model (SM91s2, "legacy") with the show-time
+    // instant-only big model (SM99); the one-model choice / RWKV-Curve only;
+    // RWKV-Instant alone.
     ("big-pair", "legacy", Some("sm99")),
     ("big-one", "legacy", None),
     ("big-instant", "sm99", None),
-    // Small: pair, one-model choice (SM92), RWKV-Curve only, RWKV-Instant
-    // alone.
-    ("small-pair", "sm72e25", Some("sm98")),
+    // Small: the show-time retrain (SM92) with the Small Instant-Only model
+    // (SM98); the one-model choice / RWKV-Curve only (SM92); RWKV-Instant
+    // alone (SM98).
+    ("small-pair", "sm92", Some("sm98")),
     ("small-one", "sm92", None),
-    ("small-curve", "sm72e25", None),
+    ("small-curve", "sm92", None),
     ("small-instant", "sm98", None),
-    // Tiny: pair and RWKV-Instant alone; its one-model choice and RWKV-Curve
-    // only are Small's today (small-one, small-curve).
-    ("tiny-pair", "sm72e25", Some("sm101")),
+    // Tiny: the Tiny two-head model (SM106) with the Tiny Instant-Only model
+    // (SM101); the one-model choice / RWKV-Curve only (SM106); RWKV-Instant
+    // alone (SM101).
+    ("tiny-pair", "sm106", Some("sm101")),
+    ("tiny-one", "sm106", None),
+    ("tiny-curve", "sm106", None),
     ("tiny-instant", "sm101", None),
+    // The default small model (SM63) alone, for comparison with the old Small.
+    ("sm63-alone", "sm72e25", None),
 ];
 
 #[derive(Clone, Debug)]

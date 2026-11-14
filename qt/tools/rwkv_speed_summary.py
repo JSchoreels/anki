@@ -30,7 +30,10 @@ ORDER = [
     "small-curve",
     "small-instant",
     "tiny-pair",
+    "tiny-one",
+    "tiny-curve",
     "tiny-instant",
+    "sm63-alone",
 ]
 
 
