@@ -4,6 +4,7 @@
 from __future__ import annotations
 
 import importlib
+import importlib.machinery
 import importlib.util
 import math
 import struct
@@ -477,8 +478,16 @@ def _rwkv_review_args(
 
 
 def _import_rsbridge(root: Path) -> object:
-    extension_path = root / "out/pylib/anki/_rsbridge.so"
-    if not extension_path.exists():
+    extension_dir = root / "out/pylib/anki"
+    extension_path = next(
+        (
+            extension_dir / f"_rsbridge{suffix}"
+            for suffix in importlib.machinery.EXTENSION_SUFFIXES
+            if (extension_dir / f"_rsbridge{suffix}").exists()
+        ),
+        None,
+    )
+    if extension_path is None:
         pytest.skip("built _rsbridge extension is unavailable; run `just build` first")
 
     spec = importlib.util.spec_from_file_location("_rsbridge", extension_path)
