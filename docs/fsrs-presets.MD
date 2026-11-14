@@ -62,6 +62,14 @@ reviews. Neither result is stored in Anki's prediction cache. Add-ons can use
 `fsrs_six_comparison_fingerprint` together with the search and preset settings
 to invalidate their own caches when history or rollover changes.
 
+## Training and simulation corrections
+
+FSRS-7 optimization with same-day reviews disabled retains valid forgetting
+curve parameters. FSRS-6 simulation does not reduce short-term stability after
+a Hard answer, and estimated initial stabilities remain ordered by rating.
+Presets optimized with an affected build must be optimized again to replace
+already saved parameters; opening the collection does not rewrite them.
+
 ## Add-on Overlay
 
 Add-ons can provide collection-scoped FSRS presets and ordered card matching

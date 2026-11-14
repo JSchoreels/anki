@@ -53,6 +53,8 @@ Changes since the last normal release, [build 110](https://github.com/JSchoreels
 
 #### Fixes
 
+- **Correct FSRS training and simulations.** FSRS-7 optimization with same-day reviews disabled now preserves valid model parameters. FSRS-6 simulations keep stability from falling on a Hard answer, and initial stabilities stay ordered by answer button. Re-optimize an affected preset to obtain corrected parameters.
+
 - **Balance Instant minimum reviews across the selected deck.** The minimum chooses the lowest-recall cards across its subdecks. The deck-specific **Also honor subdeck minimums** option retains separate minimums where desired.
 
 - **Avoid unnecessary RWKV state reloads.** When a change such as selecting a deck leaves the review history untouched, Anki can confirm that the resident state still matches instead of loading it again. One collection avoided about 1.4 seconds of CPU work.
@@ -78,6 +80,8 @@ Changes since the last normal release, [build 110](https://github.com/JSchoreels
 - **Model-size timing:** On one Windows collection copy with 13,980 reviewed cards and 225,132 reviews, estimated cold state builds with both schedulers were 23.3 seconds for Big, 7.8 seconds for Small and 7.2 seconds for Tiny. These estimates add a separately measured Python cost to native replay; actual time depends on hardware and collection. See the [benchmark and methodology](https://github.com/JSchoreels/anki/blob/main/docs/rwkv-speed-test-2026-11-14.MD).
 
 - **FSRS-6 comparison API:** Current scores use the home-deck config's saved parameters; an independent calculation returns saved-model and chronological validation-fold predictions without writing either to Anki's prediction cache. Add-on-owned caches can use the history and rollover fingerprint to detect changes. See [FSRS presets](https://github.com/JSchoreels/anki/blob/main/docs/fsrs-presets.MD#fsrs-6-comparisons).
+
+- **FSRS fixes:** Backport upstream [initial-stability ordering](https://github.com/open-spaced-repetition/fsrs-rs/pull/477), [FSRS-6 Hard-answer simulation](https://github.com/open-spaced-repetition/fsrs-rs/pull/479), and [FSRS-7 training without same-day reviews](https://github.com/open-spaced-repetition/fsrs-rs/pull/481). These changes do not switch the fork to the separate compact FSRS-6 training optimization.
 
 - **FSRS optimization and calibration:** Reuse compact histories for FSRS-7 training and FSRS-6/7 evaluation and calibration. Skip simulator preparation when Dynamic DR is disabled and avoid duplicating health-check items. The fsrs-rs dependency remains pinned to the fork pending upstream review. See [performance](https://github.com/JSchoreels/anki/blob/main/docs/fsrs-compact-performance.MD), [calibration profile](https://github.com/JSchoreels/anki/blob/main/docs/fsrs-compact-prediction-profile-2026-11-03.MD) and [optimization profile](https://github.com/JSchoreels/anki/blob/main/docs/fsrs-optimization-profile-2026-11-03.MD).
 
