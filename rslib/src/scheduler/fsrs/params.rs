@@ -2628,6 +2628,98 @@ pub(crate) mod tests {
     }
 
     #[test]
+    fn fsrs6_comparison_returns_separate_saved_and_held_out_predictions() -> Result<()> {
+        let tempdir = tempdir()?;
+        let backend = Backend::new(I18n::template_only(), false);
+        backend.open_collection(anki_proto::collection::OpenCollectionRequest {
+            collection_path: tempdir
+                .path()
+                .join("collection.anki2")
+                .to_str()
+                .unwrap()
+                .into(),
+            media_folder_path: tempdir.path().join("media").to_str().unwrap().into(),
+            media_db_path: tempdir.path().join("media.db").to_str().unwrap().into(),
+        })?;
+        let context = backend.with_col(|col| {
+            crate::tests::NoteAdder::basic(col).add(col);
+            let cid = col.get_first_card().id;
+            col.storage.add_revlog_entry(
+                &revlog_for_card(cid.0, RevlogReviewKind::Learning, 20),
+                false,
+            )?;
+            for days_ago in (1..=12).rev() {
+                col.storage.add_revlog_entry(
+                    &RevlogEntry {
+                        button_chosen: if days_ago % 2 == 0 { 3 } else { 1 },
+                        ..revlog_for_card(cid.0, RevlogReviewKind::Review, days_ago)
+                    },
+                    false,
+                )?;
+            }
+            let prepared = col.prepare_compute_params(PrepareComputeParamsInput {
+                search: "",
+                ignore_revlogs_before: 0.into(),
+                current_params: &fsrs::FSRS6_DEFAULT_PARAMETERS,
+                num_of_relearning_steps: 1,
+                include_same_day_reviews: None,
+                enable_scheduling_penalties: false,
+                model_version_override: Some(ComputeParametersVersion::Fsrs6),
+                dynamic_desired_retention_enabled: false,
+                historical_retention: 0.9,
+                desired_retention: 0.9,
+                dynamic_desired_retention_simulator_options:
+                    DynamicDesiredRetentionSimulatorOptions::default(),
+            })?;
+            Ok(FsrsReviewPredictionContext::from_prepared(&prepared))
+        })?;
+        let expected = fsrs_review_retrievability_cache_rows(
+            &fsrs::FSRS6_DEFAULT_PARAMETERS,
+            &context,
+            true,
+            None,
+        )?;
+        let result = backend.compute_fsrs_six_comparison(
+            anki_proto::scheduler::ComputeFsrs6ComparisonRequest {
+                params: fsrs::FSRS6_DEFAULT_PARAMETERS.to_vec(),
+                num_of_relearning_steps: 1,
+                include_validation_folds: true,
+                ..Default::default()
+            },
+        )?;
+        for (bytes, role) in [
+            (
+                &result.final_fit,
+                FsrsReviewRetrievabilitySampleRole::FinalFit,
+            ),
+            (
+                &result.validation_fold,
+                FsrsReviewRetrievabilitySampleRole::ValidationFold,
+            ),
+        ] {
+            let mut expected = expected
+                .iter()
+                .filter(|row| row.sample_role == role)
+                .map(|row| (row.revlog_id.0, row.prediction))
+                .collect_vec();
+            expected.sort_by_key(|row| row.0);
+            let actual = bytes
+                .chunks_exact(12)
+                .map(|chunk| {
+                    (
+                        i64::from_le_bytes(chunk[..8].try_into().unwrap()),
+                        f32::from_le_bytes(chunk[8..].try_into().unwrap()),
+                    )
+                })
+                .collect_vec();
+            assert!(!actual.is_empty());
+            assert_eq!(actual, expected);
+        }
+        assert_eq!(result.history_fingerprint.len(), 64);
+        Ok(())
+    }
+
+    #[test]
     fn fsrs_calibration_backend_stores_same_rows_as_collection_computation() -> Result<()> {
         for include_validation_folds in [false, true] {
             let tempdir = tempdir()?;

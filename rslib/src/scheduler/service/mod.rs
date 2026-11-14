@@ -89,6 +89,7 @@ use crate::search::SortMode;
 use crate::search::TryIntoSearch;
 use crate::stats::studied_today;
 use crate::storage::FsrsReviewRetrievabilityCacheRow;
+use crate::storage::FsrsReviewRetrievabilitySampleRole;
 use crate::storage::RwkvReviewRetrievabilityCacheRow;
 use crate::storage::RwkvReviewRetrievabilitySampleRole;
 
@@ -705,6 +706,38 @@ impl crate::services::SchedulerService for Collection {
         self.compute_memory_state(input.into())
     }
 
+    fn fsrs_six_current_scores(
+        &mut self,
+        input: cards::CardIds,
+    ) -> Result<scheduler::Fsrs6CurrentScoresResponse> {
+        let (scores, missing_parameters) = self.fsrs6_comparison_current_scores(
+            &input.cids.into_iter().map(Into::into).collect::<Vec<_>>(),
+        )?;
+        Ok(scheduler::Fsrs6CurrentScoresResponse {
+            scores: scores
+                .into_iter()
+                .map(
+                    |(card_id, retrievability)| scheduler::fsrs6_current_scores_response::Score {
+                        card_id: card_id.0,
+                        retrievability,
+                    },
+                )
+                .collect(),
+            missing_parameters: missing_parameters as u32,
+        })
+    }
+
+    fn fsrs_six_comparison_fingerprint(
+        &mut self,
+        input: generic::String,
+    ) -> Result<generic::String> {
+        let revlogs = self.revlog_for_srs(&input.val)?;
+        let next_day_at = self.timing_today()?.next_day_at;
+        Ok(generic::String {
+            val: fsrs_six_history_fingerprint(&revlogs, next_day_at),
+        })
+    }
+
     fn get_fsrs_preset_for_card(
         &mut self,
         input: cards::CardId,
@@ -1288,6 +1321,68 @@ impl crate::services::BackendSchedulerService for Backend {
         Ok(generic::UInt32 { val: count })
     }
 
+    fn compute_fsrs_six_comparison(
+        &self,
+        input: scheduler::ComputeFsrs6ComparisonRequest,
+    ) -> Result<scheduler::ComputeFsrs6ComparisonResponse> {
+        require!(
+            input.params.len() == 21 && input.params.iter().all(|param| param.is_finite()),
+            "FSRS-6 comparison requires 21 saved parameters"
+        );
+        let mut progress = self.new_progress_handler();
+        let (revlogs, next_day_at) = self.with_col(|col| {
+            progress.check_cancelled()?;
+            Ok((
+                col.revlog_for_srs(&input.search)?,
+                col.timing_today()?.next_day_at,
+            ))
+        })?;
+        let history_fingerprint = fsrs_six_history_fingerprint(&revlogs, next_day_at);
+        let context = FsrsReviewPredictionContext::from_revlogs(
+            revlogs,
+            next_day_at,
+            PrepareComputeParamsInput {
+                search: &input.search,
+                ignore_revlogs_before: input.ignore_revlogs_before_ms.into(),
+                current_params: &input.params,
+                num_of_relearning_steps: input.num_of_relearning_steps as usize,
+                include_same_day_reviews: None,
+                enable_scheduling_penalties: false,
+                model_version_override: Some(ComputeParametersVersion::Fsrs6),
+                dynamic_desired_retention_enabled: false,
+                historical_retention: 0.9,
+                desired_retention: 0.9,
+                dynamic_desired_retention_simulator_options:
+                    DynamicDesiredRetentionSimulatorOptions::default(),
+            },
+            &mut progress,
+        )?;
+        let (mut rows, mut progress) = compute_fsrs_review_retrievability_calibration_rows(
+            &input.params,
+            &context,
+            input.include_validation_folds,
+            progress,
+        )?;
+        progress.check_cancelled()?;
+        rows.sort_unstable_by_key(|row| (row.revlog_id, row.fold_index));
+        let mut final_fit = Vec::new();
+        let mut validation_fold = Vec::new();
+        for row in rows {
+            let target = match row.sample_role {
+                FsrsReviewRetrievabilitySampleRole::FinalFit => &mut final_fit,
+                FsrsReviewRetrievabilitySampleRole::ValidationFold => &mut validation_fold,
+                FsrsReviewRetrievabilitySampleRole::PostOptimization => continue,
+            };
+            target.extend_from_slice(&row.revlog_id.0.to_le_bytes());
+            target.extend_from_slice(&row.prediction.to_le_bytes());
+        }
+        Ok(scheduler::ComputeFsrs6ComparisonResponse {
+            final_fit,
+            validation_fold,
+            history_fingerprint,
+        })
+    }
+
     fn compute_fsrs_review_retrievability_calibration(
         &self,
         input: scheduler::ComputeFsrsReviewRetrievabilityCalibrationRequest,
@@ -1417,6 +1512,24 @@ fn fsrs_item_proto_to_fsrs(item: anki_proto::scheduler::FsrsItem) -> FSRSItem {
     }
 }
 
+fn fsrs_six_history_fingerprint(
+    revlogs: &[crate::revlog::RevlogEntry],
+    next_day_at: TimestampSecs,
+) -> String {
+    let mut hash = blake3::Hasher::new();
+    hash.update(&(next_day_at.0.rem_euclid(86_400)).to_le_bytes());
+    for row in revlogs {
+        hash.update(&row.id.0.to_le_bytes());
+        hash.update(&row.cid.0.to_le_bytes());
+        hash.update(&[row.button_chosen, row.review_kind as u8]);
+        hash.update(&row.interval.to_le_bytes());
+        hash.update(&row.last_interval.to_le_bytes());
+        hash.update(&row.ease_factor.to_le_bytes());
+        hash.update(&row.taken_millis.to_le_bytes());
+    }
+    hash.finalize().to_hex().to_string()
+}
+
 fn fsrs_review_proto_to_fsrs(review: anki_proto::scheduler::FsrsReview) -> FSRSReview {
     FSRSReview {
         delta_t: review.delta_t as f32,
@@ -1459,6 +1572,29 @@ mod tests {
     use crate::scheduler::fsrs::dynamic_desired_retention::DynamicDesiredRetentionFields;
     use crate::scheduler::fsrs::preset::FsrsPreset;
     use crate::scheduler::fsrs::preset::FsrsPresetId;
+
+    #[test]
+    fn fsrs_six_fingerprint_tracks_review_edits_and_rollover() {
+        use super::fsrs_six_history_fingerprint;
+        use crate::prelude::TimestampSecs;
+        use crate::revlog::RevlogEntry;
+
+        let mut review = RevlogEntry {
+            button_chosen: 3,
+            ..Default::default()
+        };
+        let original = fsrs_six_history_fingerprint(&[review.clone()], TimestampSecs(86_400));
+        review.button_chosen = 1;
+        assert_ne!(
+            original,
+            fsrs_six_history_fingerprint(&[review.clone()], TimestampSecs(86_400))
+        );
+        review.button_chosen = 3;
+        assert_ne!(
+            original,
+            fsrs_six_history_fingerprint(&[review], TimestampSecs(86_401))
+        );
+    }
 
     #[test]
     fn fsrs_calibration_search_isolates_presets_with_duplicate_names() -> crate::prelude::Result<()>

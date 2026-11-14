@@ -48,6 +48,20 @@ uses the same resolver as review scheduling, so it includes add-on overlay
 matches from `fsrsPresetOverlay` and falls back to the card's home deck config
 when no overlay rule matches.
 
+## FSRS-6 comparisons
+
+The read-only `fsrs_six_current_scores` backend method reconstructs a separate
+memory state from each card's review history and its home-deck config's saved
+FSRS-6 parameters. It reports cards with missing or invalid parameters instead
+of substituting default weights, and does not change cards or scheduler state.
+
+`compute_fsrs_six_comparison` accepts a search and an explicit 21-parameter
+FSRS-6 model. It returns packed `(review ID, retrievability)` rows for the saved
+model and, when requested, chronological validation folds trained on earlier
+reviews. Neither result is stored in Anki's prediction cache. Add-ons can use
+`fsrs_six_comparison_fingerprint` together with the search and preset settings
+to invalidate their own caches when history or rollover changes.
+
 ## Add-on Overlay
 
 Add-ons can provide collection-scoped FSRS presets and ordered card matching
