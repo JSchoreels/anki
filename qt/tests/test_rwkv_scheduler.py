@@ -26899,3 +26899,521 @@ def test_instant_only_prediction_keeps_fsrs_scheduling_states() -> None:
     updated = update_reviewer_scheduling_states(states, reviewer, card)
 
     assert updated == states
+
+
+class _RecallProjectionBackend:
+    """Resident fake: recall falls with the query's elapsed time and day."""
+
+    def __init__(self) -> None:
+        self.generation = 0
+        self.calls: list[list[int]] = []
+        self.unscored_card_ids: set[int] = set()
+
+    def warm_up(self, *_args: object, **_kwargs: object) -> None:
+        raise AssertionError("recall projection must not warm up")
+
+    def state_generation(self) -> int:
+        return self.generation
+
+    def predict_retrievability_inputs_from_warm_up(
+        self,
+        inputs_by_index: Sequence[tuple[int, RwkvReviewInput]],
+    ) -> list[RwkvReviewPrediction | None]:
+        self.calls.append(
+            [review_input.identity.card_id for _, review_input in inputs_by_index]
+        )
+        return [
+            None
+            if review_input.identity.card_id in self.unscored_card_ids
+            else RwkvReviewPrediction(
+                retrievability=1.0
+                / (
+                    1.0
+                    + (review_input.current_elapsed_seconds or 0) / 86_400
+                    + (review_input.day_offset or 0) / 1_000
+                    + review_input.identity.card_id / 100
+                )
+            )
+            for _, review_input in inputs_by_index
+        ]
+
+
+_RECALL_PROJECTION_CUTOFF = 1_800_000_000
+
+
+def _recall_projection_input(
+    card_id: int, *, target: float | None = 0.9
+) -> RwkvReviewInput:
+    return replace(
+        _rwkv_review_input(card_id=card_id, note_id=card_id * 10),
+        target_retentions=(target, target, target, target),
+    )
+
+
+def _recall_projection_harness(
+    monkeypatch: pytest.MonkeyPatch,
+    inputs_by_batch_size: dict[int, list[tuple[int, RwkvReviewInput]]],
+    *,
+    now: float = _RECALL_PROJECTION_CUTOFF - 7_200,
+    warmed_up: bool = True,
+) -> tuple[_RecallProjectionBackend, SimpleNamespace, list[int]]:
+    backend = _RecallProjectionBackend()
+    col = SimpleNamespace(
+        _backend=_RwkvQueueScoreRpc(),
+        db=object(),
+        sched=SimpleNamespace(
+            day_cutoff=_RECALL_PROJECTION_CUTOFF,
+            _timing_today=lambda: SimpleNamespace(
+                days_elapsed=42,
+                next_day_at=_RECALL_PROJECTION_CUTOFF,
+            ),
+        ),
+    )
+    mw = SimpleNamespace(col=col)
+    input_build = rwkv_scheduler.RwkvReviewInputBatchBuild(
+        inputs_by_batch_size=inputs_by_batch_size,
+        loaded_rows=0,
+        parsed_cards=0,
+        cards_with_state=0,
+        disabled_config_cards=0,
+        eligible_cards=0,
+        deck_configs=1,
+        preset_elapsed_ms=0.0,
+        load_elapsed_ms=0.0,
+        candidate_elapsed_ms=0.0,
+        dynamic_desired_retentions_resolved=True,
+    )
+    input_loads: list[int] = []
+
+    def load_inputs(**kwargs: object) -> rwkv_scheduler.RwkvReviewInputBatchBuild:
+        assert kwargs["include_suspended_review"] is False
+        input_loads.append(1)
+        return input_build
+
+    monkeypatch.setattr(
+        rwkv_scheduler, "_rwkv_review_input_batches_for_search", load_inputs
+    )
+    monkeypatch.setattr(rwkv_scheduler.time, "time", lambda: now)
+    set_reviewer_backend(cast(Any, backend))
+    if warmed_up:
+        rwkv_scheduler._reviewer_backend_warmup_states[(id(backend), id(col))] = None
+    return backend, mw, input_loads
+
+
+def _off_main_thread(target: Callable[[], object]) -> object:
+    outcome: list[object] = []
+
+    def run() -> None:
+        try:
+            outcome.append(target())
+        except BaseException as exc:
+            outcome.append(exc)
+
+    thread = threading.Thread(target=run)
+    thread.start()
+    thread.join(timeout=10)
+    assert not thread.is_alive()
+    if isinstance(outcome[0], BaseException):
+        raise outcome[0]
+    return outcome[0]
+
+
+def test_rwkv_review_input_shift_moves_clock_and_keeps_missing_fields() -> None:
+    review_input = _rwkv_review_input(card_id=1, note_id=10)
+
+    assert rwkv_scheduler._rwkv_review_input_shifted(review_input, 0, 0) is review_input
+    shifted = rwkv_scheduler._rwkv_review_input_shifted(review_input, 90_000, 2)
+    assert shifted == replace(
+        review_input,
+        current_elapsed_seconds=604_800 + 90_000,
+        current_elapsed_days=9,
+        day_offset=44,
+    )
+    missing = replace(
+        review_input,
+        current_elapsed_seconds=None,
+        current_elapsed_days=None,
+        day_offset=None,
+    )
+    assert rwkv_scheduler._rwkv_review_input_shifted(missing, 3_600, 1) == missing
+
+    cutoff = _RECALL_PROJECTION_CUTOFF
+    rollovers = rwkv_scheduler._rwkv_recall_projection_rollovers
+    assert rollovers(cutoff - 2, cutoff) == 0
+    assert rollovers(cutoff - 1, cutoff) == 0
+    assert rollovers(cutoff - 0.1, cutoff) == 0
+    assert rollovers(cutoff, cutoff) == 1
+    assert rollovers(cutoff + 86_399, cutoff) == 1
+    assert rollovers(cutoff + 86_400, cutoff) == 2
+
+
+@pytest.mark.parametrize(
+    "offsets",
+    ((), (0,) * 17, (-1,), (True,), (1.5,), (0x1_0000_0000,)),
+)
+def test_project_rwkv_recall_rejects_invalid_offsets(offsets: tuple[Any, ...]) -> None:
+    with pytest.raises(ValueError):
+        _off_main_thread(
+            lambda: rwkv_scheduler.project_rwkv_recall(
+                SimpleNamespace(), offsets_seconds=offsets
+            )
+        )
+
+
+def test_project_rwkv_recall_matches_input_scores_on_shifted_inputs(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    now = _RECALL_PROJECTION_CUTOFF - 7_200
+    inputs = {
+        64: [(card_id, _recall_projection_input(card_id)) for card_id in (1, 2, 3)],
+        128: [(4, _recall_projection_input(4, target=None))],
+    }
+    backend, mw, input_loads = _recall_projection_harness(monkeypatch, inputs, now=now)
+    backend.unscored_card_ids.add(3)
+    monkeypatch.setattr(rwkv_scheduler, "_RWKV_REVIEW_RESCHEDULE_BATCH_SIZE", 2)
+
+    result = cast(
+        dict[str, Any],
+        _off_main_thread(
+            lambda: rwkv_scheduler.project_rwkv_recall(
+                mw, offsets_seconds=(0, 3_600, None)
+            )
+        ),
+    )
+
+    assert result["status"] == "ready"
+    assert result["taken"] == now
+    assert result["offsets_seconds"] == [0, 3_600, 7_200]
+    assert input_loads == [1]
+    assert all(len(call) <= 2 for call in backend.calls)
+    # Offsets 0 and 3600 stay before the rollover; None lands on it.
+    shifted_fields = (
+        {},
+        {"current_elapsed_seconds": 604_800 + 3_600},
+        {
+            "current_elapsed_seconds": 604_800 + 7_200,
+            "current_elapsed_days": 8,
+            "day_offset": 43,
+        },
+    )
+    expected_recall: dict[int, list[float | None]] = {1: [], 2: []}
+    for fields in shifted_fields:
+        scores = dict(
+            rwkv_scheduler._rwkv_review_scores_for_inputs(
+                [
+                    (card_id, replace(review_input, **fields))
+                    for card_id, review_input in inputs[64]
+                ],
+                batch_size=64,
+            )
+            or []
+        )
+        for card_id, recall in expected_recall.items():
+            recall.append(scores[card_id])
+    assert result["cards"] == [
+        {
+            "card_id": card_id,
+            "deck_id": 100,
+            "target_retention": 0.9,
+            "recall": expected_recall[card_id],
+        }
+        for card_id in (1, 2)
+    ]
+    assert result["elapsed_ms"] >= 0
+
+
+def test_project_rwkv_recall_next_day_reaches_fractional_cutoff(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    now = _RECALL_PROJECTION_CUTOFF - 7_200.25
+    _, mw, _ = _recall_projection_harness(
+        monkeypatch, {64: [(1, _recall_projection_input(1))]}, now=now
+    )
+
+    result = cast(
+        dict[str, Any],
+        _off_main_thread(
+            lambda: rwkv_scheduler.project_rwkv_recall(mw, offsets_seconds=(None,))
+        ),
+    )
+
+    assert result["status"] == "ready"
+    assert result["offsets_seconds"] == [7_201]
+    assert now + result["offsets_seconds"][0] >= _RECALL_PROJECTION_CUTOFF
+
+
+@pytest.mark.parametrize("pending", (True, False))
+def test_project_rwkv_recall_reports_pending_without_warm_up(
+    monkeypatch: pytest.MonkeyPatch,
+    pending: bool,
+) -> None:
+    backend, mw, input_loads = _recall_projection_harness(
+        monkeypatch,
+        {64: [(1, _recall_projection_input(1))]},
+        warmed_up=False,
+    )
+    if pending:
+        rwkv_scheduler._reviewer_backend_warmup_pending_generations[
+            (id(backend), id(mw.col))
+        ] = 0
+
+    result = _off_main_thread(lambda: rwkv_scheduler.project_rwkv_recall(mw))
+
+    assert result == {
+        "status": "pending",
+        "reason": "warmup_pending" if pending else "state_cold",
+    }
+    assert input_loads == []
+    assert backend.calls == []
+
+
+def test_project_rwkv_recall_is_unavailable_without_backend(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    monkeypatch.setattr(
+        rwkv_scheduler, "configure_reviewer_backend_from_environment", lambda: False
+    )
+
+    assert not rwkv_scheduler.rwkv_recall_projection_available(SimpleNamespace())
+    assert _off_main_thread(
+        lambda: rwkv_scheduler.project_rwkv_recall(SimpleNamespace())
+    ) == {"status": "unavailable", "reason": "backend_unavailable"}
+
+
+def test_project_rwkv_recall_refuses_the_main_thread(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    backend, mw, input_loads = _recall_projection_harness(
+        monkeypatch, {64: [(1, _recall_projection_input(1))]}
+    )
+
+    assert rwkv_scheduler.rwkv_recall_projection_available(mw)
+    with pytest.raises(RuntimeError):
+        rwkv_scheduler.project_rwkv_recall(mw)
+    assert input_loads == []
+    assert backend.calls == []
+
+
+def test_project_rwkv_recall_waits_for_busy_backend(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    backend, mw, _ = _recall_projection_harness(
+        monkeypatch, {64: [(1, _recall_projection_input(1))]}
+    )
+    original_scores = rwkv_scheduler._rwkv_review_scores_for_inputs
+    waiting = threading.Event()
+    wait_flags: list[bool] = []
+
+    def scores(*args: Any, **kwargs: Any) -> list[tuple[int, float]] | None:
+        wait_flags.append(kwargs.get("wait_for_access", False))
+        if kwargs.get("wait_for_access"):
+            waiting.set()
+        return original_scores(*args, **kwargs)
+
+    monkeypatch.setattr(rwkv_scheduler, "_rwkv_review_scores_for_inputs", scores)
+    release = threading.Event()
+    holder = _start_multi_batch_execution_lock_holder(release)
+    outcome: list[object] = []
+    thread = threading.Thread(
+        target=lambda: outcome.append(rwkv_scheduler.project_rwkv_recall(mw))
+    )
+    thread.start()
+    try:
+        assert waiting.wait(timeout=5)
+        assert backend.calls == []
+    finally:
+        release.set()
+        holder.join(timeout=5)
+    thread.join(timeout=5)
+
+    assert not thread.is_alive()
+    result = cast(dict[str, Any], outcome[0])
+    assert result["status"] == "ready"
+    assert [card["card_id"] for card in result["cards"]] == [1]
+    assert wait_flags == [False, True]
+    assert backend.calls == [[1]]
+
+
+@pytest.mark.parametrize("interruption", ("stale", "cancelled"))
+def test_project_rwkv_recall_stops_on_stale_state_or_cancel(
+    monkeypatch: pytest.MonkeyPatch,
+    interruption: str,
+) -> None:
+    backend, mw, _ = _recall_projection_harness(
+        monkeypatch,
+        {64: [(card_id, _recall_projection_input(card_id)) for card_id in (1, 2)]},
+    )
+    monkeypatch.setattr(rwkv_scheduler, "_RWKV_REVIEW_RESCHEDULE_BATCH_SIZE", 1)
+    cancel_event = threading.Event()
+    original_scores = rwkv_scheduler._rwkv_review_scores_for_inputs
+
+    def scores(*args: Any, **kwargs: Any) -> list[tuple[int, float]] | None:
+        result = original_scores(*args, **kwargs)
+        if interruption == "stale":
+            backend.generation += 1
+        else:
+            cancel_event.set()
+        return result
+
+    monkeypatch.setattr(rwkv_scheduler, "_rwkv_review_scores_for_inputs", scores)
+
+    result = _off_main_thread(
+        lambda: rwkv_scheduler.project_rwkv_recall(
+            mw, offsets_seconds=(0, 3_600), cancel_event=cancel_event
+        )
+    )
+
+    assert result == (
+        {"status": "stale", "reason": "state_changed"}
+        if interruption == "stale"
+        else {"status": "cancelled"}
+    )
+    # A stale token is refused before the next chunk reaches the model.
+    assert backend.calls == [[1]]
+    assert rwkv_scheduler._rwkv_recall_projection_in_flight == {}
+
+
+@pytest.mark.parametrize("interruption", ("stale", "cancelled"))
+def test_project_rwkv_recall_checks_the_last_batch(
+    monkeypatch: pytest.MonkeyPatch,
+    interruption: str,
+) -> None:
+    backend, mw, _ = _recall_projection_harness(
+        monkeypatch, {64: [(1, _recall_projection_input(1))]}
+    )
+    cancel_event = threading.Event()
+    original_scores = rwkv_scheduler._rwkv_review_scores_for_inputs
+
+    def scores(*args: Any, **kwargs: Any) -> list[tuple[int, float]] | None:
+        result = original_scores(*args, **kwargs)
+        if interruption == "stale":
+            backend.generation += 1
+        else:
+            cancel_event.set()
+        return result
+
+    monkeypatch.setattr(rwkv_scheduler, "_rwkv_review_scores_for_inputs", scores)
+    result = _off_main_thread(
+        lambda: rwkv_scheduler.project_rwkv_recall(mw, cancel_event=cancel_event)
+    )
+
+    assert result == (
+        {"status": "stale", "reason": "state_changed"}
+        if interruption == "stale"
+        else {"status": "cancelled"}
+    )
+
+
+def test_project_rwkv_recall_uses_real_collection_on_background_thread(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    from anki.decks import UpdateDeckConfigs
+
+    col = anki.collection.Collection(str(tmp_path / "collection.anki2"))
+    try:
+        config = col.decks.get_deck_configs_for_update(DeckId(1)).all_config[0].config
+        config.config.rwkv_review_enabled = True
+        col.decks.update_deck_configs(
+            UpdateDeckConfigs(target_deck_id=1, configs=[config])
+        )
+        notetype = col.models.current()
+        assert notetype is not None
+        note = col.new_note(notetype)
+        note.fields[0] = "Synthetic recall projection"
+        col.add_note(note, DeckId(1))
+        card = note.cards()[0]
+        card.start_timer()
+        col.sched.answerCard(card, 4)
+        before = col.get_card(card.id)
+        before_state = (
+            before.queue,
+            before.due,
+            before.ivl,
+            before.reps,
+            before.lapses,
+        )
+
+        backend = _RecallProjectionBackend()
+        mw = SimpleNamespace(col=col)
+        set_reviewer_backend(cast(Any, backend))
+        rwkv_scheduler._reviewer_backend_warmup_states[(id(backend), id(col))] = None
+        monkeypatch.setattr("aqt.mw", mw)
+
+        result = cast(
+            dict[str, Any],
+            _off_main_thread(
+                lambda: rwkv_scheduler.project_rwkv_recall(
+                    mw, offsets_seconds=(0, 3_600)
+                )
+            ),
+        )
+
+        assert result["status"] == "ready"
+        assert result["offsets_seconds"] == [0, 3_600]
+        assert len(result["cards"]) == 1
+        projected = result["cards"][0]
+        assert projected["card_id"] == card.id
+        assert projected["deck_id"] == 1
+        assert projected["target_retention"] is not None
+        assert projected["recall"][1] < projected["recall"][0]
+        after = col.get_card(card.id)
+        assert (
+            after.queue,
+            after.due,
+            after.ivl,
+            after.reps,
+            after.lapses,
+        ) == before_state
+    finally:
+        col.close()
+
+
+def test_project_rwkv_recall_coalesces_identical_calls(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    backend, mw, input_loads = _recall_projection_harness(
+        monkeypatch,
+        {64: [(card_id, _recall_projection_input(card_id)) for card_id in (1, 2)]},
+    )
+    original_begin = rwkv_scheduler._begin_rwkv_recall_projection
+    original_scores = rwkv_scheduler._rwkv_review_scores_for_inputs
+    owner_scoring = threading.Event()
+    follower_joined = threading.Event()
+
+    def begin(key: Any) -> Any:
+        future, owns = original_begin(key)
+        if not owns:
+            follower_joined.set()
+        return future, owns
+
+    def scores(*args: Any, **kwargs: Any) -> list[tuple[int, float]] | None:
+        owner_scoring.set()
+        assert follower_joined.wait(timeout=5)
+        return original_scores(*args, **kwargs)
+
+    monkeypatch.setattr(rwkv_scheduler, "_begin_rwkv_recall_projection", begin)
+    monkeypatch.setattr(rwkv_scheduler, "_rwkv_review_scores_for_inputs", scores)
+    outcomes: list[object] = []
+
+    def project() -> None:
+        outcomes.append(
+            rwkv_scheduler.project_rwkv_recall(mw, offsets_seconds=(0, None))
+        )
+
+    owner = threading.Thread(target=project)
+    owner.start()
+    assert owner_scoring.wait(timeout=5)
+    follower = threading.Thread(target=project)
+    follower.start()
+    owner.join(timeout=5)
+    follower.join(timeout=5)
+
+    assert not owner.is_alive() and not follower.is_alive()
+    first, second = cast(list[dict[str, Any]], outcomes)
+    assert first["status"] == "ready"
+    assert second == first
+    assert second["cards"] is not first["cards"]
+    assert input_loads == [1]
+    assert backend.calls == [[1, 2], [1, 2]]
+    assert rwkv_scheduler._rwkv_recall_projection_in_flight == {}

@@ -51,6 +51,8 @@ Changes since the last normal release, [build 110](https://github.com/JSchoreels
 
 - **Forecast RWKV-Instant workloads.** Compatible add-ons can simulate Instant reviews using recent answer timing and outcomes, daily limits, learning steps and selected review order. The graph can show simulated days as they finish; larger forecasts may still take time.
 
+- **Support smoother RWKV recall forecasts.** Compatible add-ons can project recall at several future times without holding the collection worker throughout scoring. In an offscreen test with an updated forecast add-on and 8,747 cards, the longest sampled collection-task wait during repeated refreshes fell from 19.2 seconds to 1.1 milliseconds. Overlapping identical requests share work, and predictions wait for the RWKV backend between batches.
+
 #### Fixes
 
 - **Correct FSRS training and simulations.** FSRS-7 optimization with same-day reviews disabled now preserves valid model parameters. FSRS-6 simulations keep stability from falling on a Hard answer, and initial stabilities stay ordered by answer button. Re-optimize an affected preset to obtain corrected parameters.
@@ -86,6 +88,8 @@ Changes since the last normal release, [build 110](https://github.com/JSchoreels
 - **FSRS optimization and calibration:** Reuse compact histories for FSRS-7 training and FSRS-6/7 evaluation and calibration. Skip simulator preparation when Dynamic DR is disabled and avoid duplicating health-check items. The fsrs-rs dependency remains pinned to the fork pending upstream review. See [performance](https://github.com/JSchoreels/anki/blob/main/docs/fsrs-compact-performance.MD), [calibration profile](https://github.com/JSchoreels/anki/blob/main/docs/fsrs-compact-prediction-profile-2026-11-03.MD) and [optimization profile](https://github.com/JSchoreels/anki/blob/main/docs/fsrs-optimization-profile-2026-11-03.MD).
 
 - **RWKV ordering, sync and forecasting:** The selected deck's minimum is filled by absolute retrievability, with child minimums applied only when enabled. The forecast uses measured recall error, sampled answer outcomes, recent durations and the configured queue refresh. Standard sync hooks trigger reconciliation after remote changes, and invalid compact state reports its scope instead of panicking.
+
+- **Recall projection API:** Add-ons can request future recall from the resident RWKV state, with cancellation and stale-state detection. Calls do not start a historical replay when the state is cold. The offscreen comparison sampled a collection task every 250 ms while refreshing the deck list three times; the legacy path completed 6 samples and the updated add-on completed 80. The add-on update is separate from this Anki release. See [RWKV recall projection](https://github.com/JSchoreels/anki/blob/main/docs/rwkv.MD#recall-projection-add-on-api).
 
 - **Security and dependencies:** Update Ammonia from 4.1.8 to 4.1.9 for [RUSTSEC-2026-0533](https://rustsec.org/advisories/RUSTSEC-2026-0533); Anki uses the default sanitizer configuration, which the advisory says is not affected. Update `pulldown-cmark` for [RUSTSEC-2026-0433](https://rustsec.org/advisories/RUSTSEC-2026-0433), and include upstream fixes for [GHSA-j9v5-m549-cg6c](https://github.com/ankitects/anki/security/advisories/GHSA-j9v5-m549-cg6c) and [GHSA-gfvm-4968-jp9m](https://github.com/ankitects/anki/security/advisories/GHSA-gfvm-4968-jp9m).
 

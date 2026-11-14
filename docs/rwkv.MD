@@ -1679,6 +1679,93 @@ that simulator falls back to the Python loop. Optional smoothing applies a
 centered moving window to neighboring retention points. Both simulator paths
 report progress while running.
 
+### Recall Projection (add-on API)
+
+The recall projection answers "what would each card's recall be in 1 hour, 3
+hours, tomorrow, ... if I stopped reviewing now?". It scores the cards matched
+by a search with the current resident RWKV state at several future times. It is
+a backend for add-ons such as RWKV forecast, which previously rebuilt this from
+private helpers on the collection executor.
+
+**Python entry points** (`aqt.rwkv_scheduler`, both return JSON-able data):
+
+- `rwkv_recall_projection_available(mw=None) -> bool`: capability check. False
+  when the RWKV backend is not running. Check
+  `hasattr(aqt.rwkv_scheduler, "project_rwkv_recall")` first for older builds.
+- `project_rwkv_recall(mw=None, *, search="is:review -is:learn -is:suspended
+  -is:buried", offsets_seconds=(0,), cancel_event=None) -> dict`: blocking.
+  Call it from a background thread that does not hold the collection executor,
+  such as a plain thread or `mw.taskman.run_in_background(...,
+  uses_collection=False)`, like `forecast_rwkv_workload`. A call on the main
+  thread raises `RuntimeError`. Invalid offsets raise `ValueError`.
+
+**Offsets.** `offsets_seconds` holds 1 to 16 entries, each an integer number of
+seconds after now (0 to 2^32 - 1) or `None` for the next day rollover
+(`col.sched.day_cutoff`), which resolves to the next whole second at or after
+the cutoff (at least one second). For each
+offset the card's query input moves forward: its elapsed seconds grow by the
+offset, and its elapsed days and scheduler day number grow by the number of
+rollovers crossed (0 before `cutoff`, then 1 plus one per further 86,400
+seconds). Missing fields stay missing. Offset 0 scores the unshifted input, so
+it equals the card's current RWKV recall. The model state is never updated.
+
+**Status.** Every result has a `status`:
+
+- `"ready"`: the projection below.
+- `"pending"` with `reason`: the resident state is not ready. `warmup_pending`
+  means a warm-up or cache restore is running; `state_cold` means no cached
+  state could be restored; `state_unavailable` means the state changed while
+  it was being captured. The call returns at once: it restores a valid state
+  cache when one exists, but never starts a full historical replay and never
+  waits for a running warm-up. Try again later.
+- `"unavailable"` with `reason`: no backend (`backend_unavailable`), no open
+  collection (`collection_unavailable`), the inputs could not be loaded
+  (`inputs_unavailable`), or the backend cannot score them
+  (`scores_unavailable`).
+- `"stale"` with `reason` `state_changed`: an answer, sync, undo or model
+  change made the captured state stale during the run. Nothing partial is
+  returned.
+- `"cancelled"`: `cancel_event` was set; it is checked between chunks.
+
+**Result** (`status` `"ready"`):
+
+```json
+{
+  "status": "ready", "taken": 1800000000.5, "offsets_seconds": [0, 3600, 7199],
+  "cards": [
+    {"card_id": 1, "deck_id": 100, "target_retention": 0.9,
+     "recall": [0.93, 0.92, 0.91]}
+  ],
+  "elapsed_ms": 812.0
+}
+```
+
+`taken` is the epoch time at which the inputs were loaded; offsets are relative
+to it. `recall` has one value per offset (`null` when the model gave none).
+Cards without a recall at the first offset or without a target retention are
+left out. `deck_id` is the card's deck in its review identity; the target is
+the preset's desired retention, with Dynamic DR resolved as for `is:rwkv:due`.
+
+**Cost and concurrency.** One model query per card per offset: 4 offsets over
+10,000 cards is about 40,000 queries. Scoring runs per offset in chunks of 128
+cards. Each chunk takes the backend's prediction lock, waiting for it when a
+reviewer answer holds it, so an answer waits for at most one chunk and the run
+does not fail because the backend is busy. The collection is read only to load
+the inputs. Concurrent calls with the same collection, search, resolved
+offsets (`None` keyed by the absolute rollover time) and state generation share
+one in-flight computation; each caller gets its own copy. Results are not
+cached beyond that. A debug log line summarizes each call (status, cards,
+offsets, chunks, lock waits, whether it was shared, elapsed time).
+
+**Example measurement.** In an offscreen macOS run on a copy of a collection
+with 8,747 review cards, a forecast add-on requested four time points and
+refreshed the deck list three times. A trivial collection task was submitted
+every 250 ms while the scenario ran. With the add-on's legacy path, 6 tasks
+completed and the longest wait was 19.2 seconds; with the new API and the
+add-on's separate refresh fix, 80 completed and the longest wait was 1.1 ms.
+The scenarios took 39.61 and 20.07 seconds respectively. This measures one
+collection and computer, and requires the updated add-on as well as this API.
+
 ### Workload Forecast (add-on API)
 
 The workload forecast answers "how many reviews will I have tomorrow, the day
