@@ -33,6 +33,26 @@ repeated here unless they materially affect a fork feature.
 
 ## Unreleased
 
+Changes since [build 115](https://github.com/JSchoreels/anki/releases/tag/26.09.4%2Bfsrs7.build.115). The application version remains `26.09.4+fsrs7`.
+
+### User facing changes
+
+#### New Features
+
+- **Explore recall by answer time.** Card Info now estimates the chance of answering within 2, 4, 6, 8, 10, 15, 20 and 30 seconds if you press Good, and charts the predicted recall rate for answers under each threshold. The estimates are available when the Small Curve model is active and the card was last reviewed on an earlier day.
+
+### Technical details
+
+- **Answer-time thresholds:** The time head's bin probabilities are interpolated in log time. The graph combines them with the active RWKV answer-button probabilities to estimate recall conditional on answering within each threshold; it does not measure the effect of answering faster. The model weights are unchanged from build 115. See [answer-time evaluation](https://github.com/JSchoreels/anki/blob/main/docs/rwkv-answer-time-2026-11-01.MD).
+
+The existing model selector and released RWKV family are shown below for context.
+
+<img width="1028" height="1092" alt="RWKV model selection menu showing Big, Small and Tiny" src="https://github.com/user-attachments/assets/0febc649-e662-4517-a6bb-50315010e457" />
+
+<img width="1586" height="588" alt="Comparison of the released RWKV model family" src="https://github.com/user-attachments/assets/5a1cca44-8b2c-48f2-9723-9af50eecf9b8" />
+
+## 26.09.4+fsrs7.build.115 — 2026-11-14
+
 Changes since the last normal release, [build 110](https://github.com/JSchoreels/anki/releases/tag/26.09.3%2Bfsrs7.build.110). The application version is `26.09.4+fsrs7`, incorporating [Anki 26.09.4](https://github.com/ankitects/anki/releases/tag/26.09.4).
 
 ### User facing changes
@@ -47,7 +67,7 @@ Changes since the last normal release, [build 110](https://github.com/JSchoreels
 
 - **More accurate Big and Small Instant predictions.** Each size has a model trained for the instant recall query. For Big, held-out Instant LogLoss fell from 0.276183 to 0.275894. With both RWKV schedulers enabled, the dedicated Big model adds a second state; **Use one model for RWKV** retains single-model state use.
 
-- **See estimated answer time.** When the Small Curve model is active, Card Info can show typical answer time by button and the expected answer time for cards last reviewed on an earlier day. It also shows estimated chances of a Good answer under 2, 4, 6, 8, 10, 15, 20 and 30 seconds and a graph of predicted recall by answer-time threshold. On held-out reviews, its time LogLoss was 17.3% lower than a per-button running-median baseline.
+- **See estimated answer time.** When the Small Curve model is active, Card Info can show typical answer time by button and the expected answer time for cards last reviewed on an earlier day. On held-out reviews, its time LogLoss was 17.3% lower than a per-button running-median baseline.
 
 - **Compare FSRS-6 models in statistics add-ons.** Current predictions use each home deck's saved FSRS-6 parameters; historical comparisons use held-out predictions trained on earlier review folds. Preparing the comparison does not change card state or overwrite the active model's prediction cache.
 
@@ -82,8 +102,6 @@ Changes since the last normal release, [build 110](https://github.com/JSchoreels
 - **RWKV model family:** Big uses SM91s2 for Curve and SM99 for Instant, Small uses SM92 and SM98, and Tiny uses SM106 and SM101. A paired runtime replays both models; Instant-only configurations use only the Instant model and fall back to FSRS for intervals. Model identities determine whether cached state must be rebuilt. Small's SM92 has the answer-time head; Big and Tiny do not. Details and accuracy methodology: [family wiring](https://github.com/JSchoreels/anki/blob/main/docs/rwkv-sm114-2026-11-13.MD) and [answer-time evaluation](https://github.com/JSchoreels/anki/blob/main/docs/rwkv-answer-time-2026-11-01.MD).
 
 <img width="1586" height="588" alt="Comparison of the released RWKV model family" src="https://github.com/user-attachments/assets/5a1cca44-8b2c-48f2-9723-9af50eecf9b8" />
-
-- **Answer-time thresholds:** Interpolate the head's time-bin probabilities in log time. The recall graph combines them with the active RWKV button probabilities to estimate recall conditional on an answer under each threshold; it does not measure the effect of answering faster.
 
 - **Model-size timing:** On one Windows collection copy with 13,980 reviewed cards and 225,132 reviews, estimated cold state builds with both schedulers were 23.3 seconds for Big, 7.8 seconds for Small and 7.2 seconds for Tiny. These estimates add a separately measured Python cost to native replay; actual time depends on hardware and collection. See the [benchmark and methodology](https://github.com/JSchoreels/anki/blob/main/docs/rwkv-speed-test-2026-11-14.MD).
 
