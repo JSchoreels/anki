@@ -547,6 +547,8 @@ Performance depends on the collection and hardware. The
 [benchmarks](docs/clanki-improvements-benchmark.MD) found no clear overall
 Check Database speedup; Windows audio timings use a simulated transport.
 
+The Browser, sidebar, Empty Cards, deck count, finished study screen, Check Database, web asset, FSRS preset save and Windows mpv speedups, and the fixes for redo after undo, day rollover notifications, callbacks to closed windows and notes-mode average intervals, were ported from Expertium's [Clanki](https://github.com/Expertium/Clanki) fork ([source at `20a4e77a9`](https://github.com/Expertium/Clanki/tree/20a4e77a9119c71cc4a8d51c2febe09c2f75e426)), in fork commit `91979c359`. Thanks to Expertium for that work.
+
 All 12 installer and portable downloads are available for macOS, Windows and
 Linux, on ARM64 and x64. This build is unsigned.
 
