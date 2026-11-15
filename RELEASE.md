@@ -41,11 +41,13 @@ Changes since the last normal release, [build 110](https://github.com/JSchoreels
 
 - **Choose an RWKV model size.** Deck Options offers Big, Small and Tiny cards with estimated memory and disk use, accuracy and relative replay time. Small is the default. At the default storage precision, Tiny's combined Curve and Instant state uses about 5.3 KB per card and note instead of Small's 7.1 KB, or 26% less, with a small accuracy tradeoff. Each size uses its own Curve and Instant models; **Use one model for RWKV** reduces state use when both schedulers are enabled.
 
+<img width="1028" height="1092" alt="RWKV model selection menu showing Big, Small and Tiny" src="https://github.com/user-attachments/assets/0febc649-e662-4517-a6bb-50315010e457" />
+
 - **Switch models without reopening the profile.** Saving a choice now offers to rebuild RWKV state immediately when the underlying models change. If the model layout stays the same, the existing state is kept.
 
 - **More accurate Big and Small Instant predictions.** Each size has a model trained for the instant recall query. For Big, held-out Instant LogLoss fell from 0.276183 to 0.275894. With both RWKV schedulers enabled, the dedicated Big model adds a second state; **Use one model for RWKV** retains single-model state use.
 
-- **See estimated answer time.** When the Small Curve model is active, Card Info can show typical answer time by button and the expected answer time for cards last reviewed on an earlier day. On held-out reviews, its time LogLoss was 17.3% lower than a per-button running-median baseline.
+- **See estimated answer time.** When the Small Curve model is active, Card Info can show typical answer time by button and the expected answer time for cards last reviewed on an earlier day. It also shows estimated chances of a Good answer under 2, 4, 6, 8, 10, 15, 20 and 30 seconds and a graph of predicted recall by answer-time threshold. On held-out reviews, its time LogLoss was 17.3% lower than a per-button running-median baseline.
 
 - **Compare FSRS-6 models in statistics add-ons.** Current predictions use each home deck's saved FSRS-6 parameters; historical comparisons use held-out predictions trained on earlier review folds. Preparing the comparison does not change card state or overwrite the active model's prediction cache.
 
@@ -78,6 +80,10 @@ Changes since the last normal release, [build 110](https://github.com/JSchoreels
 ### Technical details
 
 - **RWKV model family:** Big uses SM91s2 for Curve and SM99 for Instant, Small uses SM92 and SM98, and Tiny uses SM106 and SM101. A paired runtime replays both models; Instant-only configurations use only the Instant model and fall back to FSRS for intervals. Model identities determine whether cached state must be rebuilt. Small's SM92 has the answer-time head; Big and Tiny do not. Details and accuracy methodology: [family wiring](https://github.com/JSchoreels/anki/blob/main/docs/rwkv-sm114-2026-11-13.MD) and [answer-time evaluation](https://github.com/JSchoreels/anki/blob/main/docs/rwkv-answer-time-2026-11-01.MD).
+
+<img width="1586" height="588" alt="Comparison of the released RWKV model family" src="https://github.com/user-attachments/assets/5a1cca44-8b2c-48f2-9723-9af50eecf9b8" />
+
+- **Answer-time thresholds:** Interpolate the head's time-bin probabilities in log time. The recall graph combines them with the active RWKV button probabilities to estimate recall conditional on an answer under each threshold; it does not measure the effect of answering faster.
 
 - **Model-size timing:** On one Windows collection copy with 13,980 reviewed cards and 225,132 reviews, estimated cold state builds with both schedulers were 23.3 seconds for Big, 7.8 seconds for Small and 7.2 seconds for Tiny. These estimates add a separately measured Python cost to native replay; actual time depends on hardware and collection. See the [benchmark and methodology](https://github.com/JSchoreels/anki/blob/main/docs/rwkv-speed-test-2026-11-14.MD).
 

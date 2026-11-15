@@ -39,6 +39,13 @@ type RwkvAnswerTimeTuple = (
     f32,
     RwkvProbabilityTuple,
 );
+type RwkvAnswerTimeThresholdTuple = (
+    RwkvProbabilityTuple,
+    RwkvProbabilityTuple,
+    f32,
+    RwkvProbabilityTuple,
+    Vec<RwkvProbabilityTuple>,
+);
 type RwkvSerializedStateMap = Vec<(i64, Py<PyBytes>)>;
 type RwkvSerializedState = (
     Option<Py<PyBytes>>,
@@ -144,6 +151,46 @@ impl Backend {
         let out_obj = PyBytes::new(py, &out_bytes);
         Ok(out_obj)
     }
+}
+
+impl RwkvInference {
+    fn predict_answer_times_inner(
+        &mut self,
+        requests: &Bound<'_, PyAny>,
+        history: Vec<Vec<f32>>,
+    ) -> PyResult<Vec<Option<rwkv::AnswerTimePrediction>>> {
+        let mut parsed_requests = Vec::new();
+        for request in requests.try_iter()? {
+            parsed_requests.push(parse_rwkv_prediction_request(&request?)?);
+        }
+        let history = history
+            .into_iter()
+            .map(|row| {
+                <[f32; rwkv::ANSWER_TIME_FEATURES]>::try_from(row.as_slice()).map_err(|_| {
+                    PyException::new_err(format!(
+                        "RWKV answer-time history must contain {} values",
+                        rwkv::ANSWER_TIME_FEATURES
+                    ))
+                })
+            })
+            .collect::<PyResult<Vec<_>>>()?;
+        self.inner
+            .predict_answer_times(parsed_requests, history)
+            .map_err(|err| PyException::new_err(err.to_string()))
+    }
+}
+
+fn answer_time_tuple(prediction: &rwkv::AnswerTimePrediction) -> RwkvAnswerTimeTuple {
+    (
+        probability_tuple(std::array::from_fn(|grade| {
+            prediction.median_seconds(grade)
+        })),
+        probability_tuple(std::array::from_fn(|grade| {
+            prediction.fast_probability(grade)
+        })),
+        prediction.mixed_median_seconds(),
+        probability_tuple(prediction.button_probabilities),
+    )
 }
 
 #[pymethods]
@@ -368,43 +415,53 @@ impl RwkvInference {
         requests: &Bound<'_, PyAny>,
         history: Vec<Vec<f32>>,
     ) -> PyResult<Vec<Option<RwkvAnswerTimeTuple>>> {
-        let mut parsed_requests = Vec::new();
-        for request in requests.try_iter()? {
-            parsed_requests.push(parse_rwkv_prediction_request(&request?)?);
-        }
-        let history = history
-            .into_iter()
-            .map(|row| {
-                <[f32; rwkv::ANSWER_TIME_FEATURES]>::try_from(row.as_slice()).map_err(|_| {
-                    PyException::new_err(format!(
-                        "RWKV answer-time history must contain {} values",
-                        rwkv::ANSWER_TIME_FEATURES
-                    ))
-                })
-            })
-            .collect::<PyResult<Vec<_>>>()?;
-        self.inner
-            .predict_answer_times(parsed_requests, history)
+        self.predict_answer_times_inner(requests, history)
             .map(|outputs| {
                 outputs
                     .into_iter()
-                    .map(|output| {
-                        output.map(|prediction| {
-                            (
-                                probability_tuple(std::array::from_fn(|grade| {
-                                    prediction.median_seconds(grade)
-                                })),
-                                probability_tuple(std::array::from_fn(|grade| {
-                                    prediction.fast_probability(grade)
-                                })),
-                                prediction.mixed_median_seconds(),
-                                probability_tuple(prediction.button_probabilities),
-                            )
-                        })
-                    })
+                    .map(|output| output.map(|prediction| answer_time_tuple(&prediction)))
                     .collect()
             })
-            .map_err(|err| PyException::new_err(err.to_string()))
+    }
+
+    /// The usual answer-time output plus per-grade cumulative probabilities
+    /// at each requested threshold in seconds.
+    fn predict_answer_times_with_thresholds(
+        &mut self,
+        requests: &Bound<'_, PyAny>,
+        history: Vec<Vec<f32>>,
+        thresholds: Vec<f64>,
+    ) -> PyResult<Vec<Option<RwkvAnswerTimeThresholdTuple>>> {
+        if thresholds
+            .iter()
+            .any(|seconds| !seconds.is_finite() || !(0.5..=60.0).contains(seconds))
+        {
+            return Err(PyException::new_err(
+                "RWKV answer-time thresholds must be between 0.5 and 60 seconds",
+            ));
+        }
+        self.predict_answer_times_inner(requests, history)?
+            .into_iter()
+            .map(|output| {
+                output
+                    .map(|prediction| {
+                        let under = thresholds
+                            .iter()
+                            .map(|seconds| {
+                                prediction
+                                    .probabilities_under_seconds(*seconds)
+                                    .map(probability_tuple)
+                                    .ok_or_else(|| {
+                                        PyException::new_err("invalid RWKV answer-time threshold")
+                                    })
+                            })
+                            .collect::<PyResult<Vec<_>>>()?;
+                        let (medians, fast, mixed, buttons) = answer_time_tuple(&prediction);
+                        Ok((medians, fast, mixed, buttons, under))
+                    })
+                    .transpose()
+            })
+            .collect()
     }
 
     fn predict_retrievability_many(&mut self, requests: &Bound<'_, PyAny>) -> PyResult<Vec<f32>> {

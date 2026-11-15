@@ -18,6 +18,7 @@ from typing import Any, cast
 
 from anki import scheduler_pb2
 from aqt.rwkv_answer_time import (
+    ANSWER_TIME_THRESHOLDS_SECONDS,
     RwkvAnswerTimePrediction,
     answer_time_prediction_from_native,
 )
@@ -805,12 +806,20 @@ class _RustRwkvRuntime:
     ) -> Sequence[RwkvAnswerTimePrediction | None]:
         """Answer times of query requests from the optional answer-time head;
         None without the head or for a query on the card's last review day."""
-        predict = getattr(self._process, "predict_answer_times", None)
+        predict = getattr(self._process, "predict_answer_times_with_thresholds", None)
+        with_thresholds = callable(predict)
+        if not with_thresholds:
+            predict = getattr(self._process, "predict_answer_times", None)
         if not callable(predict) or not self.has_answer_time_head():
             return [None] * len(requests)
         rows = [_rust_prediction_row(request) for request in requests]
         with self._locked_process():
-            outputs = predict(rows, [list(row) for row in history_features])
+            history = [list(row) for row in history_features]
+            outputs = (
+                predict(rows, history, list(ANSWER_TIME_THRESHOLDS_SECONDS))
+                if with_thresholds
+                else predict(rows, history)
+            )
         if len(outputs) != len(requests):
             raise ValueError("RWKV Rust answer-time prediction count mismatch")
         return [answer_time_prediction_from_native(output) for output in outputs]

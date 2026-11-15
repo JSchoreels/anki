@@ -37,6 +37,10 @@ card-stats-fsrs-forgetting-curve-first-month = First Month
 card-stats-fsrs-forgetting-curve-first-year = First Year
 card-stats-fsrs-forgetting-curve-all-time = All Time
 card-stats-fsrs-forgetting-curve-desired-retention = Desired Retention
+card-stats-rwkv-answer-time-recall-title = RWKV Recall by Answer Time
+card-stats-rwkv-answer-time-recall-description = Predicted recall for answers taking less than the time shown. Hard, Good and Easy count as recalled.
+card-stats-rwkv-answer-time-recall-axis = Predicted recall
+card-stats-rwkv-answer-time-seconds-axis = Answer time (seconds)
 
 ## Window Titles
 

@@ -1159,6 +1159,34 @@ def test_rsbridge_rwkv_answer_time_head_is_optional() -> None:
     assert all(0.25 < value <= 60 for value in (*medians, mixed))
     assert all(0 <= value <= 1 for value in fast)
     assert abs(sum(buttons) - 1) < 1e-5
+    thresholds = [2.0, 3.890878606256521, 4.0, 6.0, 8.0, 10.0, 15.0, 20.0, 30.0]
+    ((detailed_medians, detailed_fast, detailed_mixed, detailed_buttons, under),) = (
+        with_head.predict_answer_times_with_thresholds([later_day], history, thresholds)
+    )
+    assert (detailed_medians, detailed_fast, detailed_mixed, detailed_buttons) == (
+        medians,
+        fast,
+        mixed,
+        buttons,
+    )
+    assert len(under) == len(thresholds)
+    assert all(
+        abs(actual - expected) < 1e-6
+        for actual, expected in zip(under[1], fast, strict=True)
+    )
+    assert all(
+        before[grade] <= after[grade]
+        for before, after in zip(under, under[1:], strict=False)
+        for grade in range(4)
+    )
+    assert with_head.predict_answer_times_with_thresholds(
+        [same_day], history, thresholds
+    ) == [None]
+    assert without_head.predict_answer_times_with_thresholds(
+        [later_day], history, thresholds
+    ) == [None]
+    with pytest.raises(Exception, match="thresholds"):
+        with_head.predict_answer_times_with_thresholds([later_day], history, [0.4])
     assert with_head.predict_answer_times([same_day], history) == [None]
     assert without_head.predict_answer_times([later_day], history) == [None]
     with pytest.raises(Exception, match="26 values"):

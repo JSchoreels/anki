@@ -247,6 +247,35 @@ impl AnswerTimePrediction {
             .iter()
             .sum()
     }
+
+    /// Per-grade probability of an answer taking less than `seconds`.
+    ///
+    /// Inside a bin, interpolate linearly in log time, as the median does.
+    /// The first and last bins are open-ended, so their interiors cannot be
+    /// interpolated; thresholds must be between their boundaries, inclusive.
+    pub fn probabilities_under_seconds(&self, seconds: f64) -> Option<[f32; 4]> {
+        if !seconds.is_finite() || !(0.5..=60.0).contains(&seconds) {
+            return None;
+        }
+        let edges = answer_time_bin_edges_millis().map(|edge| edge / 1000.0);
+        Some(std::array::from_fn(|grade| {
+            let mut cumulative = 0.0_f64;
+            for (bin, &upper) in edges.iter().enumerate() {
+                let probability = f64::from(self.probabilities[grade][bin]);
+                if seconds >= upper {
+                    cumulative += probability;
+                } else {
+                    // The first bin ends at 0.5s, and valid thresholds are
+                    // never inside that open-ended bin.
+                    let lower = edges[bin - 1];
+                    let fraction = (seconds / lower).ln() / (upper / lower).ln();
+                    cumulative += probability * fraction.clamp(0.0, 1.0);
+                    break;
+                }
+            }
+            cumulative.clamp(0.0, 1.0) as f32
+        }))
+    }
 }
 
 /// The reference's `median_log_s`: linear in ln time inside the bin where
@@ -282,6 +311,31 @@ fn median_seconds(probabilities: &[f64; ANSWER_TIME_BINS]) -> f32 {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn answer_time_threshold_interpolates_between_bin_edges() {
+        let mut probabilities = [[0.0; ANSWER_TIME_BINS]; 4];
+        for grade in &mut probabilities {
+            grade[6] = 0.2;
+            grade[7] = 0.6;
+            grade[8] = 0.2;
+        }
+        let prediction = AnswerTimePrediction {
+            probabilities,
+            button_probabilities: [0.25; 4],
+        };
+        let edges = answer_time_bin_edges_millis();
+        let lower = edges[6] / 1000.0;
+        let upper = edges[7] / 1000.0;
+        let midpoint = (lower * upper).sqrt();
+
+        assert!((prediction.probabilities_under_seconds(lower).unwrap()[2] - 0.2).abs() < 1e-6);
+        assert!((prediction.probabilities_under_seconds(midpoint).unwrap()[2] - 0.5).abs() < 1e-6);
+        assert!((prediction.probabilities_under_seconds(upper).unwrap()[2] - 0.8).abs() < 1e-6);
+        assert_eq!(prediction.probabilities_under_seconds(f64::NAN), None);
+        assert_eq!(prediction.probabilities_under_seconds(0.49), None);
+        assert_eq!(prediction.probabilities_under_seconds(60.1), None);
+    }
 
     #[test]
     fn answer_time_history_matches_the_reference_rule() {

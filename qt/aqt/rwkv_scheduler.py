@@ -59,6 +59,7 @@ from aqt.rwkv_answer_time import (
     ANSWER_TIME_FEATURES,
     RwkvAnswerTimePrediction,
     answer_time_card_info_rows,
+    answer_time_recall_curve,
 )
 from aqt.rwkv_model import RwkvRuntimeModels
 
@@ -8347,6 +8348,12 @@ def has_reviewer_backend() -> bool:
     return configure_reviewer_backend_from_environment()
 
 
+@dataclass(frozen=True)
+class RwkvCardInfo:
+    rows: list[tuple[str, str]]
+    answer_time_recall: list[tuple[int, float]] = field(default_factory=list)
+
+
 def rwkv_card_info_rows(
     *,
     reviewer: object,
@@ -8356,6 +8363,25 @@ def rwkv_card_info_rows(
     request_retry: Callable[[], None] | None = None,
     wait_for_backend: bool = False,
 ) -> list[tuple[str, str]]:
+    return rwkv_card_info(
+        reviewer=reviewer,
+        card=card,
+        fallback_source=fallback_source,
+        include_after_review=include_after_review,
+        request_retry=request_retry,
+        wait_for_backend=wait_for_backend,
+    ).rows
+
+
+def rwkv_card_info(
+    *,
+    reviewer: object,
+    card: object,
+    fallback_source: str,
+    include_after_review: bool = True,
+    request_retry: Callable[[], None] | None = None,
+    wait_for_backend: bool = False,
+) -> RwkvCardInfo:
     card_id = _card_id(card)
     if not rwkv_review_active(reviewer, card):
         diagnostics = current_reviewer_diagnostics(
@@ -8366,10 +8392,10 @@ def rwkv_card_info_rows(
         if diagnostics is not None:
             if card_id is not None:
                 _set_rwkv_card_info_score(reviewer, card_id, None)
-            return _card_info_diagnostic_rows(diagnostics)
+            return RwkvCardInfo(_card_info_diagnostic_rows(diagnostics))
         if card_id is not None:
             _set_rwkv_card_info_score(reviewer, card_id, None)
-        return []
+        return RwkvCardInfo([])
 
     if _reviewer_backend is None:
         configure_reviewer_backend_from_environment()
@@ -8395,15 +8421,15 @@ def rwkv_card_info_rows(
     diagnostics = _with_card_info_prediction_details(diagnostics)
 
     rows = _card_info_diagnostic_rows(diagnostics)
+    answer_time = None
     if queried_diagnostics is not None and diagnostics.retrievability is not None:
-        rows.extend(
-            _rwkv_card_info_answer_time_rows(
-                reviewer,
-                card,
-                candidate=candidate,
-                wait_for_backend=wait_for_backend,
-            )
+        answer_time = _rwkv_card_info_answer_time_prediction(
+            reviewer,
+            card,
+            candidate=candidate,
+            wait_for_backend=wait_for_backend,
         )
+        rows.extend(answer_time_card_info_rows(answer_time))
     if rwkv_review_enabled(reviewer, card) and _rwkv_runtime_has_curve():
         rows.extend(
             _rwkv_card_info_next_s90_rows(
@@ -8421,16 +8447,19 @@ def rwkv_card_info_rows(
                 wait_for_backend=wait_for_backend,
             )
         )
-    return rows
+    return RwkvCardInfo(
+        rows,
+        answer_time_recall_curve(answer_time, diagnostics.button_probabilities),
+    )
 
 
-def _rwkv_card_info_answer_time_rows(
+def _rwkv_card_info_answer_time_prediction(
     reviewer: object,
     card: object,
     *,
     candidate: RwkvReviewCandidate,
     wait_for_backend: bool,
-) -> list[tuple[str, str]]:
+) -> RwkvAnswerTimePrediction | None:
     """Predicted answer times from the model's optional answer-time head; no
     rows without the head, for a card last reviewed today or a new card."""
     backend = _reviewer_backend
@@ -8438,22 +8467,22 @@ def _rwkv_card_info_answer_time_rows(
     has_head = getattr(backend, "has_answer_time_head", None)
     predict = getattr(backend, "predict_answer_time", None)
     if card_id is None or not callable(has_head) or not callable(predict):
-        return []
+        return None
     if not _rwkv_runtime_has_curve():
         # The head reads the release's state; an instant-only model has none.
-        return []
+        return None
     try:
         if not has_head() or not _prepare_reviewer_backend_for_card_info(reviewer):
-            return []
+            return None
         features = _rwkv_answer_time_history_features(reviewer, card_id)
         if features is None:
-            return []
+            return None
         state_token = _capture_reviewer_backend_prediction_state_token(
             reviewer,
             expected_backend=backend,
         )
         if state_token is None:
-            return []
+            return None
         with _try_reviewer_backend_prediction_access(
             expected_state_token=state_token,
             wait_timeout_seconds=(
@@ -8461,12 +8490,12 @@ def _rwkv_card_info_answer_time_rows(
             ),
         ) as current_backend:
             if current_backend is not backend:
-                return []
+                return None
             prediction = predict(candidate, features)
     except Exception:
         logger.debug("RWKV card info answer time unavailable", exc_info=True)
-        return []
-    return answer_time_card_info_rows(prediction)
+        return None
+    return prediction
 
 
 _rwkv_answer_time_history_cache: tuple[tuple[object, ...], list[float]] | None = None

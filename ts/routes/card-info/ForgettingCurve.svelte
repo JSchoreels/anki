@@ -23,6 +23,7 @@ License: GNU AGPL, version 3 or later; http://www.gnu.org/licenses/agpl.html
     export let desiredRetention: number;
     export let decay: number;
     export let fsrsParams: number[] = [];
+    export let followedByGraph = false;
     let svg: HTMLElement | SVGElement | null = null;
     const bounds = defaultGraphBounds();
     const title = tr.cardStatsFsrsForgettingCurveTitle();
@@ -54,7 +55,7 @@ License: GNU AGPL, version 3 or later; http://www.gnu.org/licenses/agpl.html
     );
 </script>
 
-<div class="forgetting-curve">
+<div class="forgetting-curve" class:followed-by-graph={followedByGraph}>
     {#if maxDays > 7}
         <InputBox>
             <div class="time-range-selector">
@@ -111,6 +112,10 @@ License: GNU AGPL, version 3 or later; http://www.gnu.org/licenses/agpl.html
         width: 100%;
         max-width: 50em;
         margin-bottom: 10em;
+    }
+
+    .forgetting-curve.followed-by-graph {
+        margin-bottom: 2em;
     }
 
     .time-range-selector {

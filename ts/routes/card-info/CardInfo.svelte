@@ -12,6 +12,7 @@ License: GNU AGPL, version 3 or later; http://www.gnu.org/licenses/agpl.html
     import CardStats from "./CardStats.svelte";
     import Revlog from "./Revlog.svelte";
     import ForgettingCurve from "./ForgettingCurve.svelte";
+    import AnswerTimeRecall from "./AnswerTimeRecall.svelte";
 
     export let stats: CardStatsResponse | null = null;
     export let showRevlog: boolean = true;
@@ -53,7 +54,13 @@ License: GNU AGPL, version 3 or later; http://www.gnu.org/licenses/agpl.html
                     {desiredRetention}
                     {decay}
                     fsrsParams={stats.fsrsParams}
+                    followedByGraph={stats.rwkvAnswerTimeRecall.length > 0}
                 />
+            </Row>
+        {/if}
+        {#if showCurve && stats.rwkvAnswerTimeRecall.length > 0}
+            <Row>
+                <AnswerTimeRecall points={stats.rwkvAnswerTimeRecall} />
             </Row>
         {/if}
     {:else}

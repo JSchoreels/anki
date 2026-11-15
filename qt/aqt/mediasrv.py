@@ -1445,14 +1445,17 @@ def card_stats() -> bytes:
         assert response is not None
         response.rwkv_retry_pending = True
 
-    for label, value in aqt.rwkv_scheduler.rwkv_card_info_rows(
+    rwkv_info = aqt.rwkv_scheduler.rwkv_card_info(
         reviewer=reviewer,
         card=card,
         fallback_source=_card_stats_fallback_retrievability_source(response),
         request_retry=request_rwkv_retry,
         wait_for_backend=True,
-    ):
+    )
+    for label, value in rwkv_info.rows:
         rows.append(CardInfoRow(label=label, value=value))
+    for seconds, recall in rwkv_info.answer_time_recall:
+        response.rwkv_answer_time_recall.add(seconds=seconds, recall=recall)
 
     hook_start = time.monotonic()
     gui_hooks.card_info_will_add_rows(rows, card)

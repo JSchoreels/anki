@@ -91,6 +91,11 @@ message CardStatsResponse {
     string label = 1;
     string value = 2;
   }
+  message AnswerTimeRecallPoint {
+    uint32 seconds = 1;
+    // P(Hard, Good or Easy | answer time below seconds).
+    float recall = 2;
+  }
   message StatsRevlogEntry {
     int64 time = 1;
     RevlogEntry.ReviewKind review_kind = 2;
@@ -135,6 +140,8 @@ message CardStatsResponse {
   repeated CardInfoRow extra_rows = 25;
   // Desktop diagnostics may be temporarily busy or waiting for state recovery.
   bool rwkv_retry_pending = 26;
+  // Desktop RWKV answer-time estimates, absent when the head is unavailable.
+  repeated AnswerTimeRecallPoint rwkv_answer_time_recall = 27;
 }
 
 message GraphsRequest {

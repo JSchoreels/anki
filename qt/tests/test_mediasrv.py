@@ -799,6 +799,49 @@ class TestCardStats:
             *RWKV_AFTER_REVIEW_UNAVAILABLE_ROWS,
         ]
 
+    def test_card_info_includes_rwkv_answer_time_curve(
+        self, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        import aqt
+        from anki.stats_pb2 import CardStatsResponse
+        from aqt.mediasrv import app, card_stats
+        from aqt.rwkv_scheduler import RwkvCardInfo
+
+        class RawBackend:
+            def card_stats_raw(self, data: bytes) -> bytes:
+                return CardStatsResponse(card_id=123).SerializeToString()
+
+        class Collection:
+            _backend = RawBackend()
+
+            def get_card(self, card_id: int) -> object:
+                assert card_id == 123
+                return object()
+
+        monkeypatch.setattr(aqt, "mw", SimpleNamespace(col=Collection()))
+        monkeypatch.setattr(
+            aqt.rwkv_scheduler, "has_reviewer_prediction", lambda _r: True
+        )
+        monkeypatch.setattr(
+            aqt.rwkv_scheduler,
+            "rwkv_card_info",
+            lambda **_kwargs: RwkvCardInfo(
+                [("RWKV : Time Under (if Good)", "2s:50%")], [(2, 0.75), (4, 0.8)]
+            ),
+        )
+        with app.test_request_context(data=b""):
+            raw_output = card_stats()
+
+        output = CardStatsResponse()
+        output.ParseFromString(raw_output)
+        assert [(row.label, row.value) for row in output.extra_rows] == [
+            ("RWKV : Time Under (if Good)", "2s:50%")
+        ]
+        assert [point.seconds for point in output.rwkv_answer_time_recall] == [2, 4]
+        assert [
+            point.recall for point in output.rwkv_answer_time_recall
+        ] == pytest.approx([0.75, 0.8])
+
     def test_card_info_hook_can_append_rows(
         self, monkeypatch: pytest.MonkeyPatch
     ) -> None:
