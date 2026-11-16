@@ -8351,7 +8351,9 @@ def has_reviewer_backend() -> bool:
 @dataclass(frozen=True)
 class RwkvCardInfo:
     rows: list[tuple[str, str]]
-    answer_time_recall: list[tuple[int, float]] = field(default_factory=list)
+    answer_time_recall: list[tuple[int, float, float, float]] = field(
+        default_factory=list
+    )
 
 
 def rwkv_card_info_rows(

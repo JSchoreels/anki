@@ -1454,8 +1454,10 @@ def card_stats() -> bytes:
     )
     for label, value in rwkv_info.rows:
         rows.append(CardInfoRow(label=label, value=value))
-    for seconds, recall in rwkv_info.answer_time_recall:
-        response.rwkv_answer_time_recall.add(seconds=seconds, recall=recall)
+    for seconds, recall, good, easy in rwkv_info.answer_time_recall:
+        response.rwkv_answer_time_recall.add(
+            seconds=seconds, recall=recall, good=good, easy=easy
+        )
 
     hook_start = time.monotonic()
     gui_hooks.card_info_will_add_rows(rows, card)

@@ -826,7 +826,8 @@ class TestCardStats:
             aqt.rwkv_scheduler,
             "rwkv_card_info",
             lambda **_kwargs: RwkvCardInfo(
-                [("RWKV : Time Under (if Good)", "2s:50%")], [(2, 0.75), (4, 0.8)]
+                [("RWKV : Time Under (if Good)", "2s:50%")],
+                [(0, 0, 0, 0), (2, 0.31, 0.2, 0.07), (4, 0.48, 0.3, 0.08)],
             ),
         )
         with app.test_request_context(data=b""):
@@ -837,10 +838,16 @@ class TestCardStats:
         assert [(row.label, row.value) for row in output.extra_rows] == [
             ("RWKV : Time Under (if Good)", "2s:50%")
         ]
-        assert [point.seconds for point in output.rwkv_answer_time_recall] == [2, 4]
+        assert [point.seconds for point in output.rwkv_answer_time_recall] == [0, 2, 4]
         assert [
             point.recall for point in output.rwkv_answer_time_recall
-        ] == pytest.approx([0.75, 0.8])
+        ] == pytest.approx([0, 0.31, 0.48])
+        assert [
+            point.good for point in output.rwkv_answer_time_recall
+        ] == pytest.approx([0, 0.2, 0.3])
+        assert [
+            point.easy for point in output.rwkv_answer_time_recall
+        ] == pytest.approx([0, 0.07, 0.08])
 
     def test_card_info_hook_can_append_rows(
         self, monkeypatch: pytest.MonkeyPatch

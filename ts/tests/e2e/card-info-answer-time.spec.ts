@@ -7,7 +7,7 @@ import { CardStatsResponse } from "@generated/anki/stats_pb";
 import { expect, test } from "./fixtures";
 import { decodeRequestBody } from "./helpers";
 
-test("Card Info shows answer-time thresholds and the predicted recall graph", async ({ page }, testInfo) => {
+test("Card Info shows the chance of recalling within each time limit", async ({ page }, testInfo) => {
     await page.route("**/_anki/cardStats", async (route) => {
         const { cid } = decodeRequestBody(route.request(), CardId);
         const hasPrediction = cid === 123n;
@@ -19,13 +19,15 @@ test("Card Info shows answer-time thresholds and the predicted recall graph", as
                 extraRows: hasPrediction
                     ? [{
                         label: "RWKV : Time Under (if Good)",
-                        value: "2s:20% 4s:40% 6s:60% 8s:70% 10s:80% 15s:90% 20s:95% 30s:99%",
+                        value: "2s:10% 4s:30% 6s:50% 8s:65% 10s:75% 15s:85% 20s:90% 30s:98%",
                     }]
                     : [],
                 rwkvAnswerTimeRecall: hasPrediction
-                    ? [2, 4, 6, 8, 10, 15, 20, 30].map((seconds, index) => ({
+                    ? [0, 2, 4, 6, 8, 10, 15, 20, 30].map((seconds, index) => ({
                         seconds,
-                        recall: 0.9 - index * 0.03,
+                        recall: [0, 0.085, 0.24, 0.4, 0.515, 0.595, 0.677, 0.721, 0.782][index],
+                        good: [0, 0.06, 0.18, 0.3, 0.39, 0.45, 0.51, 0.54, 0.588][index],
+                        easy: [0, 0.02, 0.04, 0.065, 0.075, 0.085, 0.092, 0.096, 0.099][index],
                     }))
                     : [],
             }).toBinary()),
@@ -38,11 +40,20 @@ test("Card Info shows answer-time thresholds and the predicted recall graph", as
         content: "html, body { font-family: -apple-system, BlinkMacSystemFont, sans-serif !important; }",
     });
     await expect(page.getByText("RWKV : Time Under (if Good)")).toBeVisible();
-    const graph = page.getByRole("img", { name: /RWKV Recall by Answer Time/ });
+    const graph = page.getByRole("img", { name: /RWKV Recall Within Answer Time/ });
     await expect(graph).toBeVisible();
-    await expect(graph.locator("circle")).toHaveCount(8);
-    await expect(graph.locator("circle").first().locator("title")).toHaveText("2s: 90%");
-    await expect(page.getByText("Answer time (seconds)")).toBeVisible();
+    await expect(page.locator(".answer-time-recall .description")).toHaveText(
+        "Chance that the next answer takes less than the time shown and uses the indicated button. Success includes Hard, Good and Easy.",
+    );
+    await expect(graph.locator("circle")).toHaveCount(27);
+    await expect(graph.locator("circle.recall").first().locator("title")).toHaveText("Success 0s: 0%");
+    await expect(graph.locator("circle.recall").nth(1).locator("title")).toHaveText("Success 2s: 9%");
+    await expect(graph.locator("circle.good").nth(1).locator("title")).toHaveText("Good 2s: 6%");
+    await expect(graph.locator("circle.easy").nth(1).locator("title")).toHaveText("Easy 2s: 2%");
+    await expect(page.locator(".legend").getByText("Success", { exact: true })).toBeVisible();
+    await expect(page.locator(".legend").getByText("Good", { exact: true })).toBeVisible();
+    await expect(page.locator(".legend").getByText("Easy", { exact: true })).toBeVisible();
+    await expect(graph.getByText("Answer time limit (seconds)")).toBeVisible();
     const overflow = await page.locator(".answer-time-recall").evaluate((container) => {
         const svg = container.querySelector("svg")!;
         return svg.getBoundingClientRect().right - container.getBoundingClientRect().right;
@@ -53,5 +64,5 @@ test("Card Info shows answer-time thresholds and the predicted recall graph", as
     await page.locator(".answer-time-recall").screenshot({ path: testInfo.outputPath("answer-time-recall-dark.png") });
 
     await page.goto("/card-info/124");
-    await expect(page.getByRole("img", { name: /RWKV Recall by Answer Time/ })).toHaveCount(0);
+    await expect(page.getByRole("img", { name: /RWKV Recall Within Answer Time/ })).toHaveCount(0);
 });

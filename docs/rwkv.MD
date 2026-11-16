@@ -1469,17 +1469,23 @@ frozen model), Card Info also shows
 **RWKV : Answer Time by Button**, the predicted median answer time if the next
 answer is Again, Hard, Good or Easy, and **RWKV : Expected Answer Time**, the
 median over the four answers weighted by the answer-button probabilities, with
-the chance of a Good answer under 3.9 seconds. **RWKV : Time Under (if Good)**
-also shows that conditional chance at 2, 4, 6, 8, 10, 15, 20 and 30 seconds.
-Card Info's **RWKV Recall by Answer Time** graph shows the predicted chance of
-recall among answers faster than each threshold (Again counts as forgotten;
-Hard, Good and Easy count as recalled). It is a conditional prediction, not an
-estimate of the effect of answering faster. The head supplies 16 time bins per
-grade; thresholds inside a bin use linear interpolation in log time, matching
-the median's within-bin assumption. The graph combines those per-grade time
-probabilities with the active RWKV button probabilities shown in Card Info, so
-in paired mode its grade weights come from the Instant model. It appears only
-when both the answer-time prediction and button probabilities are available.
+the chance of answering under 3.9 seconds if the button is Good. **RWKV : Time
+Under (if Good)** also shows that conditional chance at 2, 4, 6, 8, 10, 15, 20
+and 30 seconds. Card Info's **RWKV Recall Within Answer Time** graph shows the
+predicted chance that the next answer is recalled and takes less than each time
+limit (Again counts as forgotten; Hard, Good and Easy count as recalled).
+Separate Good and Easy lines show the joint probability of pressing that exact
+button and answering within the time limit. These lines rise toward the
+respective button probabilities, not the total recall probability; a low Easy
+line can mean Easy is unlikely, rather than that it takes longer. The graph is
+not an estimate of the effect of answering faster. It starts at zero and the
+lines can only rise as the time limit grows.
+The head supplies 16 time bins per grade; thresholds inside a bin use linear
+interpolation in log time, matching the median's within-bin assumption. The
+graph combines those per-grade time probabilities with the active RWKV button
+probabilities shown in Card Info, so in paired mode its grade weights come from
+the Instant model. It appears only when both the answer-time prediction and
+button probabilities are available.
 The head reads the frozen small
 model at the query (the residual after the input encoder and after each of the
 four layer rounds, layer-normalised, and the Instant head's hidden layer) and 26

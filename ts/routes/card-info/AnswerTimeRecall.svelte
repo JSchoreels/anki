@@ -20,13 +20,34 @@ License: GNU AGPL, version 3 or later; http://www.gnu.org/licenses/agpl.html
         left + (seconds / 30) * (width - left - right);
     const y = (recall: number): number => top + (1 - recall) * (height - top - bottom);
     const percent = (recall: number): string => `${Math.round(recall * 100)}%`;
+    const tooltip = (label: string, point: Point, probability: number): string =>
+        `${label} ${point.seconds}s: ${percent(probability)}`;
 
-    $: line = points.map((point) => `${x(point.seconds)},${y(point.recall)}`).join(" ");
+    const series = [
+        { key: "recall", label: tr.cardStatsRwkvAnswerTimeSuccess() },
+        { key: "good", label: tr.cardStatsRwkvAnswerTimeGood() },
+        { key: "easy", label: tr.cardStatsRwkvAnswerTimeEasy() },
+    ] as const;
+
+    $: lines = series.map((item) => ({
+        ...item,
+        line: points
+            .map((point) => `${x(point.seconds)},${y(point[item.key])}`)
+            .join(" "),
+    }));
 </script>
 
 <div class="answer-time-recall">
     <Graph title={tr.cardStatsRwkvAnswerTimeRecallTitle()}>
         <p class="description">{tr.cardStatsRwkvAnswerTimeRecallDescription()}</p>
+        <div class="legend">
+            {#each lines as item}
+                <span>
+                    <span class={`swatch ${item.key}`}></span>
+                    {item.label}
+                </span>
+            {/each}
+        </div>
         <svg
             viewBox={`0 0 ${width} ${height}`}
             role="img"
@@ -54,11 +75,18 @@ License: GNU AGPL, version 3 or later; http://www.gnu.org/licenses/agpl.html
                     {point.seconds}
                 </text>
             {/each}
-            <polyline class="curve" points={line} />
-            {#each points as point}
-                <circle class="point" cx={x(point.seconds)} cy={y(point.recall)} r="4">
-                    <title>{point.seconds}s: {percent(point.recall)}</title>
-                </circle>
+            {#each lines as item}
+                <polyline class={`curve ${item.key}`} points={item.line} />
+                {#each points as point}
+                    <circle
+                        class={`point ${item.key}`}
+                        cx={x(point.seconds)}
+                        cy={y(point[item.key])}
+                        r="4"
+                    >
+                        <title>{tooltip(item.label, point, point[item.key])}</title>
+                    </circle>
+                {/each}
             {/each}
             <text
                 class="axis-label"
@@ -79,11 +107,21 @@ License: GNU AGPL, version 3 or later; http://www.gnu.org/licenses/agpl.html
     </Graph>
     <table class="visually-hidden">
         <caption>{tr.cardStatsRwkvAnswerTimeRecallTitle()}</caption>
+        <thead>
+            <tr>
+                <th>{tr.cardStatsRwkvAnswerTimeSecondsAxis()}</th>
+                {#each series as item}
+                    <th>{item.label}</th>
+                {/each}
+            </tr>
+        </thead>
         <tbody>
             {#each points as point}
                 <tr>
                     <th>{point.seconds}s</th>
-                    <td>{percent(point.recall)}</td>
+                    {#each series as item}
+                        <td>{percent(point[item.key])}</td>
+                    {/each}
                 </tr>
             {/each}
         </tbody>
@@ -104,6 +142,40 @@ License: GNU AGPL, version 3 or later; http://www.gnu.org/licenses/agpl.html
         text-align: center;
         opacity: 0.8;
     }
+    .legend {
+        display: flex;
+        flex-wrap: wrap;
+        justify-content: center;
+        gap: 0.5em 1.5em;
+    }
+    .swatch {
+        display: inline-block;
+        width: 1.5em;
+        margin-inline-end: 0.4em;
+        vertical-align: middle;
+        border-top: 3px solid var(--series-color);
+    }
+    .recall {
+        --series-color: var(--fg-link);
+    }
+    .good {
+        --series-color: #15803d;
+    }
+    .easy {
+        --series-color: #65a30d;
+    }
+    :global(.night-mode) .good {
+        --series-color: #4ade80;
+    }
+    :global(.night-mode) .easy {
+        --series-color: #bef264;
+    }
+    .swatch.good {
+        border-top-style: dashed;
+    }
+    .swatch.easy {
+        border-top-style: dotted;
+    }
     svg {
         width: 100%;
     }
@@ -121,10 +193,16 @@ License: GNU AGPL, version 3 or later; http://www.gnu.org/licenses/agpl.html
     }
     .curve {
         fill: none;
-        stroke: var(--fg-link);
+        stroke: var(--series-color);
         stroke-width: 2.5;
     }
+    .curve.good {
+        stroke-dasharray: 8 4;
+    }
+    .curve.easy {
+        stroke-dasharray: 2 4;
+    }
     .point {
-        fill: var(--fg-link);
+        fill: var(--series-color);
     }
 </style>

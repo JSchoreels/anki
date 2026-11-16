@@ -93,8 +93,12 @@ message CardStatsResponse {
   }
   message AnswerTimeRecallPoint {
     uint32 seconds = 1;
-    // P(Hard, Good or Easy | answer time below seconds).
+    // P(Hard, Good or Easy and answer time below seconds).
     float recall = 2;
+    // P(Good and answer time below seconds).
+    float good = 3;
+    // P(Easy and answer time below seconds).
+    float easy = 4;
   }
   message StatsRevlogEntry {
     int64 time = 1;

@@ -31,7 +31,7 @@ def test_native_answer_time_parses_and_formats_card_info_rows() -> None:
     )
     assert answer_time_card_info_rows(prediction) == [
         ("RWKV : Answer Time by Button", "Again:14s Hard:9.8s Good:6.1s Easy:4.0s"),
-        ("RWKV : Expected Answer Time", "6.4s (Good under 3.9s: 31%)"),
+        ("RWKV : Expected Answer Time", "6.4s (under 3.9s if Good: 31%)"),
     ]
 
 
@@ -50,22 +50,42 @@ def test_missing_or_invalid_answer_times_add_no_rows() -> None:
         assert answer_time_prediction_from_native(invalid) is None
 
 
-def test_answer_time_thresholds_and_conditional_recall() -> None:
-    # Each row is P(under threshold | Again, Hard, Good, Easy). In this
-    # deliberately simple example they are equal at all eight thresholds.
-    under = [(0.2, 0.4, 0.5, 0.7)] * 8
+def test_answer_time_thresholds_and_recall_within_time() -> None:
+    # Each row is P(under threshold | Again, Hard, Good, Easy).
+    under = [
+        (0.02, 0.05, 0.10, 0.20),
+        (0.10, 0.20, 0.30, 0.40),
+        (0.20, 0.35, 0.50, 0.65),
+        (0.35, 0.50, 0.65, 0.75),
+        (0.50, 0.60, 0.75, 0.85),
+        (0.60, 0.75, 0.85, 0.92),
+        (0.70, 0.85, 0.90, 0.96),
+        (0.90, 0.95, 0.98, 0.99),
+    ]
     prediction = answer_time_prediction_from_native((*NATIVE, under))
     assert prediction is not None
     assert answer_time_card_info_rows(prediction)[-1] == (
         "RWKV : Time Under (if Good)",
-        "2s:50% 4s:50% 6s:50% 8s:50% 10s:50% 15s:50% 20s:50% 30s:50%",
+        "2s:10% 4s:30% 6s:50% 8s:65% 10s:75% 15s:85% 20s:90% 30s:98%",
     )
 
-    # The chart conditions on a fast answer: (Hard + Good + Easy) divided by
-    # all answers under the threshold, using the active button probabilities.
-    curve = answer_time_recall_curve(prediction, (0.4, 0.1, 0.4, 0.1))
-    assert [seconds for seconds, _ in curve] == [2, 4, 6, 8, 10, 15, 20, 30]
-    assert all(math.isclose(recall, 31 / 39) for _, recall in curve)
+    # Success includes Hard, Good and Easy; the other curves show only the
+    # named button, weighted by its own answer probability.
+    curve = answer_time_recall_curve(prediction, (0.2, 0.1, 0.6, 0.1))
+    assert [point[0] for point in curve] == [0, 2, 4, 6, 8, 10, 15, 20, 30]
+    assert [point[1] for point in curve] == pytest.approx(
+        [0, 0.085, 0.24, 0.4, 0.515, 0.595, 0.677, 0.721, 0.782]
+    )
+    assert [point[2] for point in curve] == pytest.approx(
+        [0, 0.06, 0.18, 0.3, 0.39, 0.45, 0.51, 0.54, 0.588]
+    )
+    assert [point[3] for point in curve] == pytest.approx(
+        [0, 0.02, 0.04, 0.065, 0.075, 0.085, 0.092, 0.096, 0.099]
+    )
+    assert all(
+        point[1:] == (0, 0, 0)
+        for point in answer_time_recall_curve(prediction, (1, 0, 0, 0))
+    )
     assert answer_time_recall_curve(prediction, None) == []
     assert answer_time_recall_curve(prediction, (0.0, 0.0, 0.0, 0.0)) == []
     assert (
@@ -126,8 +146,10 @@ def test_card_info_graph_uses_the_active_rwkv_button_probabilities(
         fallback_source="FSRS",
         include_after_review=False,
     )
-    assert info.answer_time_recall[0][0] == 2
-    assert info.answer_time_recall[0][1] == pytest.approx(31 / 39)
+    assert info.answer_time_recall[0] == (0, 0, 0, 0)
+    assert info.answer_time_recall[1][0] == 2
+    assert info.answer_time_recall[1][1] == pytest.approx(0.31)
+    assert info.answer_time_recall[1][2:] == pytest.approx((0.2, 0.07))
     assert any(label == "RWKV : Time Under (if Good)" for label, _ in info.rows)
 
 

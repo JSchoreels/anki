@@ -92,7 +92,7 @@ def answer_time_card_info_rows(
         (
             "RWKV : Expected Answer Time",
             f"{format_answer_seconds(prediction.mixed_median_seconds)} "
-            f"(Good under {FAST_ANSWER_SECONDS:g}s: {fast_good}%)",
+            f"(under {FAST_ANSWER_SECONDS:g}s if Good: {fast_good}%)",
         ),
     ]
     if prediction.under_probabilities:
@@ -111,8 +111,8 @@ def answer_time_card_info_rows(
 def answer_time_recall_curve(
     prediction: RwkvAnswerTimePrediction | None,
     button_probabilities: Sequence[float] | None,
-) -> list[tuple[int, float]]:
-    """P(Hard, Good or Easy | answer time below the threshold)."""
+) -> list[tuple[int, float, float, float]]:
+    """Chance of success, Good, and Easy within each time threshold."""
     if prediction is None or not prediction.under_probabilities:
         return []
     buttons = _four_floats(button_probabilities)
@@ -120,17 +120,14 @@ def answer_time_recall_curve(
         return []
     if not math.isclose(sum(buttons), 1.0, abs_tol=0.01):
         return []
-    points = []
+    points = [(0, 0.0, 0.0, 0.0)]
     for seconds, under in zip(
         ANSWER_TIME_THRESHOLDS_SECONDS, prediction.under_probabilities, strict=True
     ):
-        weighted = [
-            probability * share
-            for probability, share in zip(buttons, under, strict=True)
-        ]
-        total = sum(weighted)
-        if total > 0:
-            points.append((seconds, sum(weighted[1:]) / total))
+        good_in_time = buttons[2] * under[2]
+        easy_in_time = buttons[3] * under[3]
+        recalled_in_time = buttons[1] * under[1] + good_in_time + easy_in_time
+        points.append((seconds, recalled_in_time, good_in_time, easy_in_time))
     return points
 
 
