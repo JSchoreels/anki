@@ -38,11 +38,12 @@ card-stats-fsrs-forgetting-curve-first-year = First Year
 card-stats-fsrs-forgetting-curve-all-time = All Time
 card-stats-fsrs-forgetting-curve-desired-retention = Desired Retention
 card-stats-rwkv-answer-time-recall-title = RWKV Recall Within Answer Time
-card-stats-rwkv-answer-time-recall-description = Chance that the next answer takes less than the time shown and uses the indicated button. Success includes Hard, Good and Easy.
+card-stats-rwkv-answer-time-recall-description = Chance that the next answer takes less than the time shown. Success and Hard include Hard, Good and Easy; Good includes Good and Easy.
 card-stats-rwkv-answer-time-recall-axis = Chance of answering in time
 card-stats-rwkv-answer-time-seconds-axis = Answer time limit (seconds)
 card-stats-rwkv-answer-time-success = Success
-card-stats-rwkv-answer-time-good = Good
+card-stats-rwkv-answer-time-hard = Hard or better
+card-stats-rwkv-answer-time-good = Good or better
 card-stats-rwkv-answer-time-easy = Easy
 
 ## Window Titles

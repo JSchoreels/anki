@@ -25,14 +25,28 @@ License: GNU AGPL, version 3 or later; http://www.gnu.org/licenses/agpl.html
 
     const series = [
         { key: "recall", label: tr.cardStatsRwkvAnswerTimeSuccess() },
+        { key: "hard", label: tr.cardStatsRwkvAnswerTimeHard() },
         { key: "good", label: tr.cardStatsRwkvAnswerTimeGood() },
         { key: "easy", label: tr.cardStatsRwkvAnswerTimeEasy() },
     ] as const;
 
+    type SeriesKey = (typeof series)[number]["key"];
+
+    function probability(point: Point, key: SeriesKey): number {
+        if (key === "hard") {
+            return point.recall;
+        }
+        if (key === "good") {
+            // Separate protobuf floats can round their sum above total recall.
+            return Math.min(point.recall, point.good + point.easy);
+        }
+        return point[key];
+    }
+
     $: lines = series.map((item) => ({
         ...item,
         line: points
-            .map((point) => `${x(point.seconds)},${y(point[item.key])}`)
+            .map((point) => `${x(point.seconds)},${y(probability(point, item.key))}`)
             .join(" "),
     }));
 </script>
@@ -81,10 +95,12 @@ License: GNU AGPL, version 3 or later; http://www.gnu.org/licenses/agpl.html
                     <circle
                         class={`point ${item.key}`}
                         cx={x(point.seconds)}
-                        cy={y(point[item.key])}
-                        r="4"
+                        cy={y(probability(point, item.key))}
+                        r={item.key === "recall" ? 5 : 4}
                     >
-                        <title>{tooltip(item.label, point, point[item.key])}</title>
+                        <title>
+                            {tooltip(item.label, point, probability(point, item.key))}
+                        </title>
                     </circle>
                 {/each}
             {/each}
@@ -120,7 +136,7 @@ License: GNU AGPL, version 3 or later; http://www.gnu.org/licenses/agpl.html
                 <tr>
                     <th>{point.seconds}s</th>
                     {#each series as item}
-                        <td>{percent(point[item.key])}</td>
+                        <td>{percent(probability(point, item.key))}</td>
                     {/each}
                 </tr>
             {/each}
@@ -158,11 +174,17 @@ License: GNU AGPL, version 3 or later; http://www.gnu.org/licenses/agpl.html
     .recall {
         --series-color: var(--fg-link);
     }
+    .hard {
+        --series-color: #a37c00;
+    }
     .good {
         --series-color: #15803d;
     }
     .easy {
         --series-color: #65a30d;
+    }
+    :global(.night-mode) .hard {
+        --series-color: #facc15;
     }
     :global(.night-mode) .good {
         --series-color: #4ade80;
@@ -171,6 +193,9 @@ License: GNU AGPL, version 3 or later; http://www.gnu.org/licenses/agpl.html
         --series-color: #bef264;
     }
     .swatch.good {
+        border-top-style: dashed;
+    }
+    .swatch.hard {
         border-top-style: dashed;
     }
     .swatch.easy {
@@ -196,8 +221,14 @@ License: GNU AGPL, version 3 or later; http://www.gnu.org/licenses/agpl.html
         stroke: var(--series-color);
         stroke-width: 2.5;
     }
+    .curve.recall {
+        stroke-width: 4;
+    }
     .curve.good {
         stroke-dasharray: 8 4;
+    }
+    .curve.hard {
+        stroke-dasharray: 8 3 2 3;
     }
     .curve.easy {
         stroke-dasharray: 2 4;

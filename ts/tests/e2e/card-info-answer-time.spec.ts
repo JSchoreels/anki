@@ -43,15 +43,17 @@ test("Card Info shows the chance of recalling within each time limit", async ({ 
     const graph = page.getByRole("img", { name: /RWKV Recall Within Answer Time/ });
     await expect(graph).toBeVisible();
     await expect(page.locator(".answer-time-recall .description")).toHaveText(
-        "Chance that the next answer takes less than the time shown and uses the indicated button. Success includes Hard, Good and Easy.",
+        "Chance that the next answer takes less than the time shown. Success and Hard include Hard, Good and Easy; Good includes Good and Easy.",
     );
-    await expect(graph.locator("circle")).toHaveCount(27);
+    await expect(graph.locator("circle")).toHaveCount(36);
     await expect(graph.locator("circle.recall").first().locator("title")).toHaveText("Success 0s: 0%");
     await expect(graph.locator("circle.recall").nth(1).locator("title")).toHaveText("Success 2s: 9%");
-    await expect(graph.locator("circle.good").nth(1).locator("title")).toHaveText("Good 2s: 6%");
+    await expect(graph.locator("circle.hard").nth(2).locator("title")).toHaveText("Hard or better 4s: 24%");
+    await expect(graph.locator("circle.good").nth(1).locator("title")).toHaveText("Good or better 2s: 8%");
     await expect(graph.locator("circle.easy").nth(1).locator("title")).toHaveText("Easy 2s: 2%");
     await expect(page.locator(".legend").getByText("Success", { exact: true })).toBeVisible();
-    await expect(page.locator(".legend").getByText("Good", { exact: true })).toBeVisible();
+    await expect(page.locator(".legend").getByText("Hard or better", { exact: true })).toBeVisible();
+    await expect(page.locator(".legend").getByText("Good or better", { exact: true })).toBeVisible();
     await expect(page.locator(".legend").getByText("Easy", { exact: true })).toBeVisible();
     await expect(graph.getByText("Answer time limit (seconds)")).toBeVisible();
     const overflow = await page.locator(".answer-time-recall").evaluate((container) => {

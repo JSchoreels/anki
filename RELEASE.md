@@ -39,7 +39,7 @@ Changes since [build 115](https://github.com/JSchoreels/anki/releases/tag/26.09.
 
 #### New Features
 
-- **Explore recall by answer time.** Card Info estimates the chance of answering within 2, 4, 6, 8, 10, 15, 20 and 30 seconds if you press Good. Its graph shows the chance of recalling within each time limit (Hard, Good or Easy), alongside separate chances for Good and Easy. The estimates are available when the Small Curve model is active and the card was last reviewed on an earlier day.
+- **Explore recall by answer time.** Card Info estimates the chance of answering within 2, 4, 6, 8, 10, 15, 20 and 30 seconds if you press Good. Its graph shows the chance of recalling within each time limit (Hard, Good or Easy), alongside the chances of Good or better and Easy. The estimates are available when the Small Curve model is active and the card was last reviewed on an earlier day.
 
 ### Technical details
 

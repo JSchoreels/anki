@@ -1474,10 +1474,11 @@ Under (if Good)** also shows that conditional chance at 2, 4, 6, 8, 10, 15, 20
 and 30 seconds. Card Info's **RWKV Recall Within Answer Time** graph shows the
 predicted chance that the next answer is recalled and takes less than each time
 limit (Again counts as forgotten; Hard, Good and Easy count as recalled).
-Separate Good and Easy lines show the joint probability of pressing that exact
-button and answering within the time limit. These lines rise toward the
-respective button probabilities, not the total recall probability; a low Easy
-line can mean Easy is unlikely, rather than that it takes longer. The graph is
+The Hard-or-better line is identical to Success; Good or better includes Good
+and Easy, while Easy includes only Easy. Each line is a joint probability of
+the indicated outcome and answering within the time limit. These lines rise
+toward their overall outcome probabilities; a low Easy line can mean Easy is
+unlikely, rather than that it takes longer. The graph is
 not an estimate of the effect of answering faster. It starts at zero and the
 lines can only rise as the time limit grows.
 The head supplies 16 time bins per grade; thresholds inside a bin use linear
