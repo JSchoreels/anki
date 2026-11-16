@@ -57,8 +57,6 @@ service SchedulerService {
       returns (SimulateFsrsReviewResponse);
   rpc SimulateFsrsWorkload(SimulateFsrsReviewRequest)
       returns (SimulateFsrsWorkloadResponse);
-  rpc GetFsrsNewCardIntervals(GetFsrsNewCardIntervalsRequest)
-      returns (generic.StringList);
   rpc EvaluateParams(EvaluateParamsRequest) returns (EvaluateParamsResponse);
   rpc EvaluateParamsLegacy(EvaluateParamsLegacyRequest)
       returns (EvaluateParamsResponse);
@@ -413,10 +411,6 @@ message SimulateFsrsReviewRequest {
   float historical_retention = 13;
   uint32 learning_step_count = 14;
   uint32 relearning_step_count = 15;
-}
-
-message GetFsrsNewCardIntervalsRequest {
-  deck_config.DeckConfig.Config config = 1;
 }
 
 message SimulateFsrsReviewResponse {
