@@ -221,20 +221,81 @@ fn rwkv_sm106_feature_builder_matches_show_time_intervals() {
     check_show_time_intervals("sm106", &sm106_vectors());
 }
 
-/// The small engine reads the card layers from the weights: one for SM101,
-/// two for every other small model, at f32 and INT8 weights.
+fn bundled_vectors(variable: &str, bundled: &[u8]) -> Vec<u8> {
+    if let Ok(path) = std::env::var(variable) {
+        fs::read(path).unwrap()
+    } else {
+        let mut data = Vec::new();
+        flate2::read::GzDecoder::new(bundled)
+            .read_to_end(&mut data)
+            .unwrap();
+        data
+    }
+}
+
+/// The longer Small Instant-Only model (SM113), Small's Instant-Only model:
+/// show-time inputs, synthetic users (no dataset data).
+fn sm113_vectors() -> Vec<u8> {
+    bundled_vectors(
+        "ANKI_RWKV_SM113_VECTORS",
+        include_bytes!("testdata/sm113-vectors.json.gz"),
+    )
+}
+
+#[test]
+fn rwkv_sm113_matches_published_vectors() {
+    check_published_vectors("sm113", &sm113_vectors());
+}
+
+#[test]
+fn rwkv_sm113_ignores_missing_id_flags_in_every_inference_path() {
+    check_ignores_missing_id_flags("sm113", &sm113_vectors());
+}
+
+#[test]
+fn rwkv_sm113_feature_builder_matches_show_time_intervals() {
+    check_show_time_intervals("sm113", &sm113_vectors());
+}
+
+/// The longer cool-down for Tiny (SM115), Tiny's Instant-Only model: the
+/// tiny plan (one card layer), show-time inputs, synthetic users.
+fn sm115_vectors() -> Vec<u8> {
+    bundled_vectors(
+        "ANKI_RWKV_SM115_VECTORS",
+        include_bytes!("testdata/sm115-vectors.json.gz"),
+    )
+}
+
+#[test]
+fn rwkv_sm115_matches_published_vectors() {
+    check_published_vectors("sm115", &sm115_vectors());
+}
+
+#[test]
+fn rwkv_sm115_ignores_missing_id_flags_in_every_inference_path() {
+    check_ignores_missing_id_flags("sm115", &sm115_vectors());
+}
+
+#[test]
+fn rwkv_sm115_feature_builder_matches_show_time_intervals() {
+    check_show_time_intervals("sm115", &sm115_vectors());
+}
+
+/// The small engine reads the card layers from the weights: one for the
+/// tiny models (SM101, SM106, SM115), two for every other small model, at
+/// f32 and INT8 weights.
 #[test]
 fn rwkv_small_engine_reads_card_layers_from_the_weights() {
     for package in [
         "sm40v2", "sm36", "sm55", "sm56", "sm72", "sm72e20", "sm72e25", "sm92", "sm57", "sm98",
-        "sm101", "sm106",
+        "sm101", "sm106", "sm113", "sm115",
     ] {
         for format in ["f32", "int8"] {
             let model = SrsModel::load(&PathBuf::from(env!("CARGO_MANIFEST_DIR")).join(format!(
                 "../qt/aqt/rwkv_inference/{package}/weights.{format}.bin"
             )))
             .unwrap();
-            let plan = if matches!(package, "sm101" | "sm106") {
+            let plan = if matches!(package, "sm101" | "sm106" | "sm115") {
                 TINY_LAYER_PLAN
             } else {
                 ENGINE_LAYER_PLAN
@@ -554,13 +615,25 @@ fn sm72e25_answer_time_vectors() -> Vec<AnswerTimeUser> {
     )
 }
 
-/// The answer-time head retrained on the show-time retrain of the release
-/// (SM92), same layout as sm72e25's.
+/// The answer-time head of the show-time retrain (SM92) from the time heads
+/// for the family (SM117): show-time inputs, same-day reviews included
+/// (format 2), same layout as sm72e25's. Synthetic users; the fixture holds
+/// its own rows.
 fn sm92_answer_time_vectors() -> Vec<AnswerTimeUser> {
     answer_time_vectors(
         "ANKI_RWKV_SM92_TIME_VECTORS",
         include_bytes!("testdata/sm92-time-vectors.json.gz"),
         &sm92_vectors(),
+    )
+}
+
+/// The answer-time head of the Tiny two-head model (SM106) (SM117): the
+/// small layout (the tiny plan keeps 4 layer rounds), format 2.
+fn sm106_answer_time_vectors() -> Vec<AnswerTimeUser> {
+    answer_time_vectors(
+        "ANKI_RWKV_SM106_TIME_VECTORS",
+        include_bytes!("testdata/sm106-time-vectors.json.gz"),
+        &sm106_vectors(),
     )
 }
 
@@ -624,6 +697,11 @@ fn rwkv_sm92_answer_time_history_matches_published_features() {
     check_answer_time_history("sm92", sm92_answer_time_vectors());
 }
 
+#[test]
+fn rwkv_sm106_answer_time_history_matches_published_features() {
+    check_answer_time_history("sm106", sm106_answer_time_vectors());
+}
+
 fn check_answer_time_history(package: &str, users: Vec<AnswerTimeUser>) {
     let mut maximum = 0.0_f32;
     for user in users {
@@ -670,6 +748,11 @@ fn rwkv_sm92_answer_time_head_matches_published_vectors() {
     check_answer_time_head("sm92", sm92_answer_time_vectors());
 }
 
+#[test]
+fn rwkv_sm106_answer_time_head_matches_published_vectors() {
+    check_answer_time_head("sm106", sm106_answer_time_vectors());
+}
+
 fn check_answer_time_head(package: &str, users: Vec<AnswerTimeUser>) {
     let folder = PathBuf::from(env!("CARGO_MANIFEST_DIR"))
         .join(format!("../qt/aqt/rwkv_inference/{package}"));
@@ -677,6 +760,8 @@ fn check_answer_time_head(package: &str, users: Vec<AnswerTimeUser>) {
         let mut model = SrsModel::load(&folder.join(format!("weights.{format}.bin"))).unwrap();
         model.leak_free_inputs = true;
         let head = AnswerTimeHead::load(&folder.join(format!("time_head.{format}.bin"))).unwrap();
+        // Format 2 heads (SM117) also answer same-day queries.
+        assert_eq!(head.same_day, package != "sm72e25", "{package}");
         let (mut maximum, mut logit_maximum, mut checked) = (0.0_f64, 0.0_f32, 0);
         for user in &users {
             let time_rows: HashMap<usize, usize> = user

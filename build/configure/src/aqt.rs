@@ -113,7 +113,7 @@ fn build_generated_sources(build: &mut Build) -> Result<()> {
     )?;
     for model in [
         "sm40v2", "sm36", "sm55", "sm56", "sm72", "sm72e20", "sm72e25", "sm92", "sm57", "sm98",
-        "sm101", "sm99", "sm106",
+        "sm101", "sm99", "sm106", "sm113", "sm115",
     ] {
         for name in ["weights.f32.bin", "architecture.json", "manifest.json"] {
             let output = format!("qt/_aqt/rwkv_inference/{model}/{name}");
@@ -126,8 +126,10 @@ fn build_generated_sources(build: &mut Build) -> Result<()> {
             )?;
         }
     }
-    // The optional answer-time head is read from the folder of the weights.
-    for model in ["sm72e25", "sm92"] {
+    // The optional answer-time head is read from the folder of the weights
+    // (the time heads for the family (SM117): every two-head model and the
+    // show-time instant-only big model (SM99)).
+    for model in ["sm72e25", "sm92", "sm106", "sm99"] {
         for name in ["time_head.f32.bin", "time_head.json"] {
             let output = format!("qt/_aqt/rwkv_inference/{model}/{name}");
             build.add_action(
@@ -138,6 +140,20 @@ fn build_generated_sources(build: &mut Build) -> Result<()> {
                 },
             )?;
         }
+    }
+    // The show-time big model (SM91s2)'s weights file has no folder: its
+    // head sits beside it as `<weights name>.time_head.f32.bin`.
+    for name in [
+        "RWKV_trained_on_5000_10000.time_head.f32.bin",
+        "RWKV_trained_on_5000_10000.time_head.json",
+    ] {
+        build.add_action(
+            format!("qt:aqt:rwkv_legacy_{name}"),
+            CopyFile {
+                input: format!("qt/aqt/rwkv_inference/{name}").into(),
+                output: &format!("qt/_aqt/rwkv_inference/{name}"),
+            },
+        )?;
     }
     Ok(())
 }

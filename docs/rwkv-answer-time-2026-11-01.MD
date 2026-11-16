@@ -1,5 +1,7 @@
 # Answer-time head for the small model, leak-free, cool-down from epoch 25 (SM72) — 2026-11-01
 
+> **Update 2026-11-16.** Every size now has answer-time heads, from the time heads for the family (SM117), and the show-time retrain (SM92)'s head was replaced by its head from the time heads for the family (SM117) (show-time inputs, same-day reviews included, head format 2); see [answer-time heads for every size](rwkv-time-heads-2026-11-16.MD). The default small model (SM63, folder `sm72e25`) keeps the head described here. Throughout, the answer time is the whole time on the card, front and back: from the question shown to the grade press, capped at the preset's maximum answer seconds, so "recalled and answered within S s" includes reading the back.
+
 The default small model (key `sm72e25`) now ships with an optional **answer-time head**: the answer-time head on richer frozen features (SM82c). It predicts how long the next answer will take, separately for Again, Hard, Good and Easy, and Card Info shows the result. Scheduling is unchanged: no interval, queue order, desired-retention rule, simulator or statistic reads the prediction.
 
 ## What ships

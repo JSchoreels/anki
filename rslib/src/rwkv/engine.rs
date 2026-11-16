@@ -29,7 +29,7 @@ use rusqlite::MAIN_DB;
 use crate::card::CardType;
 use crate::rwkv::answer_time as answer_time_items;
 use crate::rwkv::answer_time::set_answer_time_elapsed;
-use crate::rwkv::answer_time::ANSWER_TIME_FORMAT_VERSION;
+use crate::rwkv::answer_time::ANSWER_TIME_FORMAT_VERSIONS;
 use crate::scheduler::rwkv::relative_overdueness;
 
 #[path = "architecture.rs"]
@@ -781,7 +781,7 @@ impl RwkvInference {
                 ));
             }
             let elapsed = elapsed_days(&request.input, elapsed_seconds(&request.input));
-            if elapsed < 1 {
+            if elapsed < head.min_elapsed_days() {
                 out.push(None);
                 continue;
             }
@@ -4390,9 +4390,10 @@ impl SrsModel {
 
     /// The answer-time head's frozen inputs at a query and the instant head's
     /// grade probabilities. Runs the same trunk as [`Self::review_features`]
-    /// and keeps the residual after the input encoder and after each layer
-    /// round, layer-normalised without affine parameters, then the instant
-    /// head's hidden layer.
+    /// and keeps the residual after the input encoder and after each schedule
+    /// unit (a layer round of the small models' interleaved schedule, a
+    /// stream of the big models' sequential one), layer-normalised without
+    /// affine parameters, then the instant head's hidden layer.
     fn answer_time_inputs(&self, features: &[f32], state: SrsStateRef<'_>) -> (Vec<f32>, [f32; 4]) {
         let unit = Norm {
             groups: 1,
@@ -4425,7 +4426,7 @@ impl SrsModel {
                 self.modules[module_id].layers[layer_id].run(&x, &v0[module_id], previous);
             x = next;
             v0[module_id] = value;
-            if index + 1 == steps.len() || steps[index + 1].1 != layer_id {
+            if answer_time_unit_ends(steps, index) {
                 out.extend(unit.apply(&x));
             }
         }
@@ -4492,38 +4493,43 @@ impl SrsModel {
 struct AnswerTimeHead {
     hidden: Linear,
     out: Linear,
+    /// Format 2 heads (trained on show-time inputs with same-day reviews
+    /// included) answer every query but a card's first review; format 1
+    /// heads only queries on a later day than the card's previous review.
+    same_day: bool,
 }
 
 impl AnswerTimeHead {
-    const FROZEN: usize = (ANSWER_TIME_ROUNDS + 1) * D_MODEL + HEAD_DIM;
+    const FROZEN: usize = (ANSWER_TIME_UNITS + 1) * D_MODEL + HEAD_DIM;
     const INPUTS: usize = Self::FROZEN + answer_time_items::ANSWER_TIME_FEATURES;
 
-    /// Loads `time_head.f32.bin` (or `time_head.int8.bin` beside INT8
-    /// weights) from the folder of the weights; `None` when the folder has
-    /// none or the engine is not the small one.
+    /// Loads the head beside the weights: `<weights file name without
+    /// .bin>.time_head.f32.bin` (the show-time big model (SM91s2)'s weights
+    /// file has no folder of its own), else `time_head.f32.bin` in the folder
+    /// of the weights; `.int8.bin` instead beside INT8 weights. `None` when
+    /// neither exists.
     fn load_beside(weights: &Path) -> io::Result<Option<Self>> {
-        if !SMALL_MODEL {
+        let Some(name) = weights.file_name().and_then(|name| name.to_str()) else {
             return Ok(None);
+        };
+        let format = if name.contains("int8") { "int8" } else { "f32" };
+        let stem = name.strip_suffix(".bin").unwrap_or(name);
+        for candidate in [
+            format!("{stem}.time_head.{format}.bin"),
+            format!("time_head.{format}.bin"),
+        ] {
+            let path = weights.with_file_name(candidate);
+            if path.is_file() {
+                return Self::load(&path).map(Some);
+            }
         }
-        let int8 = weights
-            .file_name()
-            .and_then(|name| name.to_str())
-            .is_some_and(|name| name.contains("int8"));
-        let path = weights.with_file_name(if int8 {
-            "time_head.int8.bin"
-        } else {
-            "time_head.f32.bin"
-        });
-        if !path.is_file() {
-            return Ok(None);
-        }
-        Self::load(&path).map(Some)
+        Ok(None)
     }
 
     fn load(path: &PathBuf) -> io::Result<Self> {
         let weights = WeightMap::load(path)?;
         let version = weights.tensor("time_head.format_version", &[1])?.values[0];
-        if version != ANSWER_TIME_FORMAT_VERSION {
+        if !ANSWER_TIME_FORMAT_VERSIONS.contains(&version) {
             return Err(io::Error::new(
                 io::ErrorKind::InvalidData,
                 format!("unsupported RWKV answer-time head format {version}"),
@@ -4547,7 +4553,17 @@ impl AnswerTimeHead {
                 4 * answer_time_items::ANSWER_TIME_BINS,
                 true,
             )?,
+            same_day: version >= 2.0,
         })
+    }
+
+    /// The smallest elapsed days of a query this head predicts.
+    fn min_elapsed_days(&self) -> i64 {
+        if self.same_day {
+            0
+        } else {
+            1
+        }
     }
 
     fn logits(&self, frozen: &[f32], explicit: &[f32]) -> Vec<f32> {
@@ -4569,24 +4585,40 @@ impl AnswerTimeHead {
     }
 }
 
-/// Layer rounds of the interleaved schedule (the small model: 4). A round
-/// ends where the next step starts another layer index.
-const ANSWER_TIME_ROUNDS: usize = layer_rounds(LAYER_STEPS);
-// The tiny model drops one step of round 2, not a round: an answer-time head
-// beside it would read the same number of residuals.
-const _: () = assert!(!SMALL_MODEL || layer_rounds(TINY_LAYER_STEPS) == ANSWER_TIME_ROUNDS);
+/// Whether step `index` ends a unit of the schedule, where the answer-time
+/// head reads the residual: a layer round of the small models' interleaved
+/// schedule (the next step starts another layer index), a stream of the big
+/// models' sequential one (the next step starts another module).
+const fn answer_time_unit_ends(steps: &[(usize, usize)], index: usize) -> bool {
+    if index + 1 == steps.len() {
+        return true;
+    }
+    if SMALL_MODEL {
+        steps[index + 1].1 != steps[index].1
+    } else {
+        steps[index + 1].0 != steps[index].0
+    }
+}
 
-const fn layer_rounds(steps: &[(usize, usize)]) -> usize {
-    let mut rounds = 0;
+const fn answer_time_units(steps: &[(usize, usize)]) -> usize {
+    let mut units = 0;
     let mut index = 0;
     while index < steps.len() {
-        if index + 1 == steps.len() || steps[index + 1].1 != steps[index].1 {
-            rounds += 1;
+        if answer_time_unit_ends(steps, index) {
+            units += 1;
         }
         index += 1;
     }
-    rounds
+    units
 }
+
+/// Schedule units the answer-time head reads after: 4 layer rounds in the
+/// small model, 5 streams in the big one.
+const ANSWER_TIME_UNITS: usize = answer_time_units(LAYER_STEPS);
+// The tiny model drops one step of round 2, not a round: an answer-time head
+// beside it reads the same number of residuals.
+const _: () = assert!(!SMALL_MODEL || answer_time_units(TINY_LAYER_STEPS) == ANSWER_TIME_UNITS);
+const _: () = assert!(ANSWER_TIME_UNITS == if SMALL_MODEL { 4 } else { 5 });
 
 struct ReviewHeads {
     retrievability: f32,
