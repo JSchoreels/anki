@@ -43,11 +43,11 @@ const RUNTIMES: [(&str, &str, Option<&str>); 10] = [
     ("big-pair", "legacy", Some("sm99")),
     ("big-instant", "sm99", None),
     ("small", "sm92", None),
-    ("small-pair", "sm92", Some("sm98")),
-    ("small-instant", "sm98", None),
+    ("small-pair", "sm92", Some("sm113")),
+    ("small-instant", "sm113", None),
     ("tiny", "sm106", None),
-    ("tiny-pair", "sm106", Some("sm101")),
-    ("tiny-instant", "sm101", None),
+    ("tiny-pair", "sm106", Some("sm115")),
+    ("tiny-instant", "sm115", None),
     ("sm63", "sm72e25", None),
 ];
 

@@ -89,20 +89,21 @@ const NAMED: [(&str, &str, Option<&str>); 12] = [
     ("big-pair", "legacy", Some("sm99")),
     ("big-one", "legacy", None),
     ("big-instant", "sm99", None),
-    // Small: the show-time retrain (SM92) with the Small Instant-Only model
-    // (SM98); the one-model choice / RWKV-Curve only (SM92); RWKV-Instant
-    // alone (SM98).
-    ("small-pair", "sm92", Some("sm98")),
+    // Small: the show-time retrain (SM92) with the longer Small Instant-Only
+    // model (SM113) (the Small Instant-Only model (SM98) until 2026-11-16);
+    // the one-model choice / RWKV-Curve only (SM92); RWKV-Instant alone
+    // (SM113).
+    ("small-pair", "sm92", Some("sm113")),
     ("small-one", "sm92", None),
     ("small-curve", "sm92", None),
-    ("small-instant", "sm98", None),
-    // Tiny: the Tiny two-head model (SM106) with the Tiny Instant-Only model
-    // (SM101); the one-model choice / RWKV-Curve only (SM106); RWKV-Instant
-    // alone (SM101).
-    ("tiny-pair", "sm106", Some("sm101")),
+    ("small-instant", "sm113", None),
+    // Tiny: the Tiny two-head model (SM106) with the longer cool-down for Tiny
+    // (SM115) (the Tiny Instant-Only model (SM101) until 2026-11-16); the
+    // one-model choice / RWKV-Curve only (SM106); RWKV-Instant alone (SM115).
+    ("tiny-pair", "sm106", Some("sm115")),
     ("tiny-one", "sm106", None),
     ("tiny-curve", "sm106", None),
-    ("tiny-instant", "sm101", None),
+    ("tiny-instant", "sm115", None),
     // The default small model (SM63) alone, for comparison with the old Small.
     ("sm63-alone", "sm72e25", None),
 ];
