@@ -11,6 +11,7 @@ from anki.collection import Collection
 from anki.decks import DeckId, UpdateDeckConfigs
 from anki.errors import Interrupted
 from aqt import rwkv_scheduler as scheduler
+from aqt.rwkv_srs_benchmark import _packed_warm_up_reviews
 
 
 @pytest.mark.parametrize("elapsed_source", list(scheduler.RwkvFirstReviewElapsedSource))
@@ -75,6 +76,16 @@ def test_native_full_history_preserves_replay_and_recovery_inputs(
         assert (
             native.prepared_checkpoint_histories == python.prepared_checkpoint_histories
         )
+        replay = scheduler._historical_rwkv_review_inputs(
+            reviewer, native_replay=True, **options
+        )
+        # State replay splits at the recovery checkpoint. Both sides must have
+        # exactly the same wire representation as the original review inputs.
+        for chunk in (slice(None, 1), slice(1, None)):
+            assert _packed_warm_up_reviews(replay.reviews[chunk]) == (
+                _packed_warm_up_reviews(python.reviews[chunk])
+            )
+        assert replay.reviews[-1] == python.reviews[-1]
 
         ignored = frozenset([native.review_ids[1]])
         native_ignored = scheduler._historical_rwkv_review_inputs(

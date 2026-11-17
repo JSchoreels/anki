@@ -112,7 +112,7 @@ def main() -> None:
         print(
             "Python side of a build (median of "
             f"{len(python)}): {med(row['total_ms'] for row in python) / 1000:.2f} s "
-            f"(parse {med(row['parse_ms'] for row in python):.0f} ms, convert "
+            f"(parse {med(row['parse_ms'] for row in python):.0f} ms, prepare "
             f"{med(row['convert_ms'] for row in python):.0f} ms, pack "
             f"{med(row['pack_ms'] for row in python):.0f} ms) for "
             f"{python[0]['reviews']:,} reviews."

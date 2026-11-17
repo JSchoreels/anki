@@ -5,9 +5,8 @@
 
 The native harness (`rslib/src/rwkv/app_speed_bench.rs`) times the Rust
 side. Between the native history preparation and the native replay the
-desktop also parses the history response, turns every row into a
-`RwkvReviewInput` (`aqt.rwkv_history.full_review_inputs`), packs each
-16,384-review chunk (`_packed_warm_up_reviews`) and encodes the checkpoint
+desktop parses the response, collects review IDs and checkpoint metadata,
+packs canonical rows in chunks (`_packed_warm_up_reviews`) and encodes the checkpoint
 history maps. This runs exactly those functions on the response bytes the
 harness wrote with `ANKI_SPEED_DUMP_HISTORY`, without Qt, a collection or
 the native bridge.
@@ -72,6 +71,7 @@ def main() -> None:
             first_review_elapsed_source=scheduler.RwkvFirstReviewElapsedSource.DECK_CONFIG,
             ignored_review_ids=frozenset(),
             prepare_recovery_checkpoint=True,
+            native_replay=True,
             progress=None,
         )
         assert history is not None

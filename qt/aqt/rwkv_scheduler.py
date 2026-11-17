@@ -746,7 +746,7 @@ class RwkvStashedCacheSnapshot:
 
 @dataclass(frozen=True)
 class RwkvHistoricalReviewInputs:
-    reviews: list[RwkvReviewInput]
+    reviews: Sequence[RwkvReviewInput]
     review_ids: list[int]
     previous_review_id_by_card: dict[int, int]
     previous_interval_days_by_card: dict[int, int]
@@ -10983,12 +10983,15 @@ def _warm_up_reviewer_backend(  # noqa: PLR0911
             progress,
             "Loading RWKV review history...",
         )
+        from aqt.rwkv_srs_benchmark import EmbeddedRwkvReviewerBackend
+
         state_cache_available = _rwkv_state_cache_dir(reviewer) is not None
         history_start = time.monotonic()
         history = _historical_rwkv_review_inputs(
             reviewer,
             progress=progress,
             prepare_recovery_checkpoint=state_cache_available,
+            native_replay=isinstance(backend, EmbeddedRwkvReviewerBackend),
         )
         history_elapsed_ms = (time.monotonic() - history_start) * 1000
         _require_reviewer_backend_warmup_current(is_current)
@@ -21991,7 +21994,7 @@ def _rwkv_historical_review_fingerprint(
     )
 
 
-def _historical_rwkv_review_inputs(
+def _historical_rwkv_review_inputs(  # noqa: PLR0913
     reviewer: object,
     *,
     after_review_id: int | None = None,
@@ -22005,6 +22008,7 @@ def _historical_rwkv_review_inputs(
     first_review_elapsed_source: RwkvFirstReviewElapsedSource = RwkvFirstReviewElapsedSource.DECK_CONFIG,
     ignored_review_ids: AbstractSet[int] = frozenset(),
     prepare_recovery_checkpoint: bool = False,
+    native_replay: bool = False,
 ) -> RwkvHistoricalReviewInputs:
     """Build replay inputs for the canonical history, or its suffix.
 
@@ -22054,6 +22058,7 @@ def _historical_rwkv_review_inputs(
                 first_review_elapsed_source=first_review_elapsed_source,
                 ignored_review_ids=ignored_review_ids,
                 prepare_recovery_checkpoint=prepare_recovery_checkpoint,
+                native_replay=native_replay,
                 progress=progress,
             )
             if native_history is not None:

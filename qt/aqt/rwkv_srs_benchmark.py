@@ -22,6 +22,7 @@ from aqt.rwkv_answer_time import (
     RwkvAnswerTimePrediction,
     answer_time_prediction_from_native,
 )
+from aqt.rwkv_history import NativeReviewInputs
 from aqt.rwkv_scheduler import (
     RwkvBackendCacheSnapshot,
     RwkvButtonProbabilities,
@@ -1813,8 +1814,35 @@ def _packed_warm_up_reviews(reviews: Sequence[RwkvReviewInput]) -> bytes:
             len(reviews),
         )
     )
-    for review_input in reviews:
-        payload.extend(_packed_review_input_row(review_input))
+    if isinstance(reviews, NativeReviewInputs):
+        # Canonical answers carry every optional integer (bits 0–8), including
+        # the -1 elapsed sentinel for a first review, and no retention targets.
+        pack = _PACKED_PREDICTION_REQUEST_ROW.pack
+        for row in reviews.rows:
+            payload.extend(
+                pack(
+                    0x1FF,
+                    row.card_id,
+                    row.note_id,
+                    row.deck_id,
+                    row.preset_id,
+                    False,
+                    row.ease,
+                    row.duration_millis,
+                    row.card_type,
+                    row.day_offset,
+                    row.elapsed_days,
+                    row.elapsed_seconds,
+                    0.0,
+                    0.0,
+                    0.0,
+                    0.0,
+                    True,
+                )
+            )
+    else:
+        for review_input in reviews:
+            payload.extend(_packed_review_input_row(review_input))
     return bytes(payload)
 
 

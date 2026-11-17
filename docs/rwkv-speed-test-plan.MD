@@ -9,7 +9,7 @@ The **state build**: the full replay of the collection's review history into a f
 Code path (`qt/aqt/rwkv_scheduler.py`): `build_rwkv_state_cache_with_progress` / `request_rwkv_state_cache_recovery` → `warm_up_rwkv_state` → `_warm_up_reviewer_backend`:
 
 1. `_restore_reviewer_backend_cache` finds no matching cache;
-2. `_historical_rwkv_review_inputs` → `aqt/rwkv_history.py::full_review_inputs` → native `Collection::rwkv_historical_review_inputs` (`rslib/src/scheduler/rwkv/history.rs`), then one Python `RwkvReviewInput` per row;
+2. `_historical_rwkv_review_inputs` obtains canonical rows from `Collection::rwkv_historical_review_inputs` and collects the review IDs and checkpoint metadata. The embedded backend packs the native rows directly.
 3. `_warm_up_rwkv_reviews` → `EmbeddedRwkvReviewerBackend.warm_up_reviews` (`aqt/rwkv_srs_benchmark.py`): chunks of 16,384 reviews, each packed in Python (`_packed_warm_up_reviews`) and replayed by `RwkvRuntime::warm_up_reviews` (`pylib/rsbridge/lib.rs` → `rslib/src/rwkv/runtime.rs`; a pair replays both models in parallel with `rayon::join`), state only;
 4. at the review eight days before the last one a full checkpoint, and after the last review a delta checkpoint, both `write_warm_up_state_checkpoint` into a temporary `state-v12.sqlite3`, then `_save_reviewer_backend_state_store` renames it.
 
@@ -19,7 +19,8 @@ The other candidates are much shorter on this collection (measured below): the c
 
 - `rslib/src/rwkv/app_speed_bench.rs` (`cargo test --release`, ignored test `rwkv_app_speed_benchmark`): runs steps 2–4 with the app's request, chunk size, checkpoints, `target_retention` 0.9, `max_interval_days` 36,500, default state precision (int4 cards + int8 notes) and Rayon's default pool (one thread per logical CPU, as in the app), on a collection copy. Operations `build`, `load`, `score` and `state` (stored bytes per card and note); every run prints a JSON line with phase times, replay reviews/s, this process's CPU cores, the machine's other load, and peak working set / private bytes (kernel32 counters, no extra crate).
 - **Any model file:** `ANKI_SPEED_RUNTIMES` takes the named runtimes below or `name=kind[@path][+kind[@path]]`, for example `tiny-one-new=sm106@D:/sm106/weights.f32.bin` or `tiny-pair-new=sm72e25+sm106@...`. A path replaces the bundled weights of a model kind; a model with a new architecture or input rule also needs its `ModelKind` in `runtime.rs` (the fork adds one whenever it ships a model), after which it is one more spec.
-- `qt/tools/rwkv_speed_python_overhead.py`: the Python side of a build (proto parse, row conversion, packing, checkpoint map encoding) run with the app's own functions on the history bytes the harness dumps (`ANKI_SPEED_DUMP_HISTORY`, collection data, scratch folder only).
+- `qt/tools/rwkv_speed_python_overhead.py` measures protobuf parsing, review ID and metadata preparation, packing, and checkpoint map encoding with the desktop functions. Set `ANKI_SPEED_DUMP_HISTORY` to a scratch path for the input. The dump contains collection data.
+- On macOS, measure full-queue refreshes with the release desktop bridge to include input preparation, Accelerate scoring, and score installation. The Rust test binary uses the scalar scorer.
 - `qt/tools/rwkv_speed_test.ps1`: the final run (all sizes × modes, cold and warm, 5 repeats, peak RAM, state bytes, Python side), with a quiet-machine check; `qt/tools/rwkv_speed_summary.py` turns the JSON lines into medians.
 
 Named runtimes (`qt/aqt/rwkv_model.py::runtime_models`, 2026-11-12):

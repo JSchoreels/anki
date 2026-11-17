@@ -10,12 +10,38 @@ desktop dataclasses here so replay and cache callers retain their existing API.
 from __future__ import annotations
 
 import time
-from collections.abc import Callable, Set
+from collections.abc import Callable, Sequence, Set
 from dataclasses import replace
+from typing import overload
 
 from anki import scheduler_pb2
 from anki.errors import Interrupted
 from aqt import rwkv_scheduler as scheduler
+
+
+class NativeReviewInputs(Sequence[scheduler.RwkvReviewInput]):
+    """Keep canonical rows available for packed replay, including checkpoint slices."""
+
+    def __init__(
+        self, rows: Sequence[scheduler_pb2.RwkvHistoricalReviewInputsResponse.Review]
+    ) -> None:
+        self.rows = rows
+
+    def __len__(self) -> int:
+        return len(self.rows)
+
+    @overload
+    def __getitem__(self, index: int) -> scheduler.RwkvReviewInput: ...
+
+    @overload
+    def __getitem__(self, index: slice) -> NativeReviewInputs: ...
+
+    def __getitem__(
+        self, index: int | slice
+    ) -> scheduler.RwkvReviewInput | NativeReviewInputs:
+        if isinstance(index, slice):
+            return NativeReviewInputs(self.rows[index])
+        return review_input_from_row(self.rows[index])
 
 
 def history_fingerprint_request(
@@ -78,6 +104,7 @@ def full_review_inputs(
     ignored_review_ids: Set[int],
     prepare_recovery_checkpoint: bool,
     progress: scheduler.RwkvStateCacheProgressCallback | None,
+    native_replay: bool = False,
 ) -> scheduler.RwkvHistoricalReviewInputs | None:
     started = time.monotonic()
     scheduler._report_rwkv_review_input_prepare_progress(
@@ -112,11 +139,12 @@ def full_review_inputs(
         )
         return None
     native_elapsed_ms = (time.monotonic() - started) * 1000
-    reviews = []
-    review_ids = []
-    for row in response.reviews:
-        reviews.append(review_input_from_row(row))
-        review_ids.append(row.review_id)
+    reviews: Sequence[scheduler.RwkvReviewInput] = (
+        NativeReviewInputs(response.reviews)
+        if native_replay
+        else [review_input_from_row(row) for row in response.reviews]
+    )
+    review_ids = [row.review_id for row in response.reviews]
 
     def history(
         metadata: scheduler_pb2.RwkvHistoricalReviewMetadata,

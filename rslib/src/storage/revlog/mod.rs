@@ -805,34 +805,38 @@ impl SqliteStorage {
         };
         // Rows come back in rowid (review id) order, so no sort or window
         // function is needed; the per-card replay start is derived below.
-        // Forget keeps the revlog. Honor its reset boundary even before the
-        // first new answer, including requests carrying legacy cutoffs.
+        // Forget keeps the revlog. Scan it in table order for reset markers,
+        // then resolve the latest boundary (including the synced marker) once
+        // per reviewed card instead of parsing card/config JSON per answer.
         let sql = format!(
             "with latest_resets as (
   select cid, max(id) as reset_id
-  from revlog
+  from revlog not indexed
   where type = 4 and ease = 0 and factor = 0
   group by cid
+), reviewed_cards as materialized (
+  select c.id, c.nid, case when c.odid != 0 then c.odid else c.did end as deck_id,
+    max(coalesce(resets.reset_id, 0), {RWKV_HISTORY_RESET_AFTER_SQL}) as reset_id
+  from cards c
+  left join latest_resets resets on resets.cid = c.id
+  where c.type != 0
 )
 select
   r.id,
   r.cid,
   c.nid,
-  case when c.odid != 0 then c.odid else c.did end,
+  c.deck_id,
   r.ease,
   r.time,
   r.type,
   cast(r.ivl as integer),
   cast(r.factor as integer)
 from revlog r
-join cards c on c.id = r.cid
-left join latest_resets resets on resets.cid = r.cid
+join reviewed_cards c on c.id = r.cid
 where r.ease between 1 and 4
   and r.type in (0, 1, 2, 3, 4, 5)
   and not (r.type = 3 and r.factor = 0)
-  and c.type != 0
-  and r.id > coalesce(resets.reset_id, 0)
-  and r.id > ({RWKV_HISTORY_RESET_AFTER_SQL})
+  and r.id > c.reset_id
   {ignored_clause}
 order by r.id"
         );
