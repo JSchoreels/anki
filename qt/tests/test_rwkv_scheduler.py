@@ -6563,6 +6563,77 @@ def test_rwkv_deck_inputs_apply_dynamic_targets_while_preserving_card_data(
     assert result.dynamic_desired_retentions_resolved
 
 
+@pytest.mark.parametrize("cache_limit", [1, 3])
+def test_exact_queue_refresh_observes_current_time_targets_and_card_changes(
+    monkeypatch: pytest.MonkeyPatch,
+    cache_limit: int,
+) -> None:
+    response = scheduler_pb2.RwkvReviewInputRowsForCardsResponse()
+    response.rows.add(
+        card_id=1,
+        current_normal_state_kind="new",
+        current_elapsed_since_secs=10,
+        current_elapsed_seconds=86_395,
+        current_elapsed_days=0,
+    )
+    response.rows.add(card_id=2, note_id=20, current_elapsed_seconds=17)
+    response.rows.add(card_id=3)
+    backend = SimpleNamespace(
+        rwkv_review_input_rows_for_deck_review_queue=lambda **_: response
+    )
+    reviewer = SimpleNamespace(
+        mw=SimpleNamespace(col=SimpleNamespace(_backend=backend))
+    )
+    now = 86_405
+    targets = {1: 0.9}
+    monkeypatch.setattr(
+        rwkv_scheduler, "_RWKV_EXACT_QUEUE_INPUT_CACHE_LIMIT", cache_limit
+    )
+    monkeypatch.setattr(rwkv_scheduler.time, "time", lambda: now)
+    monkeypatch.setattr(
+        rwkv_scheduler,
+        "_dynamic_desired_retention_targets_for_current_retentions",
+        lambda *_: targets,
+    )
+
+    def refresh() -> dict[int, RwkvReviewInput]:
+        result = rwkv_scheduler._rwkv_review_input_batches_for_deck_review_queue(
+            reviewer=reviewer,
+            deck_id=1,
+            batch_size_override=512,
+            include_new_cards=True,
+            use_cache=False,
+        )
+        assert result is not None
+        return dict(result.inputs_by_batch_size[512])
+
+    first = refresh()
+    assert first[1].current_elapsed_days == 0
+    assert first[1].current_elapsed_seconds == 86_395
+    assert first[2].current_elapsed_seconds == 17
+    assert first[3].current_elapsed_seconds is None
+
+    now += 12
+    aged = refresh()
+    assert aged[1] == replace(
+        first[1], current_elapsed_seconds=86_407, current_elapsed_days=1
+    )
+    assert aged[2] == first[2]
+
+    targets[1] = 0.85
+    response.rows[1].note_id = 21
+    response.rows[1].enforce_grade_order = False
+    response.rows[1].ClearField("current_elapsed_seconds")
+    del response.rows[2]
+    response.rows.add(card_id=4)
+    edited = refresh()
+    assert list(edited) == [1, 2, 4]
+    assert edited[1] == replace(aged[1], target_retentions=(0.85,) * 4)
+    assert edited[2].identity.note_id == 21
+    assert edited[2].current_elapsed_seconds is None
+    assert edited[2].enforce_grade_order is False
+
+
 def test_rwkv_input_batch_applies_dynamic_desired_retention_provider(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:

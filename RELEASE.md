@@ -44,10 +44,12 @@ Changes since [build 115](https://github.com/JSchoreels/anki/releases/tag/26.09.
 #### Fixes
 
 - **Faster RWKV state builds.** On a collection with 226,546 reviews, the Small model pair rebuilt in 7.1 seconds, down from 8.7 seconds.
+- **Faster full-queue retrievability refreshes.** Refreshing all 7,533 cards in a deck with RWKV-Instant took 153 ms on repeated runs, down from 163 ms.
 
 ### Technical details
 
 - Full replay resolves each card’s history-reset boundary once and packs canonical review rows directly into the existing replay format. The macOS desktop benchmarks produced byte-identical saved states and retrievability scores for the Small, Tiny and Big model pairs.
+- Exact queue refreshes reuse converted inputs for unchanged cards. They fetch current queue membership and retention targets and recalculate elapsed time before scoring.
 - **Answer-time thresholds:** The time head's bin probabilities are interpolated in log time. The graph combines them with the active RWKV answer-button probabilities to estimate the joint chances of each outcome and answering within each threshold; it does not measure the effect of answering faster. The model weights are unchanged from build 115. See [answer-time evaluation](https://github.com/JSchoreels/anki/blob/main/docs/rwkv-answer-time-2026-11-01.MD).
 
 The existing model selector and released RWKV family are shown below for context.

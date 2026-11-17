@@ -200,6 +200,7 @@ _MAX_RWKV_REVIEW_REFRESH_INTERVAL = 10_000
 _RWKV_REVIEW_PREDICTION_CACHE_LIMIT = 32768
 _RWKV_REVIEW_INPUT_BATCH_CACHE_ATTR = "_rwkv_review_input_batch_cache"
 _RWKV_REVIEW_INPUT_BATCH_CACHE_LIMIT = 4
+_RWKV_EXACT_QUEUE_INPUT_CACHE_LIMIT = 32_768
 _FSRS_REVIEW_RETRIEVABILITY_CACHE_TABLE = "search_stats_fsrs_review_retrievability"
 _RWKV_REVIEW_RETRIEVABILITY_CACHE_TABLE = "search_stats_rwkv_review_retrievability"
 _RWKV_REVIEW_UNDO_LIMIT = 30
@@ -3670,6 +3671,7 @@ def set_reviewer_backend(
         _rwkv_review_queue_score_generations.clear()
         _rwkv_review_queue_score_config_keys.clear()
         _rwkv_review_input_batch_module_cache.clear()
+        _cached_rwkv_queue_input.cache_clear()
         _rwkv_review_queue_collection_key = None
         _reviewer_backend = backend
         _reviewer_backend_assignment_generation += 1
@@ -23561,6 +23563,7 @@ def _ensure_rwkv_review_collection_scope(
         )
         _clear_rwkv_review_queue_score_cache()
         _rwkv_review_input_batch_module_cache.clear()
+        _cached_rwkv_queue_input.cache_clear()
         _rwkv_review_queue_collection_key = collection_key
 
     return collection_key
@@ -27092,14 +27095,16 @@ def _rwkv_review_input_batches_for_deck_review_queue(
         source_size=_rwkv_backend_uint(response, "searched_cards"),
         resolve_dynamic_desired_retentions=True,
         track_elapsed_since=True,
+        reuse_queue_rows=not use_cache,
     )
     input_build = _resolve_dynamic_desired_retentions_for_input_build(
         reviewer,
         input_build,
     )
+    input_build = _rwkv_review_input_batch_with_current_elapsed(input_build)
     if cache_key is not None:
         _cache_rwkv_review_input_batch_build(reviewer, cache_key, input_build)
-    return _rwkv_review_input_batch_with_current_elapsed(input_build)
+    return input_build
 
 
 def _rwkv_review_input_batch_with_current_elapsed(
@@ -27448,6 +27453,7 @@ def _rwkv_review_input_batch_build_from_backend_response(
     source_size: int,
     resolve_dynamic_desired_retentions: bool = False,
     track_elapsed_since: bool = False,
+    reuse_queue_rows: bool = False,
 ) -> RwkvReviewInputBatchBuild:
     if isinstance(response, scheduler_pb2.RwkvReviewInputRowsForCardsResponse):
         return _rwkv_review_input_batch_build_from_backend_proto_response(
@@ -27459,6 +27465,7 @@ def _rwkv_review_input_batch_build_from_backend_response(
             source_size=source_size,
             resolve_dynamic_desired_retentions=resolve_dynamic_desired_retentions,
             track_elapsed_since=track_elapsed_since,
+            reuse_queue_rows=reuse_queue_rows,
         )
 
     inputs_by_batch_size: dict[int, list[tuple[int, RwkvReviewInput]]] = {}
@@ -27525,6 +27532,7 @@ def _rwkv_review_input_batch_build_from_backend_proto_response(
     source_size: int,
     resolve_dynamic_desired_retentions: bool = False,
     track_elapsed_since: bool = False,
+    reuse_queue_rows: bool = False,
 ) -> RwkvReviewInputBatchBuild:
     target_retentions_by_card_id = (
         _dynamic_desired_retention_targets_for_current_retentions(
@@ -27541,11 +27549,17 @@ def _rwkv_review_input_batch_build_from_backend_proto_response(
     elapsed_since_secs_by_card_id: dict[int, int] = {}
     parsed_cards = 0
     eligible_cards = 0
+    # Limit admission as well as storage so a large queue cannot evict its
+    # entire working set on every sequential scan.
+    reusable_rows = _RWKV_EXACT_QUEUE_INPUT_CACHE_LIMIT if reuse_queue_rows else 0
     for row in response.rows:
-        parsed_cards += 1
-        review_input = _rwkv_review_input_from_backend_proto_row(
-            row, target_retentions_by_card_id.get(row.card_id)
+        convert = (
+            _rwkv_queue_input_from_proto_row
+            if parsed_cards < reusable_rows
+            else _rwkv_review_input_from_backend_proto_row
         )
+        parsed_cards += 1
+        review_input = convert(row, target_retentions_by_card_id.get(row.card_id))
         card_id = review_input.identity.card_id
         batch_size = (
             batch_size_override
@@ -27812,6 +27826,28 @@ def _rwkv_backend_proto_target_retention(
         if _valid_probability(row.target_retention)
         else _RWKV_DEFAULT_TARGET_RETENTION
     )
+
+
+def _rwkv_queue_input_from_proto_row(
+    row: scheduler_pb2.RwkvReviewInputRowsForCardsResponse.Row,
+    dynamic_target_retention: float | None,
+) -> RwkvReviewInput:
+    if row.HasField("current_elapsed_since_secs"):
+        # The queue recalculates elapsed time from this timestamp after
+        # preparation. Keep every other field in the cache key.
+        static_row = scheduler_pb2.RwkvReviewInputRowsForCardsResponse.Row()
+        static_row.CopyFrom(row)
+        static_row.ClearField("current_elapsed_seconds")
+        row = static_row
+    return _cached_rwkv_queue_input(row.SerializeToString(), dynamic_target_retention)
+
+
+@lru_cache(maxsize=_RWKV_EXACT_QUEUE_INPUT_CACHE_LIMIT)
+def _cached_rwkv_queue_input(
+    row_bytes: bytes, dynamic_target_retention: float | None
+) -> RwkvReviewInput:
+    row = scheduler_pb2.RwkvReviewInputRowsForCardsResponse.Row.FromString(row_bytes)
+    return _rwkv_review_input_from_backend_proto_row(row, dynamic_target_retention)
 
 
 def _rwkv_review_input_from_backend_proto_row(
