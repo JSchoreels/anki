@@ -112,6 +112,24 @@ struct CardStateUpdater {
 }
 
 impl CardStateUpdater {
+    fn next_answer_states(
+        &self,
+        current: CardState,
+        context: &StateContext,
+    ) -> Result<SchedulingStates> {
+        let mut states = current.next_states(context);
+        if self.fsrs_preset.fsrs_version == crate::deckconfig::FsrsVersion::Seven
+            && context.fsrs_next_states.is_some()
+        {
+            let fsrs = FSRS::new(&self.fsrs_preset.params)?;
+            states.update_next_memory_states(|state| state.stability = fsrs.s90((*state).into()));
+        }
+        states.dynamic_desired_retentions = self.dynamic_desired_retentions;
+        states.dynamic_desired_retention_enabled =
+            self.fsrs_preset.dynamic_desired_retention.is_some();
+        Ok(states)
+    }
+
     /// Returns information required when transitioning from one card state to
     /// another with `next_states()`. This separate structure decouples the
     /// state handling code from the rest of the Anki codebase.
@@ -338,10 +356,7 @@ impl Collection {
         let load_balancer_ctx = self.review_load_balancer_ctx(&ctx, note_id)?;
 
         let state_ctx = ctx.state_context(load_balancer_ctx)?;
-        let mut states = current.next_states(&state_ctx);
-        states.dynamic_desired_retentions = ctx.dynamic_desired_retentions;
-        states.dynamic_desired_retention_enabled =
-            ctx.fsrs_preset.dynamic_desired_retention.is_some();
+        let states = ctx.next_answer_states(current, &state_ctx)?;
         Ok((states, ctx.into_card()))
     }
 
@@ -397,10 +412,7 @@ impl Collection {
             }
             state_ctx.fsrs_fractional_intervals = true;
         }
-        let mut states = current.next_states(&state_ctx);
-        states.dynamic_desired_retentions = ctx.dynamic_desired_retentions;
-        states.dynamic_desired_retention_enabled =
-            ctx.fsrs_preset.dynamic_desired_retention.is_some();
+        let states = ctx.next_answer_states(current, &state_ctx)?;
         Ok(states)
     }
 
@@ -1104,6 +1116,26 @@ pub(crate) mod test {
     }
 
     const SHORT_TERM_RELEARNING_RETENTION: f32 = 0.85;
+
+    #[test]
+    fn fsrs7_next_states_carry_the_s90_as_stability() -> Result<()> {
+        let mut col = Collection::new();
+        col.set_config_bool(BoolKey::Fsrs, true, false)?;
+        let note = crate::tests::NoteAdder::basic(&mut col).add(&mut col);
+        let cid = col.storage.card_ids_of_notes(&[note.id])?[0];
+        let fsrs = FSRS::new(&fsrs::DEFAULT_PARAMETERS)?;
+        let states = col.get_scheduling_states(cid)?;
+        let CardState::Normal(NormalState::Learning(good)) = states.good else {
+            panic!("a new card stays in learning on Good: {:?}", states.good);
+        };
+        let state = good.memory_state.unwrap();
+        assert_ne!(state.stability, state.stability_internal);
+        assert_eq!(
+            state.stability,
+            fsrs.interval_at_retrievability(state.into(), 0.9)
+        );
+        Ok(())
+    }
 
     #[test]
     fn fsrs7_uses_fractional_elapsed_time_for_review_cards() {

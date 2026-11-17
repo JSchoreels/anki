@@ -14,6 +14,7 @@ use itertools::Itertools;
 use rayon::prelude::*;
 
 use super::legacy_fsrs_params;
+use super::preset::FsrsPreset;
 use super::preset::FsrsPresetId;
 use super::rescheduler::Rescheduler;
 use crate::card::CardQueue;
@@ -200,7 +201,7 @@ pub(crate) fn fsrs_memory_state_for_fsrs(
     fsrs: &FSRS,
     memory_state: MemoryState,
 ) -> FsrsMemoryState {
-    let stability = fsrs.interval_at_retrievability(memory_state, 0.9);
+    let stability = fsrs.s90(memory_state);
     FsrsMemoryState {
         stability,
         stability_internal: memory_state.stability,
@@ -243,6 +244,17 @@ pub(crate) fn fsrs_memory_state_for_s90_and_difficulty(
     s90: f32,
     difficulty: f32,
 ) -> Option<FsrsMemoryState> {
+    if !s90.is_finite() || s90 <= 0.0 || !difficulty.is_finite() {
+        return None;
+    }
+    if fsrs.version() != fsrs::ModelVersion::Fsrs7 {
+        return Some(FsrsMemoryState {
+            stability: s90,
+            stability_internal: s90,
+            stability_fast: None,
+            difficulty: difficulty.clamp(1.0, 10.0),
+        });
+    }
     let shape = fsrs.memory_state_from_sm2(2.5, s90, 0.9).ok()?;
     let shape = MemoryState {
         difficulty: difficulty.clamp(1.0, 10.0),
@@ -1212,16 +1224,28 @@ impl Collection {
         &mut self,
         card_ids: Vec<CardId>,
     ) -> Result<usize> {
-        if card_ids.is_empty() || !self.get_config_bool(BoolKey::Fsrs) {
+        if !self.get_config_bool(BoolKey::Fsrs) {
             return Ok(0);
         }
+        self.rebuild_fsrs_states_for_cards(card_ids, |_, preset| {
+            preset.fsrs_version == FsrsVersion::Seven
+        })
+    }
 
+    pub(crate) fn rebuild_fsrs_states_for_cards(
+        &mut self,
+        card_ids: Vec<CardId>,
+        needs_replay: impl Fn(&Card, &FsrsPreset) -> bool,
+    ) -> Result<usize> {
+        if card_ids.is_empty() {
+            return Ok(0);
+        }
         let cards = self.all_cards_for_ids(&card_ids, false)?;
         let presets_by_card = self.fsrs_presets_for_cards(&cards)?;
         let mut groups = HashMap::<_, (_, Vec<Card>)>::new();
         for card in cards {
             let preset = presets_by_card.get(&card.id).or_not_found(card.id)?.clone();
-            if preset.fsrs_version != FsrsVersion::Seven {
+            if !needs_replay(&card, &preset) {
                 continue;
             }
             groups
@@ -1237,6 +1261,13 @@ impl Collection {
         let timing = self.timing_today()?;
         let mut repaired = 0;
         for (_preset_id, (preset, cards)) in groups {
+            let cutoff = match preset.ignore_revlogs_before_ms() {
+                Ok(cutoff) => cutoff,
+                Err(err) => {
+                    tracing::warn!(preset = %preset.name, %err, "FSRS replay deferred; correct the ignore-before date in Deck Options");
+                    continue;
+                }
+            };
             let fsrs = FSRS::new(&preset.params)?;
             let ids = cards.iter().map(|card| card.id).collect_vec();
             let revlog = self.revlog_for_srs(SearchNode::CardIds(comma_separated_ids(&ids)))?;
@@ -1246,7 +1277,7 @@ impl Collection {
                 revlog,
                 timing.next_day_at,
                 preset.historical_retention,
-                preset.ignore_revlogs_before_ms()?,
+                cutoff,
             )?
             .into_iter()
             .filter_map(|(card_id, item)| item.map(|item| (card_id, item)))

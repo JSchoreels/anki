@@ -88,7 +88,14 @@ impl Context<'_> {
         notetype_map: &HashMap<NoteId, NotetypeId>,
         remapped_templates: &HashMap<NotetypeId, TemplateMap>,
         imported_decks: &HashMap<DeckId, DeckId>,
-    ) -> Result<Vec<CardId>> {
+    ) -> Result<()> {
+        let source_cards: Vec<_> = self
+            .data
+            .cards
+            .iter()
+            .filter(|card| card.memory_state.is_some())
+            .map(|card| (card.id, card.original_or_current_deck_id()))
+            .collect();
         let mut ctx = CardContext::new(
             CardImportSettings {
                 usn: self.usn,
@@ -107,12 +114,26 @@ impl Context<'_> {
         }
         ctx.import_cards(mem::take(&mut self.data.cards))?;
         ctx.import_revlog(mem::take(&mut self.data.revlog))?;
-        Ok(self
-            .data
-            .foreign_fsrs_card_ids
-            .iter()
-            .filter_map(|old_id| ctx.imported_cards.get(old_id).copied())
-            .collect())
+        let origins: HashMap<_, _> = source_cards
+            .into_iter()
+            .filter_map(|(id, deck)| {
+                ctx.imported_cards.get(&id).map(|mapped| {
+                    (
+                        *mapped,
+                        (deck, self.data.foreign_fsrs_card_ids.contains(&id)),
+                    )
+                })
+            })
+            .collect();
+        ctx.target_col.rebuild_fsrs_states_for_cards(
+            origins.keys().copied().collect(),
+            |card, preset| {
+                let (deck, incomplete) = origins[&card.id];
+                self.data.fsrs_params_by_deck.get(&deck) != Some(&preset.params)
+                    || (incomplete && preset.fsrs_version == crate::deckconfig::FsrsVersion::Seven)
+            },
+        )?;
+        Ok(())
     }
 }
 

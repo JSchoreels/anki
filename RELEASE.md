@@ -46,6 +46,12 @@ Changes since [build 115](https://github.com/JSchoreels/anki/releases/tag/26.09.
 - **Faster RWKV state builds.** On a collection with 226,546 reviews, the Small model pair rebuilt in 7.1 seconds, down from 8.7 seconds.
 - **Faster full-queue retrievability refreshes.** Refreshing all 7,533 cards in a deck with RWKV-Instant took 153 ms on repeated runs, down from 163 ms.
 
+#### Fixes
+
+- Optimize All preserves saved parameters when a preset’s search fails. Check Database identifies presets with an invalid review-history cutoff so the date can be corrected in Deck Options.
+- Scheduled imports recalculate memory state when the destination uses different parameters. Answer-button states and add-on edits now use the same displayed Stability as the saved card.
+- Recall searches score the cards selected by the rest of the query, and the no-review workload estimate uses both FSRS7 memory components and each card’s last review time.
+
 ### Technical details
 
 - Full replay resolves each card’s history-reset boundary once and packs canonical review rows directly into the existing replay format. The macOS desktop benchmarks produced byte-identical saved states and retrievability scores for the Small, Tiny and Big model pairs.

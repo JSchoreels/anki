@@ -31,6 +31,7 @@ pub(super) struct ExchangeData {
     pub(super) creation_utc_offset: Option<i32>,
     /// Card ids in the source package whose FSRS state lacks internal fields.
     pub(super) foreign_fsrs_card_ids: HashSet<CardId>,
+    pub(super) fsrs_params_by_deck: std::collections::HashMap<DeckId, Vec<f32>>,
 }
 
 impl ExchangeData {

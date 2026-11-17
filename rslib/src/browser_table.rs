@@ -129,19 +129,13 @@ impl Card {
     /// If last_review_date isn't stored in the card, this uses card.due and
     /// card.ivl to infer the elapsed time, which won't be accurate if
     /// 'set due date' or an add-on has changed the due date.
-    pub(crate) fn seconds_since_last_review(&self, timing: &SchedTimingToday) -> Option<u32> {
-        if let Some(last_review_time) = self.last_review_time {
-            Some(timing.now.elapsed_secs_since_clamped(last_review_time))
-        } else if self.is_due_in_days() {
-            self.due_time(timing).map(|due| {
-                let last_review_time =
-                    due.adding_secs(-86_400_i64.saturating_mul(self.interval as i64));
-                timing.now.elapsed_secs_since_clamped(last_review_time)
-            })
-        } else {
-            let last_review_time = TimestampSecs(self.original_or_current_due() as i64);
-            Some(timing.now.elapsed_secs_since_clamped(last_review_time))
-        }
+    pub(crate) fn days_since_last_review(&self, timing: &SchedTimingToday) -> f32 {
+        timing.fsrs_elapsed_seconds(
+            self.last_review_time,
+            self.original_or_current_due(),
+            self.interval,
+        ) as f32
+            / 86_400.0
     }
 }
 
@@ -283,7 +277,7 @@ impl Collection {
                 .as_ref()
                 .or_invalid("Active browser columns not set.")?,
         );
-        RowContext::new(self, id, notes_mode, card_render_required(&columns))?.browser_row(&columns)
+        RowContext::new(self, id, notes_mode, &columns)?.browser_row(&columns)
     }
 
     fn get_note_maybe_with_fields(&self, id: NoteId, _with_fields: bool) -> Result<Note> {
@@ -346,12 +340,8 @@ fn rendered_nodes_to_str(nodes: &[RenderedNode]) -> String {
 }
 
 impl RowContext {
-    fn new(
-        col: &mut Collection,
-        id: i64,
-        notes_mode: bool,
-        with_card_render: bool,
-    ) -> Result<Self> {
+    fn new(col: &mut Collection, id: i64, notes_mode: bool, columns: &[Column]) -> Result<Self> {
+        let with_card_render = card_render_required(columns);
         let cards;
         let note;
         if notes_mode {
@@ -387,17 +377,20 @@ impl RowContext {
             None
         };
         let timing = col.timing_today()?;
-        let fsrs_retrievability = cards[0]
-            .memory_state
-            .zip(cards[0].seconds_since_last_review(&timing))
-            .map(|(state, seconds)| {
-                col.fsrs_current_retrievability_for_card_state(
-                    cards[0].id,
-                    state,
-                    seconds as f32 / 86_400.0,
-                )
-            })
-            .transpose()?;
+        let fsrs_retrievability = if columns.contains(&Column::Retrievability) {
+            cards[0]
+                .memory_state
+                .map(|state| {
+                    col.fsrs_current_retrievability_for_card_state(
+                        cards[0].id,
+                        state,
+                        cards[0].days_since_last_review(&timing),
+                    )
+                })
+                .transpose()?
+        } else {
+            None
+        };
         let fsrs_stability = cards[0].memory_state.map(|state| state.stability);
         let render_context = if with_card_render {
             RenderContext::new(col, &cards[0], &note, &notetype)
@@ -768,7 +761,12 @@ mod tests {
         card.decay = Some(params[23]);
         col.storage.update_card(&card)?;
 
-        let ctx = RowContext::new(&mut col, cid.0, false, false)?;
+        let ctx = RowContext::new(
+            &mut col,
+            cid.0,
+            false,
+            &[Column::Stability, Column::Retrievability],
+        )?;
         let actual = ctx.get_cell_text(Column::Retrievability)?;
         let expected = fsrs_current_retrievability_for_state(&params, state, elapsed_days)?;
         assert_eq!(actual, format!("{:.0}%", expected * 100.0));
@@ -799,7 +797,7 @@ mod tests {
             col.storage.update_card(&card)?;
         }
 
-        let ctx = RowContext::new(&mut col, note.id.0, true, false)?;
+        let ctx = RowContext::new(&mut col, note.id.0, true, &[Column::Retrievability])?;
         let expected = time_span(31_000.0 * 86_400.0, &ctx.tr, false);
         assert_eq!(ctx.get_cell_text(Column::Interval)?, expected);
         Ok(())
@@ -827,7 +825,12 @@ mod tests {
         });
         col.storage.update_card(&card)?;
 
-        let ctx = RowContext::new(&mut col, cid.0, false, false)?;
+        let ctx = RowContext::new(
+            &mut col,
+            cid.0,
+            false,
+            &[Column::Stability, Column::Retrievability],
+        )?;
         let actual = ctx.get_cell_text(Column::Stability)?;
         assert!(
             (s90 - stability).abs() > 0.001,

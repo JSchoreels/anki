@@ -960,6 +960,14 @@ and (data not like '%"s_int":%' or data not like '%"s_fast":%')"#,
             .collect()
     }
 
+    pub(crate) fn cards_in_query(&self, card_ids_sql: &str, args: &[String]) -> Result<Vec<Card>> {
+        Ok(self
+            .db
+            .prepare(&format!("select * from cards where id in ({card_ids_sql})"))?
+            .query_and_then(rusqlite::params_from_iter(args), row_to_card)?
+            .collect::<rusqlite::Result<_>>()?)
+    }
+
     pub(crate) fn all_searched_cards_in_search_order(&self) -> Result<Vec<Card>> {
         self.db
             .prepare_cached(concat!(

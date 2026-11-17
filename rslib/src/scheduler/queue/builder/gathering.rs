@@ -869,21 +869,6 @@ impl QueueBuilder {
     }
 }
 
-fn elapsed_seconds_since_last_review(card: &DueCardWithState, timing: SchedTimingToday) -> u32 {
-    if let Some(last_review_time) = card.last_review_time {
-        timing.now.elapsed_secs_since_clamped(last_review_time)
-    } else {
-        let due = card.original_or_current_due() as i64;
-        if due > 365_000 {
-            let last_review_time = TimestampSecs(due.saturating_sub(card.interval as i64));
-            timing.now.elapsed_secs_since_clamped(last_review_time)
-        } else {
-            let review_day = due.saturating_sub(card.interval as i64);
-            timing.days_elapsed.saturating_sub(review_day as u32) * 86_400
-        }
-    }
-}
-
 fn exact_review_order_keys(
     col: &mut Collection,
     cards: &[DueCardWithState],
@@ -918,8 +903,12 @@ fn exact_review_order_keys(
                         entry.insert(FSRS::new(&preset.params)?)
                     }
                 };
-                let elapsed_days =
-                    (elapsed_seconds_since_last_review(card, timing) as f32 / 86_400.0).max(0.0);
+                let elapsed_days = timing.fsrs_elapsed_seconds(
+                    card.last_review_time,
+                    card.original_or_current_due(),
+                    card.interval,
+                ) as f32
+                    / 86_400.0;
                 let key = if matches!(order, ReviewCardOrder::RelativeOverdueness) {
                     let target = card
                         .desired_retention

@@ -4,6 +4,7 @@
 use super::button_intervals::button_intervals;
 use super::button_intervals::ButtonInterval;
 use super::button_intervals::DayRule;
+use super::button_intervals::FuzzedDays;
 use super::interval_kind::IntervalKind;
 use super::CardState;
 use super::ReviewState;
@@ -69,17 +70,17 @@ impl LearnState {
         ctx: &StateContext,
     ) -> CardState {
         match interval {
-            ButtonInterval::Secs(scheduled_secs) => LearnState {
+            ButtonInterval::InSecs(scheduled_secs) => LearnState {
                 remaining_steps,
                 scheduled_secs,
                 elapsed_secs: 0,
                 memory_state,
             }
             .into(),
-            ButtonInterval::Days {
+            ButtonInterval::InDays(FuzzedDays {
                 days,
                 fuzz_delta_days,
-            } => ReviewState {
+            }) => ReviewState {
                 scheduled_days: days,
                 fuzz_delta_days,
                 ease_factor: ctx.initial_ease_factor,

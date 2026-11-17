@@ -25,6 +25,8 @@ answer states come from the same calculation. Missing FSRS memory fields are
 filled on that returned card without saving it. Requests that skip scheduling
 states still return the stored card unchanged for the desired-retention hook.
 
+The Stability in each answer choice is S90, the interval when predicted recall reaches 90%. A round trip through the card update API recalibrates the internal traces when an add-on edits only S90. Add-ons that supply new traces can set them explicitly.
+
 Card Info reconstructs missing memory state only when FSRS is enabled, using the
 card's effective preset. The reconstructed state, desired retention, and decay
 are used for the report without being saved to the card, so opening Card Info

@@ -114,18 +114,12 @@ impl<'a> Context<'a> {
         let mut media_map = self.prepare_media()?;
         let note_imports = self.import_notes_and_notetypes(&mut media_map)?;
         let imported_decks = self.import_decks_and_configs()?;
-        let foreign_fsrs_card_ids = self.import_cards_and_revlog(
+        self.import_cards_and_revlog(
             &note_imports.id_map,
             &notetypes,
             &note_imports.remapped_templates,
             &imported_decks,
         )?;
-        if let Err(err) = self
-            .target_col
-            .repair_foreign_fsrs_memory_states_inner(foreign_fsrs_card_ids)
-        {
-            tracing::warn!(?err, "repairing imported foreign FSRS memory states failed");
-        }
         self.copy_media(&mut media_map)?;
         Ok(note_imports.log)
     }
@@ -149,6 +143,19 @@ impl ExchangeData {
         let mut data = ExchangeData::default();
         data.gather_data(&mut col, search, with_scheduling, with_deck_configs)?;
         if with_scheduling {
+            if with_deck_configs {
+                let configs = col.storage.get_deck_config_map()?;
+                data.fsrs_params_by_deck = data
+                    .decks
+                    .iter()
+                    .filter_map(|deck| {
+                        let config = configs.get(&deck.config_id()?)?;
+                        // Without exported presets an archive contains only the generated Default.
+                        (config.id != DeckConfigId(1) || config.mtime_secs.0 != 0)
+                            .then(|| (deck.id, config.fsrs_params().to_vec()))
+                    })
+                    .collect();
+            }
             data.foreign_fsrs_card_ids = col
                 .storage
                 .card_ids_with_foreign_fsrs_state()?

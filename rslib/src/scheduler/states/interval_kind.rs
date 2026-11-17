@@ -2,9 +2,9 @@
 // License: GNU AGPL, version 3 or later; http://www.gnu.org/licenses/agpl.html
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
-pub(crate) enum IntervalKind {
+pub(crate) enum IntervalKind<Days = u32> {
     InSecs(u32),
-    InDays(u32),
+    InDays(Days),
 }
 
 impl IntervalKind {

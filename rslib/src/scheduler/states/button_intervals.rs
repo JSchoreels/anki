@@ -13,10 +13,12 @@ use super::StateContext;
 /// stored in whole days.
 pub(crate) const SUB_DAY_LIMIT_DAYS: f32 = 0.5;
 
+pub(crate) type ButtonInterval = super::interval_kind::IntervalKind<FuzzedDays>;
+
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
-pub(crate) enum ButtonInterval {
-    Secs(u32),
-    Days { days: u32, fuzz_delta_days: i32 },
+pub(crate) struct FuzzedDays {
+    pub days: u32,
+    pub fuzz_delta_days: i32,
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -45,7 +47,7 @@ pub(crate) fn button_intervals(
             let secs =
                 fsrs_interval_as_secs(interval, ctx.fsrs_minimum_interval_secs).max(previous_secs);
             previous_secs = secs;
-            out[index] = Some(ButtonInterval::Secs(secs));
+            out[index] = Some(ButtonInterval::InSecs(secs));
             continue;
         }
 
@@ -77,10 +79,10 @@ pub(crate) fn button_intervals(
             }
         };
         previous_days = Some(days);
-        out[index] = Some(ButtonInterval::Days {
+        out[index] = Some(ButtonInterval::InDays(FuzzedDays {
             days,
             fuzz_delta_days,
-        });
+        }));
     }
 
     out
@@ -107,14 +109,14 @@ mod test {
     }
 
     fn days(days: u32) -> Option<ButtonInterval> {
-        Some(ButtonInterval::Days {
+        Some(ButtonInterval::InDays(FuzzedDays {
             days,
             fuzz_delta_days: 0,
-        })
+        }))
     }
 
     fn secs(secs: u32) -> Option<ButtonInterval> {
-        Some(ButtonInterval::Secs(secs))
+        Some(ButtonInterval::InSecs(secs))
     }
 
     #[test]
@@ -248,7 +250,7 @@ mod test {
             },
         );
         assert_eq!(out[0], days(3));
-        let Some(ButtonInterval::Days { days: hard, .. }) = out[1] else {
+        let Some(ButtonInterval::InDays(FuzzedDays { days: hard, .. })) = out[1] else {
             panic!("hard should be in days");
         };
         assert!(hard >= 4);

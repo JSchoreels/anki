@@ -28,6 +28,113 @@ const JS_DATA: &[u8] = b"3";
 const EXISTING_MP3_DATA: &[u8] = b"4";
 
 #[test]
+fn scheduled_import_replays_state_under_retained_destination_preset() -> Result<()> {
+    for legacy_destination in [false, true] {
+        scheduled_import_replays_under_preset(legacy_destination, true, false)?;
+        scheduled_import_replays_under_preset(legacy_destination, false, true)?;
+    }
+    Ok(())
+}
+
+fn scheduled_import_replays_under_preset(
+    legacy_destination: bool,
+    export_presets: bool,
+    import_presets: bool,
+) -> Result<()> {
+    use crate::card::CardQueue;
+    use crate::card::CardType;
+    use crate::revlog::RevlogEntry;
+    use crate::revlog::RevlogReviewKind;
+    use crate::scheduler::fsrs::memory_state::fsrs_memory_state_for_fsrs;
+
+    let (mut source, source_dir) = open_fs_test_collection("source");
+    let (mut target, _target_dir) = open_fs_test_collection("target");
+    if legacy_destination {
+        let mut config = target.get_deck_config(DeckConfigId(1), false)?.unwrap();
+        config.clear_fsrs_params();
+        config.inner.fsrs_version = crate::deckconfig::FsrsVersion::Six as i32;
+        config.inner.fsrs_params_6 = fsrs::FSRS6_DEFAULT_PARAMETERS.to_vec();
+        target.add_or_update_deck_config(&mut config)?;
+    }
+    let path = source_dir.path().join("fsrs.apkg");
+    let note = NoteAdder::basic(&mut source).add(&mut source);
+    let mut card = source.storage.all_cards_of_note(note.id)?.remove(0);
+    let mut source_config = source.get_deck_config(DeckConfigId(1), false)?.unwrap();
+    source_config.inner.fsrs_params_7 = fsrs::DEFAULT_PARAMETERS.to_vec();
+    source_config.inner.fsrs_params_7[2] = 0.1;
+    source.add_or_update_deck_config(&mut source_config)?;
+    let source_model = fsrs::FSRS::new(source_config.fsrs_params())?;
+    let review = fsrs::FSRSItem {
+        reviews: vec![fsrs::FSRSReview {
+            rating: 3,
+            delta_t: 0.0,
+        }],
+    };
+    card.memory_state = Some(fsrs_memory_state_for_fsrs(
+        &source_model,
+        source_model.memory_state(review.clone(), None)?,
+    ));
+    card.ctype = CardType::Review;
+    card.queue = CardQueue::Review;
+    card.due = source.timing_today()?.days_elapsed as i32 + 10;
+    card.interval = 10;
+    card.last_review_time = Some(TimestampSecs(1_700_000_000));
+    source.storage.update_card(&card)?;
+    source.storage.add_revlog_entry(
+        &RevlogEntry {
+            id: RevlogId(1_700_000_000_000),
+            cid: card.id,
+            button_chosen: 3,
+            review_kind: RevlogReviewKind::Learning,
+            interval: 10,
+            ..Default::default()
+        },
+        false,
+    )?;
+    source.export_apkg(
+        &path,
+        ExportAnkiPackageOptions {
+            with_scheduling: true,
+            with_deck_configs: export_presets,
+            with_media: false,
+            legacy: false,
+        },
+        SearchNode::WholeCollection,
+        None,
+    )?;
+    target.import_apkg(
+        &path,
+        ImportAnkiPackageOptions {
+            with_scheduling: true,
+            with_deck_configs: import_presets,
+            ..Default::default()
+        },
+    )?;
+    let imported = target.storage.all_cards_of_note(note.id)?.remove(0);
+    let config = target.get_deck_config(DeckConfigId(1), false)?.unwrap();
+    let model = fsrs::FSRS::new(config.fsrs_params())?;
+    let expected = fsrs_memory_state_for_fsrs(&model, model.memory_state(review, None)?);
+    let actual = imported.memory_state.unwrap();
+    assert_ne!(actual, card.memory_state.unwrap());
+    assert!((actual.stability_internal - expected.stability_internal).abs() < 0.001);
+    match (actual.stability_fast, expected.stability_fast) {
+        (Some(a), Some(e)) => assert!((a - e).abs() < 0.001),
+        (None, None) => (),
+        states => panic!("mismatched model state: {states:?}"),
+    }
+    assert!((actual.difficulty - expected.difficulty).abs() < 0.001);
+    assert_eq!(imported.last_review_time, card.last_review_time);
+    assert_eq!(imported.interval, 10);
+    assert_eq!(
+        imported.due,
+        target.timing_today()?.days_elapsed as i32 + 10
+    );
+    target.undo()?;
+    assert!(target.storage.get_card(imported.id)?.is_none());
+    Ok(())
+}
+
+#[test]
 fn roundtrip() {
     roundtrip_inner(true);
     roundtrip_inner(false);

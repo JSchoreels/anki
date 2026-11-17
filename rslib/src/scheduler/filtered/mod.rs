@@ -355,21 +355,6 @@ fn fnvhash_card_and_mod(card: &Card) -> i64 {
     hasher.finish() as i64
 }
 
-fn elapsed_seconds_since_last_review(card: &Card, timing: SchedTimingToday) -> u32 {
-    if let Some(last_review_time) = card.last_review_time {
-        timing.now.elapsed_secs_since_clamped(last_review_time)
-    } else {
-        let due = card.original_or_current_due() as i64;
-        if due > 365_000 {
-            let last_review_time = TimestampSecs(due.saturating_sub(card.interval as i64));
-            timing.now.elapsed_secs_since_clamped(last_review_time)
-        } else {
-            let review_day = due.saturating_sub(card.interval as i64);
-            timing.days_elapsed.saturating_sub(review_day as u32) * 86_400
-        }
-    }
-}
-
 fn exact_retrievability_key_for_card(
     col: &Collection,
     card: &Card,
@@ -381,7 +366,7 @@ fn exact_retrievability_key_for_card(
     }
 
     if let Some(state) = card.memory_state {
-        let elapsed_days = elapsed_seconds_since_last_review(card, timing) as f32 / 86_400.0;
+        let elapsed_days = card.days_since_last_review(&timing);
         fsrs_current_retrievability_for_state(&preset.params, state, elapsed_days)
     } else {
         Ok(sm2_relative_overdueness_key(card, timing))
@@ -401,8 +386,7 @@ fn exact_fsrs_search_key_for_card(
         }
         ExactFsrsSearchOrder::RelativeOverdueness => {
             if let Some(state) = card.memory_state {
-                let elapsed_days =
-                    elapsed_seconds_since_last_review(card, timing) as f32 / 86_400.0;
+                let elapsed_days = card.days_since_last_review(&timing);
                 fsrs_relative_overdueness_for_state(
                     &preset.params,
                     state,
@@ -646,7 +630,7 @@ mod test {
         let default_key = fsrs_current_retrievability_for_state(
             &default_preset.params,
             state,
-            elapsed_seconds_since_last_review(&default_card, timing) as f32 / 86_400.0,
+            default_card.days_since_last_review(&timing),
         )?;
         assert!(default_key > overlay_key.min(fallback_key));
         assert!(default_key < overlay_key.max(fallback_key));
