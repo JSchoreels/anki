@@ -1,4 +1,4 @@
-// Copyright: Ankitects Pty Ltd and contributors
+// Copyright: Anki Software, LLC and contributors
 // License: GNU AGPL, version 3 or later; http://www.gnu.org/licenses/agpl.html
 
 pub(crate) mod filtered;
@@ -165,6 +165,46 @@ pub struct SchedulingStates {
     pub hard: CardState,
     pub good: CardState,
     pub easy: CardState,
+}
+
+impl SchedulingStates {
+    /// Apply `update` to the memory state of each answer's next state. The
+    /// current state is left alone, because answering compares it with the
+    /// card.
+    pub(crate) fn update_next_memory_states(
+        &mut self,
+        update: impl Fn(&mut crate::card::FsrsMemoryState),
+    ) {
+        for state in [
+            &mut self.again,
+            &mut self.hard,
+            &mut self.good,
+            &mut self.easy,
+        ] {
+            let normal = match state {
+                CardState::Normal(normal) => normal,
+                CardState::Filtered(FilteredState::Rescheduling(filtered)) => {
+                    &mut filtered.original_state
+                }
+                CardState::Filtered(FilteredState::Preview(_)) => continue,
+            };
+            match normal {
+                NormalState::New(_) => {}
+                NormalState::Learning(learning) => {
+                    learning.memory_state.iter_mut().for_each(&update)
+                }
+                NormalState::Review(review) => review.memory_state.iter_mut().for_each(&update),
+                NormalState::Relearning(relearning) => {
+                    relearning
+                        .learning
+                        .memory_state
+                        .iter_mut()
+                        .for_each(&update);
+                    relearning.review.memory_state.iter_mut().for_each(&update);
+                }
+            }
+        }
+    }
 }
 
 impl From<NewState> for CardState {

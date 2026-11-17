@@ -82,7 +82,7 @@ If you choose to study Deck A:
 
 ## Daily Limits
 
-### New Cards/Day
+### New Cards/Day {#new-cardsday}
 
 This option controls how many new cards can be introduced each day you open the program. If you
 study fewer than the limit, or miss a day, the next day the counts will be back
@@ -101,7 +101,7 @@ introducing fewer new cards each day until your review burden decreases. More th
 hundreds of new cards over their first few days of using the program, and then has
 become overwhelmed by the reviews required.
 
-### Maximum Reviews/Day
+### Maximum Reviews/Day {#maximum-reviewsday}
 
 Allows you to set an upper limit on the number of review cards to show each day.
 When this limit is reached, Anki will not show any more review cards for the
@@ -346,7 +346,7 @@ For more info about burying cards, see [this section](./studying#siblings-and-bu
 
 ## Timers
 
-<a id="timer"></a>
+<span id="timer"></span>
 
 Anki monitors how long it takes you to answer each card, so that it
 can show you how long was spent studying each day. The time taken does
@@ -545,7 +545,7 @@ either in reviews per day or in minutes of studying per day.
   the maximum number of reviews per day.
 - **Maximum interval** controls the maximum interval length (in days).
 
-To make the simulation as realistic as possible, the simulator takes into account the real memory states (difficulty, stability, retrievability) of your cards.
+The no-review estimate uses both FSRS7 memory components and the time since each card’s last review. Simulations with future reviews use the simulator library’s single-stability approximation for existing FSRS7 cards.
 It also uses your FSRS parameters and the value of desired retention, therefore changing them will affect the simulation.
 
 #### Learning and Relearning Steps

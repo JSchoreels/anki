@@ -1,4 +1,4 @@
-// Copyright: Ankitects Pty Ltd and contributors
+// Copyright: Anki Software, LLC and contributors
 // License: GNU AGPL, version 3 or later; http://www.gnu.org/licenses/agpl.html
 
 mod error;
@@ -11,3 +11,5 @@ pub mod retention;
 pub mod simulator;
 pub mod try_collect;
 mod upgrade;
+
+pub(crate) use upgrade::ReplaySync;

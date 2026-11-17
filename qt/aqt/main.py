@@ -1,4 +1,4 @@
-# Copyright: Ankitects Pty Ltd and contributors
+# Copyright: Anki Software, LLC and contributors
 # License: GNU AGPL, version 3 or later; http://www.gnu.org/licenses/agpl.html
 
 from __future__ import annotations
@@ -192,11 +192,8 @@ class AnkiQt(QMainWindow):
         self.app = app
         self.pm = profileManager
         self.fullscreen = False
+        self.safeMode = app.safeMode
         # init rest of app
-        self.safeMode = (
-            bool(self.app.queryKeyboardModifiers() & Qt.KeyboardModifier.ShiftModifier)
-            or self.opts.safemode
-        )
         try:
             self.setupUI()
             self.setupAddons(args)

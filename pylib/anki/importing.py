@@ -1,4 +1,4 @@
-# Copyright: Ankitects Pty Ltd and contributors
+# Copyright: Anki Software, LLC and contributors
 # License: GNU AGPL, version 3 or later; http://www.gnu.org/licenses/agpl.html
 
 from typing import TYPE_CHECKING, Any
@@ -30,8 +30,11 @@ class _LegacyAnkiPackageImporter:
 
 
 _deprecated_names = DeprecatedNamesMixinForModule(globals())
-_deprecated_names.register_deprecated_aliases(
-    AnkiPackageImporter=_LegacyAnkiPackageImporter
+_deprecated_names.register_deprecated_attributes(
+    AnkiPackageImporter=(
+        _LegacyAnkiPackageImporter,
+        (Collection.import_anki_package, "Collection.import_anki_package"),
+    )
 )
 
 if not TYPE_CHECKING:

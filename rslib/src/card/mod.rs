@@ -1,4 +1,4 @@
-// Copyright: Ankitects Pty Ltd and contributors
+// Copyright: Anki Software, LLC and contributors
 // License: GNU AGPL, version 3 or later; http://www.gnu.org/licenses/agpl.html
 
 mod service;
@@ -14,7 +14,6 @@ use serde_repr::Deserialize_repr;
 use serde_repr::Serialize_repr;
 
 use crate::collection::Collection;
-use crate::config::BoolKey;
 use crate::config::SchedulerVersion;
 use crate::deckconfig::DeckConfig;
 use crate::decks::DeckId;
@@ -382,7 +381,7 @@ impl Collection {
             source: FilteredDeckError::CanNotMoveCardsInto,
         })?;
         let config = self.get_deck_config(config_id, true)?.unwrap();
-        let fsrs_enabled = self.get_config_bool(BoolKey::Fsrs);
+        let fsrs_enabled = self.fsrs_enabled();
         let mut steps_adjuster = RemainingStepsAdjuster::new(&config);
         let usn = self.usn()?;
         self.transact(Op::SetCardDeck, |col| {
@@ -450,15 +449,12 @@ impl Collection {
     }
 
     /// Get deck config for the given card. If missing, return default values.
-    #[allow(dead_code)]
     pub(crate) fn deck_config_for_card(&mut self, card: &Card) -> Result<DeckConfig> {
-        if let Some(deck) = self.get_deck(card.original_or_current_deck_id())? {
-            if let Some(conf_id) = deck.config_id() {
-                return Ok(self.get_deck_config(conf_id, true)?.unwrap());
-            }
-        }
-
-        Ok(DeckConfig::default())
+        let id = self
+            .get_deck(card.original_or_current_deck_id())?
+            .and_then(|deck| deck.config_id())
+            .unwrap_or(DeckConfigId(1));
+        self.get_deck_config(id, true)?.or_not_found(id)
     }
 
     /// Adjust the remaining steps of the card according to the steps change.

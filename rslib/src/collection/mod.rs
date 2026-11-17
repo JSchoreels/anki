@@ -1,4 +1,4 @@
-// Copyright: Ankitects Pty Ltd and contributors
+// Copyright: Anki Software, LLC and contributors
 // License: GNU AGPL, version 3 or later; http://www.gnu.org/licenses/agpl.html
 
 pub mod backup;
@@ -24,6 +24,7 @@ use crate::error::Result;
 use crate::notetype::Notetype;
 use crate::notetype::NotetypeId;
 use crate::progress::ProgressState;
+use crate::scheduler::fsrs::ReplaySync;
 use crate::scheduler::queue::CardQueues;
 use crate::scheduler::SchedulerInfo;
 use crate::storage::SchemaVersion;
@@ -77,8 +78,7 @@ impl CollectionBuilder {
         };
 
         if !self.skip_fsrs_defaults_upgrade {
-            col.upgrade_empty_fsrs_presets()?;
-            col.repair_incomplete_fsrs7_states()?;
+            col.refresh_fsrs_states(ReplaySync::Preserve)?;
         }
         Ok(col)
     }

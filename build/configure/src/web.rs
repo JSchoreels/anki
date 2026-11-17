@@ -1,4 +1,4 @@
-// Copyright: Ankitects Pty Ltd and contributors
+// Copyright: Anki Software, LLC and contributors
 // License: GNU AGPL, version 3 or later; http://www.gnu.org/licenses/agpl.html
 
 use anyhow::Result;
@@ -66,6 +66,7 @@ fn setup_node(build: &mut Build) -> Result<()> {
             "vitest",
             "protoc-gen-es",
             "prettier",
+            "buf",
         ],
         hashmap! {
             "jquery" => vec![
@@ -346,7 +347,7 @@ fn check_web(build: &mut Build) -> Result<()> {
                 ":node_modules",
                 ":ts:generated",
                 glob!["ts/{svelte.config.js,vite.config.ts,tsconfig.json}"],
-                glob!["ts/{lib,deck-options,html-filter,domlib,reviewer,change-notetype}/**/*"],
+                glob!["ts/{lib,routes,reviewer}/**/*"],
             ],
         },
     )?;

@@ -1,4 +1,4 @@
-// Copyright: Ankitects Pty Ltd and contributors
+// Copyright: Anki Software, LLC and contributors
 // License: GNU AGPL, version 3 or later; http://www.gnu.org/licenses/agpl.html
 
 use chrono::DateTime;
@@ -16,6 +16,24 @@ pub struct SchedTimingToday {
     pub days_elapsed: u32,
     /// Timestamp of the next day rollover.
     pub next_day_at: TimestampSecs,
+}
+
+impl SchedTimingToday {
+    /// Older cards may only have a due date and interval from which to
+    /// estimate elapsed time.
+    pub(crate) fn fsrs_elapsed_seconds(
+        &self,
+        last_review: Option<TimestampSecs>,
+        due: i32,
+        interval: u32,
+    ) -> u32 {
+        let seconds = match last_review {
+            Some(last) => self.now.elapsed_secs_since(last),
+            None if due > 365_000 => self.now.elapsed_secs_since(TimestampSecs(i64::from(due))),
+            None => (i64::from(self.days_elapsed) - i64::from(due) + i64::from(interval)) * 86_400,
+        };
+        seconds.clamp(0, i64::from(u32::MAX)) as u32
+    }
 }
 
 /// Timing information for the current day.

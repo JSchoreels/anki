@@ -1,4 +1,4 @@
-// Copyright: Ankitects Pty Ltd and contributors
+// Copyright: Anki Software, LLC and contributors
 // License: GNU AGPL, version 3 or later; http://www.gnu.org/licenses/agpl.html
 
 pub(crate) mod data;
@@ -105,6 +105,8 @@ fn row_to_card_entry(row: &Row) -> Result<CardEntry> {
         id: row.get(0)?,
         note_id: row.get(1)?,
         deck_id: row.get(2)?,
+        template_idx: row.get(3)?,
+        notetype_id: row.get(4)?,
     })
 }
 
@@ -832,17 +834,30 @@ impl super::SqliteStorage {
             .get(0)?)
     }
 
-    pub(crate) fn all_cards_for_fsrs_metrics(&self) -> Result<Vec<Card>> {
+    /// Cards with a memory state among the ids that `card_ids_sql` selects.
+    pub(crate) fn cards_with_memory_state_in(
+        &self,
+        card_ids_sql: &str,
+        args: &[String],
+    ) -> Result<Vec<Card>> {
         Ok(self
             .db
-            .prepare("select * from cards")?
-            .query_and_then([], row_to_card)?
+            .prepare(&format!(
+                "select * from cards where data like '%\"s\"%' and id in ({card_ids_sql})"
+            ))?
+            .query_and_then(rusqlite::params_from_iter(args), row_to_card)?
             .collect::<rusqlite::Result<_>>()?)
     }
 
     #[cfg(test)]
     pub(crate) fn get_all_cards(&self) -> Vec<Card> {
-        self.all_cards_for_fsrs_metrics().unwrap()
+        self.db
+            .prepare("SELECT * FROM cards")
+            .unwrap()
+            .query_and_then([], row_to_card)
+            .unwrap()
+            .collect::<rusqlite::Result<_>>()
+            .unwrap()
     }
 }
 
@@ -998,6 +1013,7 @@ mod test {
     use crate::card::CardQueue;
     use crate::card::CardType;
     use crate::collection::Collection;
+    use crate::notes::NoteId;
     use crate::revlog::RevlogEntry;
     use crate::revlog::RevlogId;
     use crate::revlog::RevlogReviewKind;
@@ -1008,6 +1024,28 @@ mod test {
     fn create_test_storage() -> SqliteStorage {
         let tr: I18n = I18n::template_only();
         SqliteStorage::open_or_create(Path::new(":memory:"), &tr, false, false).unwrap()
+    }
+
+    #[test]
+    fn card_entries_include_template_and_notetype_ids() {
+        let storage = create_test_storage();
+        storage
+            .db
+            .execute(
+                "INSERT INTO notes (id, guid, mid, mod, usn, tags, flds, sfld, csum, flags, data) VALUES (100, '', 42, 0, 0, '', '', '', 0, 0, '')",
+                [],
+            )
+            .unwrap();
+        let mut card = Card {
+            note_id: NoteId(100),
+            template_idx: 3,
+            ..Default::default()
+        };
+        storage.add_card(&mut card).unwrap();
+        let entries = storage.get_all_card_entries().unwrap();
+        assert_eq!(entries.len(), 1);
+        assert_eq!(entries[0].template_idx, 3);
+        assert_eq!(entries[0].notetype_id, 42);
     }
 
     #[test]

@@ -1,4 +1,4 @@
-// Copyright: Ankitects Pty Ltd and contributors
+// Copyright: Anki Software, LLC and contributors
 // License: GNU AGPL, version 3 or later; http://www.gnu.org/licenses/agpl.html
 use std::collections::HashMap;
 use std::sync::Arc;
@@ -14,7 +14,7 @@ use fsrs::ReviewPriorityFn;
 use fsrs::SimulatorConfig;
 use fsrs::FSRS;
 use itertools::Itertools;
-use rand::Rng;
+use rand::random_range;
 use rayon::iter::IntoParallelIterator;
 use rayon::iter::ParallelIterator;
 
@@ -110,7 +110,7 @@ fn create_review_priority_fn(
 
         // Random ordering
         Random => {
-            wrap!(move |_c: &fsrs::Card| rand::rng().random_range(0..deck_size) as i32)
+            wrap!(move |_c: &fsrs::Card| random_range(0..deck_size) as i32)
         }
 
         // Not implemented yet
@@ -129,6 +129,14 @@ impl Collection {
         &mut self,
         req: &SimulateFsrsReviewRequest,
     ) -> Result<(SimulatorConfig, Vec<fsrs::Card>)> {
+        self.simulation_cards(req, |_, _, _| {})
+    }
+
+    fn simulation_cards(
+        &mut self,
+        req: &SimulateFsrsReviewRequest,
+        mut observe_state: impl FnMut(&FSRS, fsrs::MemoryState, f32),
+    ) -> Result<(SimulatorConfig, Vec<fsrs::Card>)> {
         let guard = self.search_cards_into_table(&req.search, SortMode::NoOrder)?;
         let revlogs = guard
             .col
@@ -142,7 +150,8 @@ impl Collection {
                 self.compute_and_update_memory_state(c)?;
             }
         }
-        let days_elapsed = self.timing_today().unwrap().days_elapsed as i32;
+        let timing = self.timing_today()?;
+        let days_elapsed = timing.days_elapsed as i32;
         let new_cards = cards
             .iter()
             .filter(|c| c.ctype == CardType::New && c.queue != CardQueue::Suspended)
@@ -168,13 +177,16 @@ impl Collection {
                         .ok()?
                         .into(),
                 };
-                Card::convert(
+                let elapsed = c.days_since_last_review(&timing);
+                let card = Card::convert(
                     c,
                     days_elapsed,
                     memory_state,
                     desired_retention,
                     fsrs_card_params.clone(),
-                )
+                )?;
+                observe_state(&fsrs, memory_state.into(), elapsed);
+                Some(card)
             })
             .collect_vec();
         let introduced_today_count = self
@@ -283,7 +295,11 @@ impl Collection {
         &mut self,
         req: SimulateFsrsReviewRequest,
     ) -> Result<SimulateFsrsWorkloadResponse> {
-        let (config, cards) = self.simulate_request_to_config(&req)?;
+        let mut reviewless_end_memorized = 0.0;
+        let (config, cards) = self.simulation_cards(&req, |model, state, elapsed| {
+            reviewless_end_memorized +=
+                model.current_retrievability(state, elapsed + req.days_to_simulate as f32);
+        })?;
         let dr_workload = (70u32..=99u32)
             .into_par_iter()
             .map(|dr| {
@@ -307,9 +323,6 @@ impl Collection {
                 ))
             })
             .collect::<Result<HashMap<_, _>>>()?;
-        let reviewless_end_memorized = cards
-            .iter()
-            .fold(0., |p, c| p + c.retention_on(req.days_to_simulate as f32));
         Ok(SimulateFsrsWorkloadResponse {
             reviewless_end_memorized,
             memorized: dr_workload.iter().map(|(k, v)| (*k, v.0)).collect(),
@@ -389,6 +402,31 @@ mod test {
             learning_step_count: 3u32,
             relearning_step_count: 2u32,
         }
+    }
+
+    #[test]
+    fn reviewless_forecast_uses_both_traces_and_the_last_review_time() -> Result<()> {
+        let mut col = Collection::new();
+        col.set_config_bool(BoolKey::Fsrs, true, false)?;
+        crate::tests::NoteAdder::basic(&mut col).add(&mut col);
+        let id = col.answer_easy().card_id;
+        let mut card = col.storage.get_card(id)?.unwrap();
+        card.last_review_time = Some(col.timing_today()?.now.adding_secs(-2 * 86_400));
+        col.storage.update_card(&card)?;
+        let req = SimulateFsrsReviewRequest {
+            days_to_simulate: 10,
+            deck_size: 0,
+            new_limit: 0,
+            ..base_request()
+        };
+        let expected =
+            FSRS::new(&[])?.current_retrievability(card.memory_state.unwrap().into(), 12.0);
+        let forecast = col.simulate_workload(req)?.reviewless_end_memorized;
+        assert!(
+            (forecast - expected).abs() < 1e-5,
+            "{forecast} != {expected}"
+        );
+        Ok(())
     }
 
     #[test]
@@ -487,5 +525,390 @@ mod test {
         let (_, cards) = col.simulate_request_to_config(&req).unwrap();
         assert_eq!(cards.len(), 1);
         assert_eq!(cards[0].desired_retention, 0.85f32)
+    }
+
+    #[test]
+    fn simulator_does_not_crash_with_review_priority_functions() {
+        let mut col = Collection::new();
+        let review_orders = [
+            ReviewCardOrder::Day,
+            ReviewCardOrder::DayThenDeck,
+            ReviewCardOrder::DeckThenDay,
+            ReviewCardOrder::IntervalsAscending,
+            ReviewCardOrder::IntervalsDescending,
+            ReviewCardOrder::EaseAscending,
+            ReviewCardOrder::EaseDescending,
+            ReviewCardOrder::RetrievabilityAscending,
+            ReviewCardOrder::RetrievabilityDescending,
+            ReviewCardOrder::RelativeOverdueness,
+            ReviewCardOrder::Random,
+            ReviewCardOrder::Added,
+            ReviewCardOrder::ReverseAdded,
+        ];
+
+        let parameters = [
+            &fsrs::DEFAULT_PARAMETERS[..21], /* FSRS-6 (Sliced due to the potential of more
+                                              * parameters in the future) */
+            &fsrs::DEFAULT_PARAMETERS[..19], // FSRS-5
+            &fsrs::DEFAULT_PARAMETERS[..17], // FSRS-4
+        ];
+
+        for params in parameters {
+            for review_order in review_orders {
+                let req = SimulateFsrsReviewRequest {
+                    params: params.to_vec(),
+                    review_order: review_order as i32,
+                    ..base_request()
+                };
+                let _ = col.simulate_review(req).unwrap();
+            }
+        }
+    }
+
+    fn infer_ctype_from_queue(queue: CardQueue) -> CardType {
+        // None of the code in this file references the card type but
+        // this is included to match up with actual functionality in case it ever does.
+        match queue {
+            CardQueue::Learn | CardQueue::PreviewRepeat => CardType::Learn,
+            CardQueue::DayLearn | CardQueue::Review => CardType::Review,
+            CardQueue::New => CardType::New,
+            CardQueue::Suspended | CardQueue::SchedBuried | CardQueue::UserBuried => {
+                CardType::Review
+            }
+        }
+    }
+
+    fn card_from_queue(queue: CardQueue) -> Card {
+        Card {
+            queue,
+            ctype: infer_ctype_from_queue(queue),
+            ..Default::default()
+        }
+    }
+
+    fn convert(card: Card) -> Option<fsrs::Card> {
+        let params = Arc::new(fsrs::check_and_fill_parameters(&[]).unwrap());
+        let memory_state = FsrsMemoryState {
+            stability: 10.0,
+            stability_internal: 10.0,
+            stability_fast: None,
+            difficulty: 3.0,
+        };
+        Card::convert(card, 10, memory_state, 0.85, params.clone())
+    }
+
+    #[test]
+    fn card_convert_clamps_last_date() {
+        let future = convert(Card {
+            queue: CardQueue::Review,
+            ctype: CardType::Review,
+            due: 20,
+            original_due: 20,
+            interval: 5,
+            ..Default::default()
+        })
+        .unwrap();
+        assert_eq!(future.last_date, 0.0);
+        assert_eq!(future.due, 10.0);
+
+        let past = convert(Card {
+            queue: CardQueue::Review,
+            ctype: CardType::Review,
+            due: 20,
+            original_due: 20,
+            interval: 30,
+            ..Default::default()
+        })
+        .unwrap();
+        assert_eq!(past.last_date, -20.0);
+
+        let filtered = convert(Card {
+            queue: CardQueue::Review,
+            ctype: CardType::Review,
+            due: 7,
+            original_due: 42,
+            original_deck_id: DeckId(1),
+            interval: 15,
+            ..Default::default()
+        })
+        .unwrap();
+        assert_eq!(filtered.due, 32.0);
+    }
+
+    #[test]
+    fn card_convert_handles_learning_cards() {
+        let learn = convert(Card {
+            queue: CardQueue::Learn,
+            ctype: CardType::Learn,
+            interval: 10,
+            ..Default::default()
+        })
+        .unwrap();
+        assert_eq!(learn.last_date, 0.0);
+        assert_eq!(learn.due, 0.0);
+    }
+
+    #[test]
+    fn card_convert_resets_due_and_last_date_for_learn_and_buried_cards() {
+        // Non-trivial due and interval, so that treating these queues like review
+        // cards (due = 10, last_date = -5 here) would fail the assertions.
+        for queue in [
+            CardQueue::Learn,
+            CardQueue::SchedBuried,
+            CardQueue::UserBuried,
+        ] {
+            let converted = convert(Card {
+                due: 20,
+                original_due: 20,
+                interval: 15,
+                lapses: 2,
+                ..card_from_queue(queue)
+            })
+            .unwrap();
+            assert_eq!(converted.due, 0.0, "due for {queue:?}");
+            assert_eq!(converted.last_date, 0.0, "last_date for {queue:?}");
+            assert_eq!(converted.interval, 15.0, "interval for {queue:?}");
+            assert_eq!(converted.lapses, 2, "lapses for {queue:?}");
+        }
+    }
+
+    #[test]
+    fn card_convert_handles_day_learn_cards() {
+        // Cards in the day learning queue are converted like review cards: relative
+        // due and interval are kept, unlike intraday learning cards.
+        let day_learn = convert(Card {
+            queue: CardQueue::DayLearn,
+            ctype: CardType::Relearn,
+            due: 20,
+            original_due: 20,
+            interval: 15,
+            lapses: 2,
+            ..Default::default()
+        })
+        .unwrap();
+        assert_eq!(day_learn.due, 10.0);
+        assert_eq!(day_learn.last_date, -5.0);
+        assert_eq!(day_learn.interval, 15.0);
+        assert_eq!(day_learn.lapses, 2);
+    }
+
+    #[test]
+    fn card_convert_handles_queues() {
+        for queue in [
+            CardQueue::Review,
+            CardQueue::DayLearn,
+            CardQueue::Learn,
+            CardQueue::SchedBuried,
+            CardQueue::UserBuried,
+        ] {
+            assert!(convert(card_from_queue(queue)).is_some());
+        }
+
+        for queue in [
+            CardQueue::New,
+            CardQueue::PreviewRepeat,
+            CardQueue::Suspended,
+        ] {
+            assert!(convert(card_from_queue(queue)).is_none());
+        }
+    }
+
+    /// Adds a review card that has no memory state, as happens when its revlog
+    /// is truncated or ignored, so the simulator has to fall back to SM-2.
+    fn col_with_review_card_without_memory_state() -> Result<(Collection, Card)> {
+        let mut col = Collection::new();
+        let nt = col.get_notetype_by_name("Basic")?.unwrap();
+        let mut note = nt.new_note();
+        col.add_note(&mut note, DeckId(1))?;
+
+        let mut card = col
+            .storage
+            .all_cards_of_note(note.id)?
+            .into_iter()
+            .next()
+            .unwrap();
+        card.ctype = CardType::Review;
+        card.queue = CardQueue::Review;
+        card.due = 25;
+        card.original_due = 25;
+        card.interval = 20;
+        card.ease_factor = 2500;
+        card.memory_state = None;
+        card.desired_retention = None;
+        card.decay = None;
+        col.storage.update_card(&card)?;
+        Ok((col, card))
+    }
+
+    #[test]
+    fn request_config_uses_sm2_fallback_and_fills_fsrs_values() -> Result<()> {
+        let (mut col, card) = col_with_review_card_without_memory_state()?;
+
+        // Use a decay that differs from the default so we can tell that it comes from
+        // the request's params and not from a fallback.
+        let mut params = fsrs::DEFAULT_PARAMETERS.to_vec();
+        params[20] = 0.3;
+
+        let req = SimulateFsrsReviewRequest {
+            params: params.clone(),
+            desired_retention: 0.91,
+            deck_size: 1,
+            new_limit: 0,
+            ..base_request()
+        };
+
+        let (_, cards) = col.simulate_request_to_config(&req)?;
+
+        assert_eq!(cards.len(), 1);
+        // Make sure that the cards desired rentetion is filled in automatically
+        assert!(
+            (cards[0].desired_retention - 0.91).abs() < 1e-6,
+            "expected desired retention to be 0.91, got {}",
+            cards[0].desired_retention
+        );
+        // Parameter 20 controls decay, so this also checks that the decay comes from
+        // the request.
+        assert_eq!(
+            *cards[0].parameters, params,
+            "expected the converted card to carry the requested params"
+        );
+        // The memory state must be the one derived from the card's ease and interval
+        let expected = FSRS::new(&req.params)?.memory_state_from_sm2(
+            card.ease_factor(),
+            card.interval as f32,
+            req.historical_retention,
+        )?;
+        assert_eq!(cards[0].stability, expected.stability);
+        assert_eq!(cards[0].difficulty, expected.difficulty);
+        assert!(
+            cards[0].stability > 0.0,
+            "expected stability to be positive, got {}",
+            cards[0].stability
+        );
+        assert!(
+            cards[0].difficulty.is_finite(),
+            "expected difficulty to be finite, got {}",
+            cards[0].difficulty
+        );
+        assert!(
+            cards[0].last_date <= 0.0,
+            "expected last_date to be <= 0, got {}",
+            cards[0].last_date
+        );
+
+        let card_1 = cards[0].clone();
+
+        // Reset the card
+        col.storage.update_card(&card)?;
+
+        let req = SimulateFsrsReviewRequest {
+            historical_retention: 0.80,
+            ..req
+        };
+
+        let (_, cards) = col.simulate_request_to_config(&req)?;
+
+        // If this errors then sm2 was not used as a fallback as it is the only part to
+        // use historical_retention
+        assert_ne!(
+            card_1.stability, cards[0].stability,
+            "expected stability to change with historical retention"
+        );
+
+        Ok(())
+    }
+
+    #[test]
+    fn request_config_drops_cards_when_sm2_fallback_fails() -> Result<()> {
+        let (mut col, _) = col_with_review_card_without_memory_state()?;
+
+        let req = SimulateFsrsReviewRequest {
+            deck_size: 1,
+            new_limit: 0,
+            ..base_request()
+        };
+        let (_, cards) = col.simulate_request_to_config(&req)?;
+        assert_eq!(cards.len(), 1, "the card converts with a valid retention");
+
+        // A historical retention of 1.0 makes the SM-2 conversion return an error
+        // (infinite stability), so the card must be skipped instead of failing the
+        // whole simulation.
+        let req = SimulateFsrsReviewRequest {
+            historical_retention: 1.0,
+            ..req
+        };
+        let (config, cards) = col.simulate_request_to_config(&req)?;
+        assert!(cards.is_empty(), "expected the card to be dropped");
+        assert_eq!(config.deck_size, 0);
+
+        Ok(())
+    }
+
+    #[test]
+    fn request_config_keeps_requested_step_counts() -> Result<()> {
+        let mut col = Collection::new();
+
+        // Different from each other and from the base request (3 and 2), so that
+        // swapping them or falling back to a default would be noticed.
+        let req = SimulateFsrsReviewRequest {
+            learning_step_count: 4,
+            relearning_step_count: 5,
+            ..base_request()
+        };
+        let (config, _) = col.simulate_request_to_config(&req)?;
+        assert_eq!(config.learning_step_count, 4);
+        assert_eq!(config.relearning_step_count, 5);
+
+        // No steps at all must be preserved too, not replaced by a default.
+        let req = SimulateFsrsReviewRequest {
+            learning_step_count: 0,
+            relearning_step_count: 0,
+            ..base_request()
+        };
+        let (config, _) = col.simulate_request_to_config(&req)?;
+        assert_eq!(config.learning_step_count, 0);
+        assert_eq!(config.relearning_step_count, 0);
+
+        Ok(())
+    }
+
+    #[test]
+    fn simulate_request_to_config_counts_already_introduced_cards() -> Result<()> {
+        let mut col = Collection::new();
+        let nt = col.get_notetype_by_name("Basic")?.unwrap();
+        col.set_config_bool(BoolKey::Fsrs, true, false).unwrap();
+
+        // Answer one card so one card is introduced today, and then simulate with
+        // three new cards to be introduced
+        let mut note = nt.new_note();
+        col.add_note(&mut note, DeckId(1))?;
+        col.answer_easy();
+
+        let req = SimulateFsrsReviewRequest {
+            desired_retention: 0.9,
+            deck_size: 3, // 3 additional new cards to be introduced
+            new_limit: 3,
+            days_to_simulate: 1,
+            search: "*".to_string(),
+            ..base_request()
+        };
+
+        let (_, cards) = col.simulate_request_to_config(&req)?;
+
+        // New cards are the only ones without a previous review.
+        let new_card_dues = cards
+            .iter()
+            .filter(|c| c.last_date == f32::NEG_INFINITY)
+            .map(|c| c.due)
+            .collect_vec();
+
+        // With a limit of 3 per day and 1 card already introduced today, only 2 of the
+        // new cards fit in the first day. Ignoring the already introduced card would
+        // give [0.0, 0.0, 0.0] instead.
+        assert_eq!(new_card_dues, vec![0.0, 0.0, 1.0]);
+        // The already introduced card is also part of the simulation.
+        assert_eq!(cards.len(), 4);
+
+        Ok(())
     }
 }
