@@ -128,8 +128,9 @@ fn build_generated_sources(build: &mut Build) -> Result<()> {
     }
     // The optional answer-time head is read from the folder of the weights
     // (the time heads for the family (SM117): every two-head model and the
-    // show-time instant-only big model (SM99)).
-    for model in ["sm72e25", "sm92", "sm106", "sm99"] {
+    // show-time instant-only big model (SM99), and the heads of the longer
+    // Small and Tiny Instant-Only models (SM113, SM115) from the SM119 run).
+    for model in ["sm72e25", "sm92", "sm106", "sm99", "sm113", "sm115"] {
         for name in ["time_head.f32.bin", "time_head.json"] {
             let output = format!("qt/_aqt/rwkv_inference/{model}/{name}");
             build.add_action(

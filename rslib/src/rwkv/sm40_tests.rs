@@ -637,6 +637,26 @@ fn sm106_answer_time_vectors() -> Vec<AnswerTimeUser> {
     )
 }
 
+/// The answer-time head of the longer Small Instant-Only model (SM113)
+/// (SM119): the small layout, format 2.
+fn sm113_answer_time_vectors() -> Vec<AnswerTimeUser> {
+    answer_time_vectors(
+        "ANKI_RWKV_SM113_TIME_VECTORS",
+        include_bytes!("testdata/sm113-time-vectors.json.gz"),
+        &sm113_vectors(),
+    )
+}
+
+/// The answer-time head of the longer cool-down for Tiny (SM115) (SM119): the
+/// small layout (the tiny plan keeps 4 layer rounds), format 2.
+fn sm115_answer_time_vectors() -> Vec<AnswerTimeUser> {
+    answer_time_vectors(
+        "ANKI_RWKV_SM115_TIME_VECTORS",
+        include_bytes!("testdata/sm115-time-vectors.json.gz"),
+        &sm115_vectors(),
+    )
+}
+
 fn answer_time_vectors(variable: &str, fixture: &[u8], vectors: &[u8]) -> Vec<AnswerTimeUser> {
     let data = if let Ok(path) = std::env::var(variable) {
         fs::read(path).unwrap()
@@ -702,6 +722,16 @@ fn rwkv_sm106_answer_time_history_matches_published_features() {
     check_answer_time_history("sm106", sm106_answer_time_vectors());
 }
 
+#[test]
+fn rwkv_sm113_answer_time_history_matches_published_features() {
+    check_answer_time_history("sm113", sm113_answer_time_vectors());
+}
+
+#[test]
+fn rwkv_sm115_answer_time_history_matches_published_features() {
+    check_answer_time_history("sm115", sm115_answer_time_vectors());
+}
+
 fn check_answer_time_history(package: &str, users: Vec<AnswerTimeUser>) {
     let mut maximum = 0.0_f32;
     for user in users {
@@ -751,6 +781,16 @@ fn rwkv_sm92_answer_time_head_matches_published_vectors() {
 #[test]
 fn rwkv_sm106_answer_time_head_matches_published_vectors() {
     check_answer_time_head("sm106", sm106_answer_time_vectors());
+}
+
+#[test]
+fn rwkv_sm113_answer_time_head_matches_published_vectors() {
+    check_answer_time_head("sm113", sm113_answer_time_vectors());
+}
+
+#[test]
+fn rwkv_sm115_answer_time_head_matches_published_vectors() {
+    check_answer_time_head("sm115", sm115_answer_time_vectors());
 }
 
 fn check_answer_time_head(package: &str, users: Vec<AnswerTimeUser>) {

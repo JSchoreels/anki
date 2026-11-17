@@ -1301,9 +1301,13 @@ mod tests {
         }
         // Instant-only models with a head of their own (SM99) answer alone;
         // the older ones (SM57, SM98, SM101) have none (small instant-only
-        // models load only with the small-model feature).
+        // models load only with the small-model feature). The longer Small
+        // and Tiny Instant-Only models (SM113, SM115) have one (SM119).
         assert!(load(ModelKind::Sm99, StatePrecision::F32).has_answer_time_head());
         if super::super::SMALL_MODEL {
+            for model in [ModelKind::Sm113, ModelKind::Sm115] {
+                assert!(load(model, StatePrecision::F32).has_answer_time_head());
+            }
             for model in [ModelKind::Sm57, ModelKind::Sm98, ModelKind::Sm101] {
                 assert!(!load(model, StatePrecision::F32).has_answer_time_head());
             }
@@ -1786,7 +1790,7 @@ mod tests {
     /// model, the curve, intervals and S90 from the two-head model, bit for
     /// bit, at every state precision. The answer time comes from the
     /// Instant-Only model's head when it has one, else from the two-head
-    /// model's (SM113 and SM115 have none yet).
+    /// model's (SM113 and SM115 have one since SM119; SM98 and SM101 do not).
     #[test]
     fn rwkv_family_pairs_match_each_model_alone() {
         if !super::super::SMALL_MODEL {
@@ -1847,6 +1851,12 @@ mod tests {
                 // Both two-head models have a head (SM117).
                 assert!(pair().has_answer_time_head(), "{label}");
                 assert!(alone.has_answer_time_head(), "{label}");
+                // The longer Instant-Only models carry their own head (SM119).
+                assert_eq!(
+                    pair().answer_time_from_instant_model(),
+                    matches!(instant.0, ModelKind::Sm113 | ModelKind::Sm115),
+                    "{label}"
+                );
                 if precision == StatePrecision::Int4CardsInt8Notes {
                     let mut engine = pair();
                     let answers = crate::rwkv::precision_tests::reviews(14);

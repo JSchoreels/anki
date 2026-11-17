@@ -456,8 +456,8 @@ family wiring above reads:
 | Size | Two-head model | Instant-Only model |
 | --- | --- | --- |
 | Big (`legacy`) | the show-time big model (SM91s2), with an answer-time head (`RWKV_trained_on_5000_10000.time_head.f32.bin`) | the show-time instant-only big model (SM99), with an answer-time head |
-| Small (`sm72e25`) | the show-time retrain (SM92), with an answer-time head (from the time heads for the family (SM117), replacing the earlier one) | the longer Small Instant-Only model (SM113) (`sm113`), head pending (the time heads for the new candidates (SM119)) |
-| Tiny (`tiny`) | the Tiny two-head model (SM106), with an answer-time head | the longer cool-down for Tiny (SM115) (`sm115`, one card layer), head pending (the time heads for the new candidates (SM119)) |
+| Small (`sm72e25`) | the show-time retrain (SM92), with an answer-time head (from the time heads for the family (SM117), replacing the earlier one) | the longer Small Instant-Only model (SM113) (`sm113`), with its own answer-time head (the time heads for the new candidates (SM119)) |
+| Tiny (`tiny`) | the Tiny two-head model (SM106), with an answer-time head | the longer cool-down for Tiny (SM115) (`sm115`, one card layer), with its own answer-time head (the time heads for the new candidates (SM119)) |
 
 The heads are those of the time heads for the family (SM117): trained alone on each
 frozen model, on show-time inputs with same-day reviews included (head format 2:

@@ -1160,6 +1160,8 @@ def test_rsbridge_rwkv_answer_time_head_is_optional() -> None:
     for filename, model in (
         ("sm92/weights.f32.bin", "sm92"),
         ("sm106/weights.f32.bin", "sm106"),
+        ("sm113/weights.f32.bin", "sm113"),
+        ("sm115/weights.f32.bin", "sm115"),
         ("RWKV_trained_on_5000_10000.bin", "legacy"),
         ("sm99/weights.f32.bin", "sm99"),
     ):
@@ -1280,8 +1282,8 @@ def test_rsbridge_rwkv_family_pair_serves_instant_and_two_head_keeps_curve(
     # model (SM106) with the longer cool-down for Tiny (SM115) (until
     # 2026-11-16: SM98 and SM101). Instant recall and buttons come from the
     # Instant-Only model, the curve recall, intervals and S90 from the
-    # two-head model. These Instant-Only models have no answer-time head
-    # yet, so the answer time comes from the two-head model's head.
+    # two-head model. The longer Instant-Only models (SM113, SM115) have
+    # their own answer-time head (SM119), the older ones (SM98, SM101) not.
     root = Path(__file__).resolve().parents[2]
     rsbridge = _import_rsbridge(root)
 
@@ -1295,7 +1297,7 @@ def test_rsbridge_rwkv_family_pair_serves_instant_and_two_head_keeps_curve(
     paired = load(f"{two_head}+{instant_model}", f"{two_head}/weights.f32.bin")
     assert paired.is_paired() and not alone.is_paired() and not instant.is_paired()
     assert paired.has_answer_time_head() and alone.has_answer_time_head()
-    assert not instant.has_answer_time_head()
+    assert instant.has_answer_time_head() == (instant_model in ("sm113", "sm115"))
 
     def args(review: dict[str, int], is_query: bool) -> tuple[object, ...]:
         return (
