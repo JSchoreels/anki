@@ -8,12 +8,13 @@ mod sqlwriter;
 pub(crate) mod writer;
 
 use std::borrow::Cow;
-use std::cmp::Ordering;
+use std::collections::HashMap;
 use std::time::Instant;
 
 pub use builder::JoinSearches;
 pub use builder::Negated;
 pub use builder::SearchBuilder;
+use fsrs::FSRS;
 pub use parser::parse as parse_search;
 pub use parser::FieldSearchMode;
 pub use parser::Node;
@@ -32,7 +33,7 @@ use crate::browser_table::Column;
 use crate::card::Card;
 use crate::card::CardType;
 use crate::prelude::*;
-use crate::scheduler::fsrs::memory_state::fsrs_current_retrievability_for_state;
+use crate::scheduler::fsrs::legacy_fsrs_params;
 use crate::scheduler::rwkv::rwkv_review_candidate_metadata;
 use crate::scheduler::rwkv::rwkv_review_score_eligibility;
 use crate::scheduler::rwkv::RwkvReviewScoreEligibility;
@@ -53,12 +54,6 @@ pub enum SortMode {
 
 const EXACT_RETRIEVABILITY_TABLE: &str = "search_exact_retrievability";
 pub(super) const RWKV_DUE_TABLE: &str = "search_rwkv_due";
-
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
-enum ExactFsrsSortMetric {
-    Retrievability,
-    StabilityS90,
-}
 
 pub trait AsReturnItemType {
     fn as_return_item_type() -> ReturnItemType;
@@ -191,18 +186,20 @@ impl Drop for NoteTableGuard<'_> {
 impl Collection {
     fn with_search_auxiliary_tables<R>(
         &mut self,
-        exact_retrievability: bool,
+        metric_candidates: Option<&Node>,
         rwkv_due: bool,
         stats_search: Option<&str>,
-        exact_metric_card_ids: Option<Vec<CardId>>,
         op: impl FnOnce(&mut Self) -> Result<R>,
     ) -> Result<R> {
-        if exact_retrievability {
-            self.setup_exact_retrievability_table(stats_search, exact_metric_card_ids)?;
+        if let Some(node) = metric_candidates {
+            if let Err(err) = self.setup_exact_retrievability_table(stats_search, node) {
+                let _ = self.clear_exact_retrievability_table();
+                return Err(err);
+            }
         }
         if rwkv_due {
             if let Err(err) = self.setup_rwkv_due_table(stats_search) {
-                if exact_retrievability {
+                if metric_candidates.is_some() {
                     let _ = self.clear_exact_retrievability_table();
                 }
                 return Err(err);
@@ -211,7 +208,9 @@ impl Collection {
 
         let result = op(self);
         let rwkv_due_cleanup = rwkv_due.then(|| self.clear_rwkv_due_table());
-        let exact_cleanup = exact_retrievability.then(|| self.clear_exact_retrievability_table());
+        let exact_cleanup = metric_candidates
+            .is_some()
+            .then(|| self.clear_exact_retrievability_table());
         match result {
             Err(err) => Err(err),
             Ok(value) => {
@@ -229,7 +228,7 @@ impl Collection {
     fn setup_exact_retrievability_table(
         &mut self,
         stats_search: Option<&str>,
-        card_ids: Option<Vec<CardId>>,
+        candidates: &Node,
     ) -> Result<()> {
         let start = Instant::now();
         self.storage.db.execute_batch(&format!(
@@ -237,15 +236,11 @@ impl Collection {
              create temporary table {EXACT_RETRIEVABILITY_TABLE}(\
                 cid integer primary key, fsrs_r real, rwkv_r real, rwkv_curve_r real, s90 real)"
         ))?;
-        let ids_start = Instant::now();
-        let ids: Vec<CardId> = if let Some(card_ids) = card_ids {
-            card_ids
-        } else {
-            let mut stmt = self.storage.db.prepare("select id from cards")?;
-            let rows = stmt.query_map([], |row| row.get(0).map(CardId))?;
-            rows.collect::<std::result::Result<_, _>>()?
-        };
-        let ids_elapsed_ms = ids_start.elapsed().as_secs_f64() * 1000.0;
+        let load_start = Instant::now();
+        let (sql, args) = SqlWriter::new(self, ReturnItemType::Cards)
+            .build_query(&metric_candidates(candidates, false), RequiredTable::Cards)?;
+        let cards = self.storage.cards_in_query(&sql, &args)?;
+        let load_elapsed_ms = load_start.elapsed().as_secs_f64() * 1000.0;
         let timing = self.timing_today()?;
         let rwkv_stats_scores =
             self.rwkv_stats_graph_scores_for_search(timing.days_elapsed, stats_search);
@@ -278,20 +273,15 @@ impl Collection {
             .as_ref()
             .map(|scores| scores.len())
             .unwrap_or(0);
-        let load_start = Instant::now();
-        let mut cards = Vec::with_capacity(ids.len());
-        for card_id in ids {
-            if let Some(card) = self.storage.get_card(card_id)? {
-                cards.push(card);
-            }
-        }
-        let load_elapsed_ms = load_start.elapsed().as_secs_f64() * 1000.0;
         let card_count = cards.len();
         let preset_start = Instant::now();
         let presets_by_card = self.fsrs_presets_for_cards(&cards)?;
         let preset_elapsed_ms = preset_start.elapsed().as_secs_f64() * 1000.0;
         let metric_start = Instant::now();
-        let mut rows_to_insert = Vec::new();
+        let mut models = HashMap::new();
+        let mut insert = self.storage.db.prepare_cached(&format!(
+            "insert into {EXACT_RETRIEVABILITY_TABLE} values (?, ?, ?, ?, ?)"
+        ))?;
         let mut rwkv_rows = 0;
         let mut rwkv_curve_rows = 0;
         for card in cards {
@@ -305,44 +295,38 @@ impl Collection {
             let preset = presets_by_card
                 .get(&card.id)
                 .or_invalid("missing FSRS preset for card")?;
-            if let Some((fsrs_r, s90)) =
-                self.exact_fsrs_metrics_for_card_with_params(&card, timing, &preset.params)?
-            {
-                if rwkv_r.is_some() {
-                    rwkv_rows += 1;
-                }
-                if rwkv_curve_r.is_some() {
-                    rwkv_curve_rows += 1;
-                }
-                rows_to_insert.push((card.id.0, Some(fsrs_r), rwkv_r, rwkv_curve_r, Some(s90)));
-            } else if rwkv_r.is_some() || rwkv_curve_r.is_some() {
+            let metrics = if let Some(state) = card.memory_state {
+                let model = match models.entry(&preset.id) {
+                    std::collections::hash_map::Entry::Occupied(entry) => entry.into_mut(),
+                    std::collections::hash_map::Entry::Vacant(entry) => {
+                        entry.insert(FSRS::new(legacy_fsrs_params(&preset.params))?)
+                    }
+                };
+                let r = model
+                    .current_retrievability(state.into(), card.days_since_last_review(&timing));
+                require!(r.is_finite(), "invalid FSRS parameter values");
+                Some((r, state.stability))
+            } else {
+                None
+            };
+            if metrics.is_some() || rwkv_r.is_some() || rwkv_curve_r.is_some() {
                 rwkv_rows += usize::from(rwkv_r.is_some());
                 rwkv_curve_rows += usize::from(rwkv_curve_r.is_some());
-                rows_to_insert.push((card.id.0, None, rwkv_r, rwkv_curve_r, None));
+                let (r, s90) = metrics.unzip();
+                insert.execute(rusqlite::params![card.id, r, rwkv_r, rwkv_curve_r, s90])?;
             }
-        }
-        let metric_elapsed_ms = metric_start.elapsed().as_secs_f64() * 1000.0;
-        let insert_start = Instant::now();
-        let mut insert = self.storage.db.prepare_cached(&format!(
-            "insert into {EXACT_RETRIEVABILITY_TABLE}(cid, fsrs_r, rwkv_r, rwkv_curve_r, s90) \
-             values (?, ?, ?, ?, ?)"
-        ))?;
-        for (cid, fsrs_r, rwkv_r, rwkv_curve_r, s90) in rows_to_insert {
-            insert.execute(rusqlite::params![cid, fsrs_r, rwkv_r, rwkv_curve_r, s90])?;
         }
         tracing::debug!(
             cards = card_count,
-            ids_elapsed_ms,
             load_elapsed_ms,
             preset_elapsed_ms,
-            metric_elapsed_ms,
+            metric_elapsed_ms = metric_start.elapsed().as_secs_f64() * 1000.0,
             rwkv_stats_scores = rwkv_stats_scores_count,
             rwkv_card_info_scores = rwkv_card_info_scores_count,
             rwkv_review_queue_scores = rwkv_review_queue_scores_count,
             rwkv_rows,
             rwkv_curve_scores = rwkv_curve_scores_count,
             rwkv_curve_rows,
-            insert_elapsed_ms = insert_start.elapsed().as_secs_f64() * 1000.0,
             elapsed_ms = start.elapsed().as_secs_f64() * 1000.0,
             "built exact retrievability search table"
         );
@@ -435,12 +419,6 @@ impl Collection {
     where
         N: TryIntoSearch,
     {
-        if let Some((metric, reverse)) = exact_fsrs_sort_mode(ReturnItemType::Cards, &mode) {
-            let top_node = search.try_into_search()?;
-            let mut ids = self.search_card_ids_for_node(&top_node, mode.required_table(), None)?;
-            self.sort_card_ids_by_exact_fsrs_metric(&mut ids, metric, reverse)?;
-            return Ok(ids);
-        }
         self.search(search, mode)
     }
 
@@ -460,135 +438,6 @@ impl Collection {
 }
 
 impl Collection {
-    fn search_card_ids_for_node(
-        &mut self,
-        top_node: &Node,
-        required_table: RequiredTable,
-        stats_search: Option<&str>,
-    ) -> Result<Vec<CardId>> {
-        let use_exact_fsrs_metrics = has_exact_fsrs_metrics_property(top_node);
-        let use_rwkv_due = has_rwkv_due_state(top_node);
-        self.with_search_auxiliary_tables(
-            use_exact_fsrs_metrics,
-            use_rwkv_due,
-            stats_search,
-            required_card_ids(top_node),
-            |col| {
-                let writer = SqlWriter::new(col, ReturnItemType::Cards);
-                let (sql, args) = writer.build_query(top_node, required_table)?;
-                let mut stmt = col.storage.db.prepare(&sql)?;
-                let ids: Vec<_> = stmt
-                    .query_map(params_from_iter(args.iter()), |row| row.get(0))?
-                    .collect::<std::result::Result<_, _>>()?;
-                Ok(ids)
-            },
-        )
-    }
-
-    fn elapsed_seconds_since_last_review_for_card(
-        &self,
-        card: &Card,
-        timing: SchedTimingToday,
-    ) -> u32 {
-        if let Some(last_review_time) = card.last_review_time {
-            timing.now.elapsed_secs_since_clamped(last_review_time)
-        } else {
-            let due = card.original_or_current_due() as i64;
-            if due > 365_000 {
-                let last_review_time = TimestampSecs(due.saturating_sub(card.interval as i64));
-                timing.now.elapsed_secs_since_clamped(last_review_time)
-            } else {
-                let review_day = due.saturating_sub(card.interval as i64);
-                timing.days_elapsed.saturating_sub(review_day as u32) * 86_400
-            }
-        }
-    }
-
-    fn exact_fsrs_metrics_for_card_with_params(
-        &self,
-        card: &Card,
-        timing: SchedTimingToday,
-        params: &[f32],
-    ) -> Result<Option<(f32, f32)>> {
-        let Some(state) = card.memory_state else {
-            return Ok(None);
-        };
-        let elapsed_days =
-            self.elapsed_seconds_since_last_review_for_card(card, timing) as f32 / 86_400.0;
-        let r = fsrs_current_retrievability_for_state(params, state, elapsed_days)?;
-        Ok(Some((r, state.stability)))
-    }
-
-    fn exact_fsrs_metric_for_card_with_params(
-        &self,
-        card: &Card,
-        timing: SchedTimingToday,
-        params: &[f32],
-        metric: ExactFsrsSortMetric,
-    ) -> Result<Option<f32>> {
-        Ok(self
-            .exact_fsrs_metrics_for_card_with_params(card, timing, params)?
-            .map(|(r, s90)| match metric {
-                ExactFsrsSortMetric::Retrievability => r,
-                ExactFsrsSortMetric::StabilityS90 => s90,
-            }))
-    }
-
-    fn sort_card_ids_by_exact_fsrs_metric(
-        &mut self,
-        ids: &mut [CardId],
-        metric: ExactFsrsSortMetric,
-        reverse: bool,
-    ) -> Result<()> {
-        let start = Instant::now();
-        let timing = self.timing_today()?;
-        let load_start = Instant::now();
-        let cards = self.all_cards_for_ids(ids, false)?;
-        let load_elapsed_ms = load_start.elapsed().as_secs_f64() * 1000.0;
-        let card_count = cards.len();
-        let preset_start = Instant::now();
-        let presets_by_card = self.fsrs_presets_for_cards(&cards)?;
-        let preset_elapsed_ms = preset_start.elapsed().as_secs_f64() * 1000.0;
-        let metric_start = Instant::now();
-        let mut with_metric = Vec::with_capacity(ids.len());
-        for card in cards {
-            let preset = presets_by_card
-                .get(&card.id)
-                .or_invalid("missing FSRS preset for card")?;
-            with_metric.push((
-                card.id,
-                self.exact_fsrs_metric_for_card_with_params(&card, timing, &preset.params, metric)?,
-            ));
-        }
-        let metric_elapsed_ms = metric_start.elapsed().as_secs_f64() * 1000.0;
-        let sort_start = Instant::now();
-        with_metric.sort_by(|(cid_a, metric_a), (cid_b, metric_b)| {
-            let ord = match (metric_a, metric_b) {
-                (Some(a), Some(b)) => a.total_cmp(b),
-                (None, Some(_)) => Ordering::Less,
-                (Some(_), None) => Ordering::Greater,
-                (None, None) => Ordering::Equal,
-            };
-            let ord = if reverse { ord.reverse() } else { ord };
-            ord.then_with(|| cid_a.cmp(cid_b))
-        });
-        for (target, (cid, _)) in ids.iter_mut().zip(with_metric) {
-            *target = cid;
-        }
-        tracing::debug!(
-            ?metric,
-            reverse,
-            cards = card_count,
-            load_elapsed_ms,
-            preset_elapsed_ms,
-            metric_elapsed_ms,
-            sort_elapsed_ms = sort_start.elapsed().as_secs_f64() * 1000.0,
-            elapsed_ms = start.elapsed().as_secs_f64() * 1000.0,
-            "sorted cards by exact FSRS metric"
-        );
-        Ok(())
-    }
-
     fn search<T, N>(&mut self, search: N, mode: SortMode) -> Result<Vec<T>>
     where
         N: TryIntoSearch,
@@ -596,13 +445,13 @@ impl Collection {
     {
         let item_type = T::as_return_item_type();
         let top_node = search.try_into_search()?;
-        let use_exact_fsrs_metrics = has_exact_fsrs_metrics_property(&top_node);
+        let use_exact_fsrs_metrics =
+            has_exact_fsrs_metrics_property(&top_node) || exact_fsrs_sort(item_type, &mode);
         let use_rwkv_due = has_rwkv_due_state(&top_node);
         self.with_search_auxiliary_tables(
-            use_exact_fsrs_metrics,
+            use_exact_fsrs_metrics.then_some(&top_node),
             use_rwkv_due,
             None,
-            required_card_ids(&top_node),
             |col| {
                 let writer = SqlWriter::new(col, item_type);
                 let (mut sql, args) = writer.build_query(&top_node, mode.required_table())?;
@@ -657,27 +506,13 @@ impl Collection {
         mode: SortMode,
         stats_search: Option<&str>,
     ) -> Result<CardTableGuard<'_>> {
-        if let Some((metric, reverse)) = exact_fsrs_sort_mode(ReturnItemType::Cards, &mode) {
-            let top_node = search.try_into_search()?;
-            let mut ids =
-                self.search_card_ids_for_node(&top_node, mode.required_table(), stats_search)?;
-            self.sort_card_ids_by_exact_fsrs_metric(&mut ids, metric, reverse)?;
-            self.storage
-                .setup_searched_cards_table_to_preserve_order()?;
-            self.storage.set_search_table_to_card_ids(&ids)?;
-            return Ok(CardTableGuard {
-                cards: ids.len(),
-                col: self,
-                cleanup_exact_retrievability: false,
-                cleanup_rwkv_due: false,
-            });
-        }
         let top_node = search.try_into_search()?;
         let want_order = mode != SortMode::NoOrder;
-        let use_exact_fsrs_metrics = has_exact_fsrs_metrics_property(&top_node);
+        let use_exact_fsrs_metrics = has_exact_fsrs_metrics_property(&top_node)
+            || exact_fsrs_sort(ReturnItemType::Cards, &mode);
         let use_rwkv_due = has_rwkv_due_state(&top_node);
         if use_exact_fsrs_metrics {
-            self.setup_exact_retrievability_table(stats_search, required_card_ids(&top_node))?;
+            self.setup_exact_retrievability_table(stats_search, &top_node)?;
         }
         if use_rwkv_due {
             if let Err(err) = self.setup_rwkv_due_table(stats_search) {
@@ -736,7 +571,7 @@ impl Collection {
     ) -> Result<Vec<CardId>> {
         let top_node = search.try_into_search()?;
         let use_rwkv_due = has_rwkv_due_state(&top_node);
-        self.with_search_auxiliary_tables(false, use_rwkv_due, None, None, |col| {
+        self.with_search_auxiliary_tables(None, use_rwkv_due, None, |col| {
             let mut writer = SqlWriter::new(col, ReturnItemType::Cards)
                 .with_card_id_filter_table("fsrs_preset_search_cids");
             if use_first_grade_table {
@@ -760,7 +595,7 @@ impl Collection {
         use_first_grade_table: bool,
     ) -> Result<Vec<(CardId, usize)>> {
         let use_rwkv_due = nodes.iter().any(|node| has_rwkv_due_state(node));
-        self.with_search_auxiliary_tables(false, use_rwkv_due, None, None, |col| {
+        self.with_search_auxiliary_tables(None, use_rwkv_due, None, |col| {
             let mut writer = SqlWriter::new(col, ReturnItemType::Cards)
                 .with_card_id_filter_table("fsrs_preset_search_cids");
             if use_first_grade_table {
@@ -890,45 +725,39 @@ impl Collection {
     }
 }
 
-fn exact_fsrs_sort_mode(
-    item_type: ReturnItemType,
-    mode: &SortMode,
-) -> Option<(ExactFsrsSortMetric, bool)> {
-    match (item_type, mode) {
+fn exact_fsrs_sort(item_type: ReturnItemType, mode: &SortMode) -> bool {
+    matches!(
+        (item_type, mode),
         (
             ReturnItemType::Cards,
             SortMode::Builtin {
-                column: Column::Retrievability,
-                reverse,
-            },
-        ) => Some((ExactFsrsSortMetric::Retrievability, *reverse)),
-        (
-            ReturnItemType::Cards,
-            SortMode::Builtin {
-                column: Column::Stability,
-                reverse,
-            },
-        ) => Some((ExactFsrsSortMetric::StabilityS90, *reverse)),
-        _ => None,
-    }
+                column: Column::Retrievability | Column::Stability,
+                ..
+            }
+        )
+    )
 }
 
-/// Return card IDs that every match must have, without narrowing an OR or NOT.
-fn required_card_ids(node: &Node) -> Option<Vec<CardId>> {
+/// A search that matches at least the cards `node` matches. Each R property
+/// becomes true, or false under an odd number of NOTs.
+fn metric_candidates(node: &Node, negated: bool) -> Node {
     match node {
-        Node::Search(SearchNode::CardIds(ids)) => {
-            let mut ids = ids
-                .split(',')
-                .map(|id| id.parse::<i64>().ok().map(CardId))
-                .collect::<Option<Vec<_>>>()?;
-            ids.sort_unstable();
-            ids.dedup();
-            Some(ids)
+        Node::Not(inner) => Node::Not(Box::new(metric_candidates(inner, !negated))),
+        Node::Group(nodes) => Node::Group(
+            nodes
+                .iter()
+                .map(|node| metric_candidates(node, negated))
+                .collect(),
+        ),
+        Node::Search(_) if has_exact_fsrs_metrics_property(node) || has_rwkv_due_state(node) => {
+            let all = Node::Search(SearchNode::WholeCollection);
+            if negated {
+                Node::Not(Box::new(all))
+            } else {
+                all
+            }
         }
-        Node::Group(nodes) if !nodes.iter().any(|node| matches!(node, Node::Or)) => {
-            nodes.iter().find_map(required_card_ids)
-        }
-        _ => None,
+        other => other.clone(),
     }
 }
 
@@ -1005,15 +834,9 @@ fn card_order_from_sort_column(column: Column, timing: SchedTimingToday) -> Cow<
         Column::SortField => "n.sfld collate nocase asc, c.ord asc".into(),
         Column::Tags => "n.tags asc".into(),
         Column::Answer | Column::Custom | Column::Question => "".into(),
-        Column::Stability => "extract_fsrs_variable(c.data, 's') asc".into(),
+        Column::Stability => format!("(select s90 from {EXACT_RETRIEVABILITY_TABLE} where cid = c.id) asc, c.id").into(),
         Column::Difficulty => "extract_fsrs_variable(c.data, 'd') asc".into(),
-        Column::Retrievability => format!(
-            "extract_fsrs_retrievability(c.data, case when c.odue !=0 then c.odue else c.due end, c.ivl, {}, {}, {}) asc",
-            timing.days_elapsed,
-            timing.next_day_at.0,
-            timing.now.0,
-        )
-        .into(),
+        Column::Retrievability => format!("(select fsrs_r from {EXACT_RETRIEVABILITY_TABLE} where cid = c.id) asc, c.id").into(),
     }
 }
 
@@ -1133,7 +956,11 @@ mod test {
         card.last_review_time = Some(timing.now.adding_secs(60));
 
         assert_eq!(
-            col.elapsed_seconds_since_last_review_for_card(&card, timing),
+            timing.fsrs_elapsed_seconds(
+                card.last_review_time,
+                card.original_or_current_due(),
+                card.interval
+            ),
             0
         );
 
@@ -1141,15 +968,23 @@ mod test {
         card.due = timing.now.adding_secs(60).0 as i32;
         card.interval = 0;
         assert_eq!(
-            col.elapsed_seconds_since_last_review_for_card(&card, timing),
+            timing.fsrs_elapsed_seconds(
+                card.last_review_time,
+                card.original_or_current_due(),
+                card.interval
+            ),
             0
         );
 
         card.due = timing.now.adding_secs(-60).0 as i32;
         card.interval = 30;
         assert_eq!(
-            col.elapsed_seconds_since_last_review_for_card(&card, timing),
-            90
+            timing.fsrs_elapsed_seconds(
+                card.last_review_time,
+                card.original_or_current_due(),
+                card.interval
+            ),
+            60
         );
         Ok(())
     }
@@ -1998,17 +1833,54 @@ mod test {
     }
 
     #[test]
-    fn required_card_ids_only_narrows_unconditional_card_filters() -> Result<()> {
-        for (query, expected) in [
-            ("cid:1,1,2 prop:s>0", Some(vec![CardId(1), CardId(2)])),
-            ("(prop:s>0 or tag:other) cid:2", Some(vec![CardId(2)])),
-            ("cid:1 or prop:s>0", None),
-            ("-cid:1 prop:s>0", None),
-            ("(cid:1 or cid:2) prop:s>0", None),
-        ] {
-            let node = Node::Group(parse_search(query)?);
-            assert_eq!(required_card_ids(&node), expected, "{query}");
+    fn retrievability_search_computes_r_only_for_cards_the_rest_can_match() -> Result<()> {
+        let mut col = Collection::new();
+        let other_deck = col.get_or_create_normal_deck("other")?.id;
+        let nt = col.get_notetype_by_name("Basic")?.unwrap();
+        let timing = col.timing_today()?;
+        let mut ids = vec![];
+        for (deck, days) in [(DeckId(1), 1), (other_deck, 30)] {
+            let mut note = nt.new_note();
+            col.add_note(&mut note, deck)?;
+            let mut card = col.storage.all_cards_of_note(note.id)?.remove(0);
+            card.ctype = CardType::Review;
+            card.queue = CardQueue::Review;
+            card.interval = 10;
+            card.memory_state = Some(FsrsMemoryState {
+                stability: 10.0,
+                stability_internal: 10.0,
+                stability_fast: Some(5.0),
+                difficulty: 5.0,
+            });
+            card.last_review_time = Some(timing.now.adding_secs(-days * 86_400));
+            col.storage.update_card(&card)?;
+            ids.push(card.id);
         }
+
+        let rows_for = |col: &mut Collection, search: &str| -> Result<u32> {
+            let node = search.try_into_search()?;
+            col.with_search_auxiliary_tables(Some(&node), false, None, |col| {
+                Ok(col.storage.db.query_row(
+                    &format!("select count(*) from {EXACT_RETRIEVABILITY_TABLE}"),
+                    [],
+                    |row| row.get(0),
+                )?)
+            })
+        };
+        assert_eq!(rows_for(&mut col, "deck:other prop:r<0.99")?, 1);
+        assert_eq!(rows_for(&mut col, "prop:r<0.99")?, 2);
+        // Under a NOT, the relaxed search must still match every card.
+        assert_eq!(rows_for(&mut col, "-(deck:other -prop:r<0.5)")?, 2);
+
+        assert_eq!(
+            col.search_cards("deck:other prop:r<0.99", SortMode::NoOrder)?,
+            vec![ids[1]]
+        );
+        let mut matched = col.search_cards("-prop:r<0.5 or deck:other", SortMode::NoOrder)?;
+        matched.sort();
+        let mut expected = ids.clone();
+        expected.sort();
+        assert_eq!(matched, expected);
         Ok(())
     }
 

@@ -645,7 +645,8 @@ impl Collection {
         &mut self,
         req: &SimulateFsrsReviewRequest,
     ) -> Result<(SimulatorConfig, Vec<fsrs::Card>)> {
-        let (config, cards, _) = self.simulate_request_to_config_inner(req, false)?;
+        let (config, cards, _) =
+            self.simulate_request_to_config_inner(req, false, |_, _, _, _| Ok(()))?;
         Ok((config, cards))
     }
 
@@ -653,6 +654,12 @@ impl Collection {
         &mut self,
         req: &SimulateFsrsReviewRequest,
         with_preset_router: bool,
+        mut observe_state: impl FnMut(
+            &fsrs::Card,
+            FsrsMemoryState,
+            f32,
+            Option<&SimulationPresetRouter>,
+        ) -> Result<()>,
     ) -> Result<(
         SimulatorConfig,
         Vec<fsrs::Card>,
@@ -681,7 +688,8 @@ impl Collection {
         } else {
             None
         };
-        let days_elapsed = self.timing_today().unwrap().days_elapsed as i32;
+        let timing = self.timing_today()?;
+        let days_elapsed = timing.days_elapsed as i32;
         let new_cards = cards
             .iter()
             .filter(|c| c.ctype == CardType::New && c.queue != CardQueue::Suspended)
@@ -719,15 +727,20 @@ impl Collection {
                 // Simulator DR should reflect the request, regardless of any
                 // stale per-card desired retention persisted on cards.
                 apply_simulation_desired_retention(&mut c, req.desired_retention);
-                Card::convert_with_options(
+                let elapsed = c.days_since_last_review(&timing);
+                let converted = Card::convert_with_options(
                     c,
                     days_elapsed,
                     memory_state,
                     req.desired_retention,
                     &card_parameters,
+                )?;
+                Some(
+                    observe_state(&converted, memory_state, elapsed, preset_router.as_ref())
+                        .map(|()| converted),
                 )
             })
-            .collect_vec();
+            .collect::<Result<Vec<_>>>()?;
         let introduced_today_count = self
             .search_cards(&format!("{} introduced:1", req.search), SortMode::NoOrder)?
             .len()
@@ -807,7 +820,8 @@ impl Collection {
         &mut self,
         req: SimulateFsrsReviewRequest,
     ) -> Result<SimulateFsrsReviewResponse> {
-        let (config, cards, preset_router) = self.simulate_request_to_config_inner(&req, true)?;
+        let (config, cards, preset_router) =
+            self.simulate_request_to_config_inner(&req, true, |_, _, _, _| Ok(()))?;
         let result = simulate_workload_for_desired_retention(
             &config,
             &req.params,
@@ -836,8 +850,33 @@ impl Collection {
         req: SimulateFsrsReviewRequest,
     ) -> Result<SimulateFsrsWorkloadResponse> {
         let total_start = Instant::now();
+        let fallback_preset_name = workload_preset_label(&req);
+        let mut models = HashMap::new();
+        let mut reviewless = PresetReviewlessWorkloadPoint::default();
+        let mut reviewless_by_preset = HashMap::<String, PresetReviewlessWorkloadPoint>::new();
         let (mut config, cards, preset_router) =
-            self.simulate_request_to_config_inner(&req, true)?;
+            self.simulate_request_to_config_inner(&req, true, |card, state, elapsed, router| {
+                let model = match models.entry(Arc::as_ptr(&card.parameters)) {
+                    std::collections::hash_map::Entry::Occupied(entry) => entry.into_mut(),
+                    std::collections::hash_map::Entry::Vacant(entry) => {
+                        entry.insert(FSRS::new(&card.parameters)?)
+                    }
+                };
+                let r = model
+                    .current_retrievability(state.into(), elapsed + req.days_to_simulate as f32);
+                let weighted = r * stability_weight(card.stability);
+                reviewless.memorized += r;
+                reviewless.weighted_memorized += weighted;
+                if req.split_workload_by_preset {
+                    let name = router
+                        .map(|router| router.active_preset_name_for_card(card))
+                        .unwrap_or(&fallback_preset_name);
+                    let point = reviewless_by_preset.entry(name.to_string()).or_default();
+                    point.memorized += r;
+                    point.weighted_memorized += weighted;
+                }
+                Ok(())
+            })?;
         let default_review_costs = config.state_rating_costs[1];
         let review_time_model_start = Instant::now();
         let model = self.build_help_me_decide_review_time_model(&req, default_review_costs)?;
@@ -847,7 +886,6 @@ impl Collection {
         let review_time_sample_counts = model.sample_counts_flattened();
         let model = Arc::new(model);
         install_review_time_cost_fn(&mut config, model.clone());
-        let fallback_preset_name = workload_preset_label(&req);
         let workload_sweep_start = Instant::now();
         let sweep_context = WorkloadSweepContext {
             params: &req.params,
@@ -861,11 +899,6 @@ impl Collection {
         };
         let dr_workload = simulate_workload_sweep(&mut config, &sweep_context)?;
         let workload_sweep_elapsed_ms = workload_sweep_start.elapsed().as_millis();
-        let reviewless_end_memorized = cards
-            .iter()
-            .fold(0., |p, c| p + c.retention_on(req.days_to_simulate as f32));
-        let reviewless_end_weighted_memorized =
-            weighted_memorized_for_cards(&cards, req.days_to_simulate as f32);
         let total_elapsed_ms = total_start.elapsed().as_millis();
         eprintln!(
             "{}",
@@ -876,8 +909,8 @@ impl Collection {
             )
         );
         Ok(SimulateFsrsWorkloadResponse {
-            reviewless_end_memorized,
-            reviewless_end_weighted_memorized,
+            reviewless_end_memorized: reviewless.memorized,
+            reviewless_end_weighted_memorized: reviewless.weighted_memorized,
             memorized: dr_workload.iter().map(|(k, v)| (*k, v.memorized)).collect(),
             cost: dr_workload.iter().map(|(k, v)| (*k, v.cost)).collect(),
             review_count: dr_workload
@@ -912,7 +945,7 @@ impl Collection {
             review_time_transition_counts: model.transition_counts_flattened(),
             review_time_success_grade_probs: model.success_grade_probs_flattened(),
             review_time_success_grade_counts: model.success_grade_counts_flattened(),
-            preset_workload: preset_workload_response(&dr_workload),
+            preset_workload: preset_workload_response(&dr_workload, &reviewless_by_preset),
         })
     }
 }
@@ -927,10 +960,12 @@ fn workload_preset_label(req: &SimulateFsrsReviewRequest) -> String {
 
 fn preset_workload_response(
     dr_workload: &HashMap<u32, WorkloadSweepPoint>,
+    reviewless: &HashMap<String, PresetReviewlessWorkloadPoint>,
 ) -> Vec<SimulateFsrsPresetWorkload> {
     let mut names = dr_workload
         .values()
         .flat_map(|point| point.preset_workload.keys().cloned())
+        .chain(reviewless.keys().cloned())
         .collect::<HashSet<_>>()
         .into_iter()
         .collect_vec();
@@ -954,7 +989,7 @@ fn preset_workload_response(
                     memorized.insert(*dr, point.memorized);
                     weighted_memorized.insert(*dr, point.weighted_memorized);
                 }
-                if let Some(point) = workload.preset_reviewless_workload.get(&name) {
+                if let Some(point) = reviewless.get(&name) {
                     reviewless_end_memorized.insert(*dr, point.memorized);
                     reviewless_end_weighted_memorized.insert(*dr, point.weighted_memorized);
                 }
@@ -980,7 +1015,6 @@ struct WorkloadSweepPoint {
     cost: f32,
     review_count: u32,
     preset_workload: HashMap<String, PresetWorkloadPoint>,
-    preset_reviewless_workload: HashMap<String, PresetReviewlessWorkloadPoint>,
 }
 
 #[derive(Clone, Debug, Default, PartialEq)]
@@ -1130,12 +1164,6 @@ fn simulate_workload_sweep_point(
         cost: result.cost,
         review_count: result.review_count as u32 + result.learn_count as u32,
         preset_workload,
-        preset_reviewless_workload: preset_reviewless_workload_for_cards(
-            context.cards,
-            context.preset_router,
-            context.fallback_preset_name,
-            simulation_end_date(context.days_to_simulate),
-        ),
     })
 }
 
@@ -1339,28 +1367,6 @@ fn add_final_preset_memorized(
     }
 }
 
-fn preset_reviewless_workload_for_cards(
-    cards: &[fsrs::Card],
-    preset_router: Option<&SimulationPresetRouter>,
-    fallback_preset_name: &str,
-    date: f32,
-) -> HashMap<String, PresetReviewlessWorkloadPoint> {
-    let mut workload = HashMap::<String, PresetReviewlessWorkloadPoint>::new();
-    for card in cards {
-        if !(card.stability.is_finite() && card.stability > 0.0) {
-            continue;
-        }
-        let preset_name = preset_router
-            .map(|router| router.active_preset_name_for_card(card))
-            .unwrap_or(fallback_preset_name);
-        let point = workload.entry(preset_name.to_string()).or_default();
-        let retrievability = card.retention_on(date);
-        point.memorized += retrievability;
-        point.weighted_memorized += retrievability * stability_weight(card.stability);
-    }
-    workload
-}
-
 fn stability_weight(stability: f32) -> f32 {
     1.0 - ((-8.0 / 365.0) * stability).exp()
 }
@@ -1500,6 +1506,44 @@ mod tests {
     use crate::scheduler::fsrs::review_time_model::HelpMeDecideReviewTimeModel;
     use crate::scheduler::fsrs::review_time_model::R_BUCKET_COUNT;
     use crate::tests::NoteAdder;
+
+    #[test]
+    fn reviewless_forecast_uses_both_traces_and_the_last_review_time() -> Result<()> {
+        let mut col = Collection::new();
+        col.set_config_bool(crate::config::BoolKey::Fsrs, true, false)?;
+        crate::tests::NoteAdder::basic(&mut col).add(&mut col);
+        let id = col.answer_easy().card_id;
+        let mut card = col.storage.get_card(id)?.unwrap();
+        card.last_review_time = Some(col.timing_today()?.now.adding_secs(-2 * 86_400));
+        col.storage.update_card(&card)?;
+        let req = SimulateFsrsReviewRequest {
+            days_to_simulate: 10,
+            deck_size: 0,
+            new_limit: 0,
+            desired_retention: 0.9,
+            historical_retention: 0.9,
+            review_limit: 100,
+            max_interval: 36500,
+            easy_days_percentages: vec![1.0; 7],
+            split_workload_by_preset: true,
+            ..Default::default()
+        };
+        let expected =
+            fsrs::FSRS::new(&[])?.current_retrievability(card.memory_state.unwrap().into(), 12.0);
+        let response = col.simulate_workload(req)?;
+        let forecast = response.reviewless_end_memorized;
+        for value in response.preset_workload[0]
+            .reviewless_end_memorized
+            .values()
+        {
+            assert!((forecast - value).abs() < 1e-6);
+        }
+        assert!(
+            (forecast - expected).abs() < 1e-5,
+            "{forecast} != {expected}"
+        );
+        Ok(())
+    }
 
     fn no_transitions() -> [[u32; 4]; 4] {
         [[0u32; 4]; 4]
@@ -2815,19 +2859,6 @@ mod tests {
             result.learn_count as u32
         );
         assert!((split.values().map(|point| point.cost).sum::<f32>() - result.cost).abs() < 1e-3);
-
-        let reviewless_split = super::preset_reviewless_workload_for_cards(
-            std::slice::from_ref(&card),
-            Some(&router),
-            "Fallback",
-            super::simulation_end_date(90),
-        );
-        let reviewless_total = reviewless_split
-            .values()
-            .map(|point| point.memorized)
-            .sum::<f32>();
-        let global_reviewless = card.retention_on(super::simulation_end_date(90));
-        assert!((reviewless_total - global_reviewless).abs() < 1e-6);
     }
 
     #[test]

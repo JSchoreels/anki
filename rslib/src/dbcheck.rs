@@ -44,6 +44,7 @@ pub struct CheckDatabaseOutput {
     invalid_utf8: usize,
     invalid_ids: usize,
     card_last_review_time_empty: usize,
+    invalid_fsrs_cutoffs: Vec<String>,
 }
 
 #[derive(Debug, Clone, Copy, Default)]
@@ -103,6 +104,9 @@ impl CheckDatabaseOutput {
             probs.push(tr.database_check_fixed_invalid_ids(self.invalid_ids));
         }
 
+        for preset in &self.invalid_fsrs_cutoffs {
+            probs.push(tr.database_check_invalid_fsrs_cutoff(preset));
+        }
         probs.into_iter().map(Into::into).collect()
     }
 }
@@ -143,6 +147,13 @@ impl Collection {
         debug!("check decks");
         self.check_missing_deck_ids(&mut out)?;
         self.check_filtered_cards(&mut out)?;
+        for config in self.storage.all_deck_config()? {
+            if crate::scheduler::fsrs::params::ignore_revlogs_before_ms_from_config(&config)
+                .is_err()
+            {
+                out.invalid_fsrs_cutoffs.push(config.name);
+            }
+        }
 
         debug!("check notetypes");
         self.check_notetypes(&mut out, &mut progress)?;

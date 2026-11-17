@@ -4,6 +4,7 @@
 use super::button_intervals::button_intervals;
 use super::button_intervals::ButtonInterval;
 use super::button_intervals::DayRule;
+use super::button_intervals::FuzzedDays;
 use super::interval_kind::IntervalKind;
 use super::CardState;
 use super::LearnState;
@@ -84,11 +85,11 @@ impl ReviewState {
                            answer: fn(Self, u32, i32, &StateContext) -> ReviewState|
              -> CardState {
                 match interval {
-                    Some(ButtonInterval::Days {
+                    Some(ButtonInterval::InDays(FuzzedDays {
                         days,
                         fuzz_delta_days,
-                    }) => answer(self, days, fuzz_delta_days, ctx).into(),
-                    Some(ButtonInterval::Secs(scheduled_secs)) => {
+                    })) => answer(self, days, fuzz_delta_days, ctx).into(),
+                    Some(ButtonInterval::InSecs(scheduled_secs)) => {
                         let review = answer(self, 1, 0, ctx);
                         RelearnState {
                             learning: LearnState {
@@ -190,7 +191,7 @@ impl ReviewState {
                 review: again_review,
             }
             .into()
-        } else if let Some(ButtonInterval::Secs(scheduled_secs)) = interval {
+        } else if let Some(ButtonInterval::InSecs(scheduled_secs)) = interval {
             RelearnState {
                 learning: LearnState {
                     remaining_steps: ctx.relearn_steps.remaining_for_failed(),

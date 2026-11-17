@@ -67,10 +67,10 @@ impl GraphsContext {
                 .and_then(|scores| scores.get(&card.id))
                 .copied();
             let fsrs_retrievability = card.memory_state.and_then(|state| {
-                let elapsed_seconds = card.seconds_since_last_review(&timing).unwrap_or_default();
+                let elapsed_days = card.days_since_last_review(&timing);
                 let preset_id = self.fsrs_preset_by_card.get(&card.id)?;
                 let fsrs = self.fsrs_by_preset.get(preset_id)?;
-                Some(fsrs.current_retrievability(state.into(), elapsed_seconds as f32 / 86_400.0))
+                Some(fsrs.current_retrievability(state.into(), elapsed_days))
             });
 
             fsrs_series.record(card.note_id.0, fsrs_retrievability);
