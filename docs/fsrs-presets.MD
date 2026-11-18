@@ -42,13 +42,17 @@ The default resolver maps a card to the FSRS preset derived from its home deck
 config. Future add-on sources can provide the same narrow FSRS preset shape
 without pretending to be full deck configs.
 
+Recall searches, graphs and sorting still honor matching add-on overlays. If a
+card has no matching overlay and its home deck or preset is missing, these
+reads use the Default preset. Answer scheduling requires a valid resolved preset.
+
 Python add-ons can read the resolved preset with
 `Collection.fsrs_preset_for_card(card_id)`. The returned data is read-only and
 uses the same resolver as review scheduling, so it includes add-on overlay
 matches from `fsrsPresetOverlay` and falls back to the card's home deck config
 when no overlay rule matches.
 
-Optimize All saves successful fits and the settings edited in Deck Options. An invalid search on another preset leaves its saved parameters in place. Scheduled imports replay memory state under the destination preset when source parameters differ or were omitted. The no-review workload estimate follows each card’s current two-trace curve. Simulations with future answers retain the simulator library’s scalar approximation.
+Optimize All saves successful fits and the settings edited in Deck Options. An invalid search on another preset leaves its saved parameters in place. Scheduled imports replay memory state under the destination preset when source parameters differ or were omitted. The no-review workload estimate follows each card’s current two-trace curve. Simulations with future answers initialize the library’s single stability value to match each existing FSRS-7 card’s S90 under its simulation preset. Later simulated reviews follow the library’s single-trace model.
 
 ## FSRS-6 comparisons
 
@@ -399,10 +403,13 @@ The stored desired retention is not replaced with a preset default.
 With `include_retrievability=False`, only stored card values are read. Otherwise
 the native full-state calculation uses the same selected presets, fractional
 elapsed time, and missing-last-review-time lookup as Card Info. Preset resolution
-is batched and request scoped. No historical states are reconstructed, and no
-card values or review logs are written. Missing state on a reviewed card remains
-absent; consumers requiring Card Info's initialization behavior should fall back
-to `card_stats_data()` for that card. The existing full statistics API is unchanged.
+is batched and request scoped. If the stored timestamp is missing or zero,
+both reads use the latest rated scheduling review. With no such review they use
+the scheduler’s elapsed-time estimate, which uses the due date and interval for
+day-based reviews. Card Info can cache an actual review time. The batch API
+reads existing memory states without modifying cards or review logs. Callers
+that need Card Info to initialize a missing memory state can use
+`card_stats_data()` for that card.
 
 
 `Collection.card_details()` additionally returns compact scheduling fields and

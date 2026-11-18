@@ -825,7 +825,7 @@ mod test {
                     },
                     Usn(-1),
                 )?;
-                let candidates = col.storage.card_ids_with_foreign_fsrs_state()?;
+                let candidates = col.foreign_fsrs_repair_candidates()?;
                 assert_eq!(col.repair_foreign_fsrs_memory_states_inner(candidates)?, 1);
 
                 let repaired = col.storage.get_card(card.id)?.unwrap();

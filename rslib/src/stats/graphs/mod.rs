@@ -81,7 +81,7 @@ impl Collection {
             .cloned()
             .collect();
         let fsrs_preset_start = std::time::Instant::now();
-        let fsrs_presets_by_card = self.fsrs_presets_for_cards(&fsrs_cards)?;
+        let fsrs_presets_by_card = self.fsrs_metric_presets_for_cards(&fsrs_cards)?;
         tracing::debug!(
             searched_cards = cards.len(),
             rwkv_scored_cards = rwkv_retrievability_scores

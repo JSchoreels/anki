@@ -275,7 +275,7 @@ impl Collection {
             .unwrap_or(0);
         let card_count = cards.len();
         let preset_start = Instant::now();
-        let presets_by_card = self.fsrs_presets_for_cards(&cards)?;
+        let presets_by_card = self.fsrs_metric_presets_for_cards(&cards)?;
         let preset_elapsed_ms = preset_start.elapsed().as_secs_f64() * 1000.0;
         let metric_start = Instant::now();
         let mut models = HashMap::new();

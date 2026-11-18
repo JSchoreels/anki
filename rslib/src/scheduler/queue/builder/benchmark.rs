@@ -290,7 +290,7 @@ fn benchmark_preset_resolution(col: &mut Collection, count: usize) -> Result<()>
                     }
                     let deck = &decks[&card.original_deck_id.or(card.deck_id)];
                     let config = &configs[&deck.config_id().unwrap()];
-                    presets.insert(card.id, FsrsPreset::from_deck_config(config, deck)?);
+                    presets.insert(card.id, FsrsPreset::from_deck_config(config, Some(deck))?);
                 }
                 original = presets;
             }

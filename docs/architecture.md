@@ -559,7 +559,9 @@ Current exact-vs-scalar status:
   review-log chunks have been merged.
   Recovery replays usable review history with the current preset parameters;
   without usable history, it infers a complete model state whose S90 is the
-  stored `s`. Changed parameters or incomplete history can prevent exact recovery
+  stored `s`. If `s` is unusable and no history can rebuild it, repair removes
+  only the memory estimate. The schedule, review log and remaining card data
+  are preserved. Changed parameters or incomplete history can prevent exact recovery
   of the original traces. Repairs update only local card data, preserving card
   modification times, USNs, intervals, due dates, and existing per-card desired
   retention. Collection-open recovery also preserves the collection modification
@@ -601,7 +603,8 @@ Current exact-vs-scalar status:
       helper uses the same preset path while allowing each item to request a
       different target retrievability. The config batch helper reads deck config
       parameters directly.
-- Legacy sqlite FSRS helper expressions continue to use stored scalar decay, but
-  the standard retrievability search/order paths above no longer depend on them.
+- Legacy SQLite recall functions use the stored scalar decay and the card's
+  public S90. They give 90% recall at that interval. Standard recall searches
+  and ordering use the resolved preset's full model.
 
 <!-- <<<end>>> -->

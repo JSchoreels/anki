@@ -2036,6 +2036,64 @@ mod test {
     }
 
     #[test]
+    fn intraday_learning_only_includes_sorted_due_cards_and_learn_ahead() -> Result<()> {
+        use anki_proto::scheduler::GetQueuedCardsRequest;
+
+        use crate::services::SchedulerService;
+
+        let mut col = Collection::new();
+        col.set_config_bool(BoolKey::Fsrs, true, true)?;
+        let mut deck = col.get_or_create_normal_deck("Default")?;
+        col.set_deck_review_order(&mut deck, ReviewCardOrder::RetrievabilityAscending);
+        let timing = col.timing_today()?;
+        let now = timing.now.0 as i32;
+        let today = timing.days_elapsed as i32;
+        let mut add = |queue, ctype, due| {
+            add_memory_state_card(&mut col, deck.id, queue, ctype, due, 86_400, 30.0)
+        };
+        let due = add(CardQueue::Learn, CardType::Relearn, now - 60)?;
+        let ahead = add(CardQueue::Learn, CardType::Learn, now + 60)?;
+        add(CardQueue::Learn, CardType::Learn, now + 600)?;
+        add(CardQueue::DayLearn, CardType::Learn, today)?;
+        add(CardQueue::Review, CardType::Review, today)?;
+        CardAdder::new().deck(deck.id).add(&mut col);
+
+        let mut builder = QueueBuilder::new(&mut col, deck.id)?;
+        col.storage.update_active_decks(&deck)?;
+        // Keep the future cards in today's queue even when run near rollover.
+        builder.context.timing.next_day_at = timing.now.adding_secs(86_400);
+        builder.gather_cards(&mut col)?;
+        col.state.card_queues = Some(builder.build(120));
+        for skip_scheduling_states in [false, true] {
+            let queued = SchedulerService::get_queued_cards(
+                &mut col,
+                GetQueuedCardsRequest {
+                    fetch_limit: 1,
+                    intraday_learning_only: true,
+                    skip_scheduling_states,
+                },
+            )?;
+            let cards: Vec<_> = queued
+                .cards
+                .iter()
+                .map(|entry| (entry.card.as_ref().unwrap().id, entry.states.is_some()))
+                .collect();
+            assert_eq!(
+                cards,
+                [
+                    (due.0, !skip_scheduling_states),
+                    (ahead.0, !skip_scheduling_states)
+                ]
+            );
+            assert_eq!(
+                [queued.new_count, queued.learning_count, queued.review_count],
+                [1, 3, 1]
+            );
+        }
+        Ok(())
+    }
+
+    #[test]
     fn fsrs_learn_ahead_refreshes_empty_queue_counts() -> Result<()> {
         for order in [
             ReviewCardOrder::RetrievabilityAscending,

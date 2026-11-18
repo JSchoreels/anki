@@ -158,7 +158,7 @@ impl ExchangeData {
             }
             data.foreign_fsrs_card_ids = col
                 .storage
-                .card_ids_with_foreign_fsrs_state()?
+                .card_ids_with_foreign_fsrs_state(None)?
                 .into_iter()
                 .collect();
         }

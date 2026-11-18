@@ -57,19 +57,16 @@ impl Collection {
         if stateful.is_empty() {
             return Ok(entries);
         }
-        let presets = self.fsrs_presets_for_cards(&stateful)?;
-        let now = self.timing_today()?.now;
+        let presets = self.fsrs_metric_presets_for_cards(&stateful)?;
+        let timing = self.timing_today()?;
         for (card, entry) in cards.iter().zip(entries.iter_mut()) {
             if let Some(state) = card.memory_state {
-                let last_review_time = if let Some(time) = card.last_review_time {
-                    time
-                } else {
-                    self.storage
-                        .time_of_last_review(card.id)?
-                        .unwrap_or_default()
-                };
-                let elapsed_days =
-                    now.elapsed_secs_since_clamped(last_review_time) as f32 / 86_400.0;
+                let elapsed_days = timing.fsrs_elapsed_seconds(
+                    self.last_review_time_for_stats(card)?,
+                    card.original_or_current_due(),
+                    card.interval,
+                ) as f32
+                    / 86_400.0;
                 entry.fsrs_retrievability = Some(fsrs_current_retrievability_for_state(
                     &presets[&card.id].params,
                     state,

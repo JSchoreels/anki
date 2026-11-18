@@ -15,6 +15,7 @@ use crate::card_rendering::prettify_av_tags;
 use crate::notetype::CardTemplate;
 use crate::notetype::NotetypeKind;
 use crate::prelude::*;
+use crate::scheduler::fsrs::memory_state::fsrs_current_retrievability_for_state;
 use crate::scheduler::timespan::time_span;
 use crate::scheduler::timing::SchedTimingToday;
 use crate::template::RenderedNode;
@@ -378,16 +379,16 @@ impl RowContext {
         };
         let timing = col.timing_today()?;
         let fsrs_retrievability = if columns.contains(&Column::Retrievability) {
-            cards[0]
-                .memory_state
-                .map(|state| {
-                    col.fsrs_current_retrievability_for_card_state(
-                        cards[0].id,
-                        state,
-                        cards[0].days_since_last_review(&timing),
-                    )
-                })
-                .transpose()?
+            let card = &cards[0];
+            card.memory_state.and_then(|state| {
+                let preset = col.fsrs_metric_preset_for_card(card).ok()?;
+                fsrs_current_retrievability_for_state(
+                    &preset.params,
+                    state,
+                    card.days_since_last_review(&timing),
+                )
+                .ok()
+            })
         } else {
             None
         };
@@ -694,7 +695,6 @@ mod tests {
     use crate::card::FsrsMemoryState;
     use crate::deckconfig::FsrsVersion;
     use crate::deckconfig::UpdateDeckConfigsRequest;
-    use crate::scheduler::fsrs::memory_state::fsrs_current_retrievability_for_state;
     use crate::search::SortMode;
 
     fn fsrs7_params_for_retrievability_test() -> Vec<f32> {
@@ -732,6 +732,32 @@ mod tests {
         input.configs[0].inner.fsrs_version = FsrsVersion::Seven as i32;
         input.configs[0].inner.fsrs_params_7 = params;
         col.update_deck_configs(input)?;
+        Ok(())
+    }
+
+    #[test]
+    fn unreadable_preset_leaves_only_the_retrievability_cell_empty() -> Result<()> {
+        let mut col = Collection::new();
+        crate::tests::NoteAdder::basic(&mut col).add(&mut col);
+        let mut card = col.get_first_card();
+        card.memory_state = Some(FsrsMemoryState {
+            stability: 10.0,
+            stability_internal: 10.0,
+            stability_fast: None,
+            difficulty: 5.0,
+        });
+        col.storage.update_card(&card)?;
+        col.storage
+            .db
+            .execute("update deck_config set config = x'ff' where id = 1", [])?;
+
+        col.state.active_browser_columns = Some(Arc::new(vec![Column::Notetype]));
+        assert_eq!(col.browser_row_for_id(card.id.0)?.cells[0].text, "Basic");
+        col.state.active_browser_columns =
+            Some(Arc::new(vec![Column::Notetype, Column::Retrievability]));
+        let row = col.browser_row_for_id(card.id.0)?;
+        assert_eq!(row.cells[0].text, "Basic");
+        assert_eq!(row.cells[1].text, "");
         Ok(())
     }
 

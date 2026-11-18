@@ -848,12 +848,13 @@ fn existing_cards_for_dynamic_desired_retention(
                 return Ok(None);
             };
             card.desired_retention = Some(input.desired_retention);
-            Ok(Card::convert_with_options(
+            Ok(Card::convert(
                 card,
                 input.days_elapsed,
                 memory_state,
                 input.desired_retention,
-                &shared_params,
+                shared_params.clone(),
+                &fsrs,
             ))
         })
         .collect::<Result<Vec<_>>>()?

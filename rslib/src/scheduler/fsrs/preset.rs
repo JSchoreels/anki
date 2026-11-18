@@ -51,6 +51,13 @@ impl From<&Card> for FsrsPresetCard {
     }
 }
 
+/// Metric reads can use the default preset for a broken home-deck reference.
+#[derive(Clone, Copy, PartialEq, Eq)]
+enum MissingHomePreset {
+    Error,
+    UseDefault,
+}
+
 #[derive(Debug, Clone, PartialEq, Eq, Hash)]
 pub(crate) enum FsrsPresetId {
     DeckConfig(DeckConfigId),
@@ -176,7 +183,7 @@ pub(crate) struct FsrsPresetSimulatorRule {
 }
 
 impl FsrsPreset {
-    pub(crate) fn from_deck_config(config: &DeckConfig, deck: &Deck) -> Result<Self> {
+    pub(crate) fn from_deck_config(config: &DeckConfig, deck: Option<&Deck>) -> Result<Self> {
         let fsrs_version =
             FsrsVersion::try_from(config.inner.fsrs_version).unwrap_or(FsrsVersion::Seven);
         let dynamic_desired_retention = if fsrs_version == FsrsVersion::Seven {
@@ -189,7 +196,9 @@ impl FsrsPreset {
             name: config.name.clone(),
             fsrs_version,
             params: config.fsrs_params().to_vec(),
-            desired_retention: deck.effective_desired_retention(config),
+            desired_retention: deck
+                .map(|deck| deck.effective_desired_retention(config))
+                .unwrap_or(config.inner.desired_retention),
             dynamic_desired_retention,
             historical_retention: config.inner.historical_retention,
             ignore_revlogs_before_date: config.inner.ignore_revlogs_before_date.clone(),
@@ -356,28 +365,50 @@ impl Collection {
     ) -> Result<HashMap<CardId, Arc<FsrsPreset>>> {
         self.fsrs_presets_for_card_inputs(
             &cards.iter().map(FsrsPresetCard::from).collect::<Vec<_>>(),
+            MissingHomePreset::Error,
         )
     }
 
-    pub(crate) fn fsrs_presets_for_card_inputs(
+    pub(crate) fn fsrs_metric_presets_for_cards(
+        &mut self,
+        cards: &[Card],
+    ) -> Result<HashMap<CardId, Arc<FsrsPreset>>> {
+        self.fsrs_metric_presets_for_card_inputs(
+            &cards.iter().map(FsrsPresetCard::from).collect::<Vec<_>>(),
+        )
+    }
+
+    pub(crate) fn fsrs_metric_presets_for_card_inputs(
         &mut self,
         cards: &[FsrsPresetCard],
     ) -> Result<HashMap<CardId, Arc<FsrsPreset>>> {
+        self.fsrs_presets_for_card_inputs(cards, MissingHomePreset::UseDefault)
+    }
+
+    fn fsrs_presets_for_card_inputs(
+        &mut self,
+        cards: &[FsrsPresetCard],
+        missing: MissingHomePreset,
+    ) -> Result<HashMap<CardId, Arc<FsrsPreset>>> {
         if cards.len() <= FSRS_PRESET_DIRECT_RESOLUTION_MAX_CARDS {
-            self.fsrs_presets_for_cards_directly(cards)
+            self.fsrs_presets_for_cards_directly(cards, missing)
         } else {
-            self.fsrs_presets_for_cards_in_batch(cards)
+            self.fsrs_presets_for_cards_in_batch(cards, missing)
         }
     }
 
     fn fsrs_presets_for_cards_directly(
         &mut self,
         cards: &[FsrsPresetCard],
+        missing: MissingHomePreset,
     ) -> Result<HashMap<CardId, Arc<FsrsPreset>>> {
         let start = Instant::now();
         let presets_by_card = cards
             .iter()
-            .map(|card| Ok((card.id, Arc::new(self.fsrs_preset_for_card_input(*card)?))))
+            .map(|card| {
+                let preset = self.fsrs_preset_for_card_input(*card, missing)?;
+                Ok((card.id, Arc::new(preset)))
+            })
             .collect::<Result<_>>()?;
 
         tracing::debug!(
@@ -392,6 +423,7 @@ impl Collection {
     fn fsrs_presets_for_cards_in_batch(
         &mut self,
         cards: &[FsrsPresetCard],
+        missing: MissingHomePreset,
     ) -> Result<HashMap<CardId, Arc<FsrsPreset>>> {
         let start = Instant::now();
         let mut presets_by_card = self.fsrs_overlay_presets_for_cards(cards)?;
@@ -411,10 +443,12 @@ impl Collection {
             let preset = match presets_by_deck.entry(deck_id) {
                 std::collections::hash_map::Entry::Occupied(entry) => entry.into_mut(),
                 std::collections::hash_map::Entry::Vacant(entry) => {
-                    let deck = decks_by_id.get(&deck_id).or_not_found(deck_id)?;
-                    let config_id = deck.config_id().or_invalid("home deck is filtered")?;
-                    let config = configs_by_id.get(&config_id).or_not_found(config_id)?;
-                    entry.insert(Arc::new(FsrsPreset::from_deck_config(config, deck)?))
+                    let deck = decks_by_id.get(&deck_id);
+                    let config = deck
+                        .and_then(Deck::config_id)
+                        .and_then(|id| configs_by_id.get(&id));
+                    let preset = self.resolve_home_preset(deck_id, deck, config, missing)?;
+                    entry.insert(Arc::new(preset))
                 }
             };
             presets_by_card.insert(card.id, preset.clone());
@@ -433,10 +467,18 @@ impl Collection {
     }
 
     pub(crate) fn fsrs_preset_for_card(&mut self, card: &Card) -> Result<FsrsPreset> {
-        self.fsrs_preset_for_card_input(card.into())
+        self.fsrs_preset_for_card_input(card.into(), MissingHomePreset::Error)
     }
 
-    fn fsrs_preset_for_card_input(&mut self, card: FsrsPresetCard) -> Result<FsrsPreset> {
+    pub(crate) fn fsrs_metric_preset_for_card(&mut self, card: &Card) -> Result<FsrsPreset> {
+        self.fsrs_preset_for_card_input(card.into(), MissingHomePreset::UseDefault)
+    }
+
+    fn fsrs_preset_for_card_input(
+        &mut self,
+        card: FsrsPresetCard,
+        missing: MissingHomePreset,
+    ) -> Result<FsrsPreset> {
         self.fsrs_preset_overlay_cache()?;
         if let Some(preset) = self
             .state
@@ -509,17 +551,31 @@ impl Collection {
         }
 
         let deck_id = card.home_deck_id;
-        let deck = self.storage.get_deck(deck_id)?.or_not_found(deck_id)?;
-        self.fsrs_preset_for_deck(&deck)
+        let deck = self.storage.get_deck(deck_id)?;
+        let config = match deck.as_ref().and_then(Deck::config_id) {
+            Some(id) => self.storage.get_deck_config(id)?,
+            None => None,
+        };
+        self.resolve_home_preset(deck_id, deck.as_ref(), config.as_ref(), missing)
     }
 
-    pub(crate) fn fsrs_preset_for_deck(&mut self, deck: &Deck) -> Result<FsrsPreset> {
+    fn resolve_home_preset(
+        &self,
+        deck_id: DeckId,
+        deck: Option<&Deck>,
+        config: Option<&DeckConfig>,
+        missing: MissingHomePreset,
+    ) -> Result<FsrsPreset> {
+        if config.is_none() && missing == MissingHomePreset::UseDefault {
+            let default = self
+                .storage
+                .get_deck_config(DeckConfigId(1))?
+                .unwrap_or_default();
+            return FsrsPreset::from_deck_config(&default, deck);
+        }
+        let deck = deck.or_not_found(deck_id)?;
         let config_id = deck.config_id().or_invalid("home deck is filtered")?;
-        let config = self
-            .storage
-            .get_deck_config(config_id)?
-            .or_not_found(config_id)?;
-        FsrsPreset::from_deck_config(&config, deck)
+        FsrsPreset::from_deck_config(config.or_not_found(config_id)?, Some(deck))
     }
 
     pub(crate) fn fsrs_preset_simulator_rules(
@@ -553,6 +609,39 @@ impl Collection {
             self.state.fsrs_preset_overlay_cache = Some(cache);
         }
         Ok(self.state.fsrs_preset_overlay_cache.as_ref().unwrap())
+    }
+
+    /// A matching overlay can select FSRS-7 regardless of the native deck.
+    pub(super) fn fsrs7_repair_home_decks(&mut self) -> Result<Option<Vec<DeckId>>> {
+        let cache = self.fsrs_preset_overlay_cache()?;
+        if cache
+            .rules
+            .iter()
+            .any(|rule| cache.presets[&rule.preset_id].fsrs_version == FsrsVersion::Seven)
+        {
+            return Ok(None);
+        }
+        let fsrs7: HashSet<_> = self
+            .storage
+            .all_deck_config()?
+            .into_iter()
+            .filter(|config| {
+                FsrsVersion::try_from(config.inner.fsrs_version).unwrap_or(FsrsVersion::Seven)
+                    == FsrsVersion::Seven
+            })
+            .map(|config| config.id)
+            .collect();
+        if fsrs7.is_empty() {
+            return Ok(Some(vec![]));
+        }
+        let decks = self
+            .storage
+            .get_decks_map()?
+            .into_values()
+            .filter(|deck| deck.config_id().is_some_and(|id| fsrs7.contains(&id)))
+            .map(|deck| deck.id)
+            .collect();
+        Ok(Some(decks))
     }
 
     fn fsrs_preset_rule_matches_card(&mut self, card_id: CardId, rule_node: Node) -> Result<bool> {
@@ -931,6 +1020,50 @@ mod test {
     }
 
     #[test]
+    fn only_metrics_fall_back_to_default_for_broken_home_decks() -> Result<()> {
+        let mut col = Collection::new();
+        col.update_default_deck_config(|config| config.desired_retention = 0.85);
+        let filtered = crate::tests::DeckAdder::new("Filtered")
+            .filtered(true)
+            .add(&mut col);
+        let mut broken = col.get_or_create_normal_deck("Missing preset")?;
+        broken.normal_mut()?.config_id = 999;
+        broken.normal_mut()?.desired_retention = Some(0.8);
+        col.add_or_update_deck(&mut broken)?;
+        let cards = [
+            Card {
+                id: CardId(1),
+                deck_id: filtered.id,
+                original_deck_id: DeckId(999),
+                ..Default::default()
+            },
+            Card {
+                id: CardId(2),
+                deck_id: filtered.id,
+                ..Default::default()
+            },
+            Card {
+                id: CardId(3),
+                deck_id: broken.id,
+                ..Default::default()
+            },
+        ];
+        let batch = col.fsrs_presets_for_cards_in_batch(
+            &cards.iter().map(FsrsPresetCard::from).collect::<Vec<_>>(),
+            MissingHomePreset::UseDefault,
+        )?;
+        for (card, target) in cards.iter().zip([0.85, 0.85, 0.8]) {
+            let direct = col.fsrs_metric_preset_for_card(card)?;
+            for preset in [&direct, batch[&card.id].as_ref()] {
+                assert_eq!(preset.id, FsrsPresetId::DeckConfig(DeckConfigId(1)));
+                assert_eq!(preset.desired_retention, target);
+            }
+            assert!(col.fsrs_preset_for_card(card).is_err());
+        }
+        Ok(())
+    }
+
+    #[test]
     fn fsrs_preset_batch_preserves_home_deck_retention_overrides() -> Result<()> {
         let mut col = Collection::new();
         let mut lower = col.get_or_create_normal_deck("Lower")?;
@@ -961,6 +1094,7 @@ mod test {
         ];
         let presets = col.fsrs_presets_for_cards_in_batch(
             &cards.iter().map(FsrsPresetCard::from).collect::<Vec<_>>(),
+            MissingHomePreset::Error,
         )?;
         let targets = cards
             .iter()
@@ -972,6 +1106,7 @@ mod test {
         col.add_or_update_deck(&mut lower)?;
         let presets = col.fsrs_presets_for_cards_in_batch(
             &cards.iter().map(FsrsPresetCard::from).collect::<Vec<_>>(),
+            MissingHomePreset::Error,
         )?;
         let targets = cards
             .iter()
@@ -1570,6 +1705,14 @@ mod test {
             cache.card_to_preset.get(&tagged_card.id).unwrap(),
             "addon:test:first"
         );
+        // The metric fallback also gives matching overlay rules precedence.
+        let mut damaged = tagged_card.clone();
+        damaged.original_deck_id = DeckId(999);
+        col.clear_fsrs_preset_overlay_card_matches();
+        assert_eq!(
+            col.fsrs_metric_preset_for_card(&damaged)?.id,
+            presets[&damaged.id].id
+        );
         Ok(())
     }
 
@@ -2144,7 +2287,10 @@ mod test {
             col.clear_fsrs_preset_overlay_card_matches();
             let mut mismatches = 0;
             for card in &cards {
-                let direct = match col.fsrs_preset_for_card_input(*card)?.id {
+                let direct = match col
+                    .fsrs_preset_for_card_input(*card, MissingHomePreset::Error)?
+                    .id
+                {
                     FsrsPresetId::Addon(id) => Some(id),
                     FsrsPresetId::DeckConfig(_) => None,
                 };
