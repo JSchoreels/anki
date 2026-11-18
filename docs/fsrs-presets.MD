@@ -267,8 +267,8 @@ target count and run on Rayon worker lanes. Progress is reported with the same
 per-preset review counts and iteration progress.
 
 FSRS-7 optimization and parameter evaluation store each card's review history
-once and reference its training targets by prefix. FSRS-6 optimization expands
-those targets because its trainer still requires individual items. Historical
+once and reference its training targets by prefix. Anki passes expanded targets
+to the FSRS-6 trainer. Historical
 FSRS calibration also reuses compact histories for final-fit predictions and
 validation-fold training and predictions. The fsrs-rs compact prediction API
 accepts a selected prefix slice without expanding histories, and Anki maps its
