@@ -154,7 +154,14 @@ impl Collection {
     ) -> Result<QueuedCards> {
         let queues = self.get_queues()?;
         let counts = queues.counts();
-        let entries: Vec<_> = if intraday_learning_only {
+        let entries: Vec<_> = if intraday_learning_only && queues.non_news_sorted_by_retrievability
+        {
+            // Due intraday cards are mixed into the main queue in this mode.
+            queues
+                .iter()
+                .filter(|entry| entry.kind() == QueueEntryKind::Learning)
+                .collect()
+        } else if intraday_learning_only {
             queues
                 .intraday_now_iter()
                 .chain(queues.intraday_ahead_iter())
@@ -166,36 +173,36 @@ impl Collection {
         if fetch_limit == 1 && !intraday_learning_only {
             queues.mark_top_card_shown(entries.first().map(QueueEntry::card_id));
         }
-        let cards: Vec<_> = entries
-            .into_iter()
-            .map(|entry| {
-                let card = self
-                    .storage
-                    .get_card(entry.card_id())?
-                    .or_not_found(entry.card_id())?;
-                require!(
-                    card.mtime == entry.mtime(),
-                    "bug: card modified without updating queue: id:{} card:{} entry:{}",
-                    card.id,
-                    card.mtime,
-                    entry.mtime()
-                );
-
-                let (next_states, card) = if skip_scheduling_states {
-                    (None, card)
-                } else {
-                    let (states, card) = self.get_scheduling_states_inner(card, None)?;
-                    (Some(states), card)
-                };
-
-                Ok(QueuedCard {
-                    context: new_scheduling_context(self, &card)?,
-                    card,
-                    states: next_states,
-                    kind: entry.kind(),
-                })
-            })
-            .collect::<Result<_>>()?;
+        let mut cards = Vec::with_capacity(entries.len());
+        for entry in entries {
+            let card = self
+                .storage
+                .get_card(entry.card_id())?
+                .or_not_found(entry.card_id())?;
+            require!(
+                card.mtime == entry.mtime(),
+                "bug: card modified without updating queue: id:{} card:{} entry:{}",
+                card.id,
+                card.mtime,
+                entry.mtime()
+            );
+            // Main-queue learning entries can also represent interday learning.
+            if intraday_learning_only && !card.is_intraday_learning() {
+                continue;
+            }
+            let (next_states, card) = if skip_scheduling_states {
+                (None, card)
+            } else {
+                let (states, card) = self.get_scheduling_states_inner(card, None)?;
+                (Some(states), card)
+            };
+            cards.push(QueuedCard {
+                context: new_scheduling_context(self, &card)?,
+                card,
+                states: next_states,
+                kind: entry.kind(),
+            });
+        }
         Ok(QueuedCards {
             cards,
             new_count: counts.new,
