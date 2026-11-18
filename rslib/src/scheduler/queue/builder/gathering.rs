@@ -889,7 +889,7 @@ fn exact_review_order_keys(
         })
         .collect::<Vec<_>>();
     let selected = Instant::now();
-    let presets = col.fsrs_presets_for_card_inputs(&fsrs_cards)?;
+    let presets = col.fsrs_metric_presets_for_card_inputs(&fsrs_cards)?;
     let resolved = Instant::now();
     let mut models = HashMap::new();
     let keys = cards

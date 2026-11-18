@@ -46,8 +46,10 @@ Changes since [build 115](https://github.com/JSchoreels/anki/releases/tag/26.09.
 - Optimize All preserves saved parameters when a preset’s search fails. Check Database identifies presets with an invalid review-history cutoff so the date can be corrected in Deck Options.
 - Scheduled imports recalculate memory state when the destination uses different parameters. Answer-button states and add-on edits now use the same displayed Stability as the saved card.
 - Recall searches score the cards selected by the rest of the query, and the no-review workload estimate uses both FSRS7 memory components and each card’s last review time.
+- Recall searches, graphs and ordering use the Default preset when a card's home deck or preset is missing. The Browser keeps the other columns readable when it cannot calculate retrievability.
 - When reviews are sorted by retrievability, learning-only queue requests include intraday cards that are due now as well as cards available through learn-ahead.
 - When a damaged card has no usable stability or review history, FSRS7 repair clears only its memory estimate. The card keeps its schedule and review history. Repairs skip unrelated legacy decks and include cards routed to FSRS7 by add-on rules.
+- Card Info and batch memory metrics use the latest rated scheduling review when the saved review time is missing. With no such review, they estimate recall from the card's schedule and leave the review time empty.
 
 ### Technical details
 

@@ -171,7 +171,7 @@ impl Collection {
         let cards = self.all_cards_for_search(search)?;
         let card_count = cards.len();
         let preset_start = Instant::now();
-        let presets_by_card = self.fsrs_presets_for_cards(&cards)?;
+        let presets_by_card = self.fsrs_metric_presets_for_cards(&cards)?;
         let preset_elapsed_ms = preset_start.elapsed().as_secs_f64() * 1000.0;
         let key_start = Instant::now();
         let mut cards_with_keys = Vec::with_capacity(card_count);

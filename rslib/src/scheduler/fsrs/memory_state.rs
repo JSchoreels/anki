@@ -782,10 +782,12 @@ impl Collection {
         stability: f32,
         elapsed_days: f32,
     ) -> Result<f32> {
-        let params = self.fsrs_params_for_card_id(card_id)?;
-        fsrs_current_retrievability_for_params(&params, stability, elapsed_days)
+        let card = self.storage.get_card(card_id)?.or_not_found(card_id)?;
+        let preset = self.fsrs_metric_preset_for_card(&card)?;
+        fsrs_current_retrievability_for_params(&preset.params, stability, elapsed_days)
     }
 
+    #[cfg(test)]
     pub(crate) fn fsrs_current_retrievability_for_card_state(
         &mut self,
         card_id: CardId,
