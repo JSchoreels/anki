@@ -54,7 +54,7 @@ Changes since [build 115](https://github.com/JSchoreels/anki/releases/tag/26.09.
 
 ### Technical details
 
-- **FSRS engine:** Updated to the official [fsrs-rs 7.0.0 release](https://github.com/open-spaced-repetition/fsrs-rs/releases/tag/v7.0.0), which includes the previously backported training and simulation fixes and the updated FSRS-6 optimizer.
+- The FSRS engine includes the training and simulation fixes and the updated FSRS-6 optimizer from [7.0.0](https://github.com/open-spaced-repetition/fsrs-rs/releases/tag/v7.0.0). Anki now uses the engine to reconstruct memory states from legacy add-on writes and truncated review histories. [fsrs-rs #485](https://github.com/open-spaced-repetition/fsrs-rs/pull/485)
 - Full replay resolves each card’s history-reset boundary once and packs canonical review rows directly into the existing replay format. The macOS desktop benchmarks produced byte-identical saved states and retrievability scores for the Small, Tiny and Big model pairs.
 - Exact queue refreshes reuse converted inputs for unchanged cards. They fetch current queue membership and retention targets and recalculate elapsed time before scoring.
 - **Answer-time thresholds:** The time head's bin probabilities are interpolated in log time. The graph combines them with the active RWKV answer-button probabilities to estimate the joint chances of each outcome and answering within each threshold; it does not measure the effect of answering faster. The model weights are unchanged from build 115. See [answer-time evaluation](https://github.com/JSchoreels/anki/blob/main/docs/rwkv-answer-time-2026-11-01.MD).
