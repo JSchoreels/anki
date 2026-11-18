@@ -19,6 +19,7 @@ use rusqlite::OptionalExtension;
 use rusqlite::Row;
 
 use self::data::CardData;
+use super::comma_separated_ids;
 use super::ids_to_string;
 use super::sqlite::SqlSortOrder;
 use crate::card::Card;
@@ -155,22 +156,34 @@ fn row_to_new_card(row: &Row) -> result::Result<NewCard, rusqlite::Error> {
 impl super::SqliteStorage {
     /// Return cards with an FSRS state written by a client that did not
     /// preserve the model's internal stability fields.
-    pub(crate) fn card_ids_with_foreign_fsrs_state(&self) -> Result<Vec<CardId>> {
+    pub(crate) fn card_ids_with_foreign_fsrs_state(
+        &self,
+        home_decks: Option<&[DeckId]>,
+    ) -> Result<Vec<CardId>> {
+        let deck_filter = match home_decks {
+            Some([]) => return Ok(vec![]),
+            Some(ids) => {
+                let ids = comma_separated_ids(ids);
+                format!("((odid = 0 and did in ({ids})) or (odid != 0 and odid in ({ids}))) and")
+            }
+            None => String::new(),
+        };
+        // Normal card data has consecutive numeric s_int and s_fast fields.
+        // Skip JSON parsing in that case, unless a nested object could own the
+        // matched fields. Other JSON layouts use SQLite's top-level lookup.
         self.db
-            .prepare_cached(
-                r#"select id, data from cards
-where data like '%"s":%'
-and (data not like '%"s_int":%' or data not like '%"s_fast":%')"#,
-            )?
-            .query_and_then([], |row| -> Result<Option<CardId>> {
-                let data: CardData = row.get(1)?;
-                let is_foreign = data.fsrs_stability.is_some()
-                    && data.fsrs_difficulty.is_some()
-                    && (data.fsrs_stability_internal.is_none()
-                        || data.fsrs_stability_fast.is_none());
-                Ok(is_foreign.then(|| row.get(0)).transpose()?)
-            })?
-            .filter_map(Result::transpose)
+            .prepare(&format!(
+                r#"select id from cards where {deck_filter}
+                (data not glob '*"s_int":[0-9]*,"s_fast":[0-9]*'
+                    or data like '%{{%{{%,"s_fast":%')
+                and case when json_valid(data) then
+                    json_type(data, '$.s') in ('integer', 'real')
+                    and json_type(data, '$.d') in ('integer', 'real')
+                    and (coalesce(json_type(data, '$.s_int'), 'null') not in ('integer', 'real')
+                        or coalesce(json_type(data, '$.s_fast'), 'null') not in ('integer', 'real'))
+                end"#
+            ))?
+            .query_and_then([], |row| Ok(row.get(0)?))?
             .collect()
     }
 
@@ -258,6 +271,17 @@ and (data not like '%"s_int":%' or data not like '%"s_fast":%')"#,
                 CardData::from_card(card).convert_to_json()?,
                 card.id
             ])?;
+        Ok(())
+    }
+
+    /// Retain unrelated (including unrecognized) card data and sync metadata.
+    pub(crate) fn clear_invalid_fsrs_state(&self, cid: CardId) -> Result<()> {
+        self.db
+            .prepare_cached(
+                "update cards set data = json_remove(data, '$.s', '$.s_int', '$.s_fast', '$.d')
+             where id = ?",
+            )?
+            .execute([cid])?;
         Ok(())
     }
 
@@ -1448,17 +1472,30 @@ mod test {
             (r#"{"s":20,"d":6}"#, true),
             (r#"{"s":20,"s_int":20,"d":6}"#, true),
             (r#"{"s":20,"s_fast":5,"d":6}"#, true),
+            (
+                r#"{ "s" : 20, "d" : 6, "s_int" : 15, "s_fast" : null }"#,
+                true,
+            ),
+            (r#"{"s":20,"d":6,"s_int":null,"s_fast":5}"#, true),
+            (
+                r#"{ "s" : 20, "d" : 6, "s_int" : 15, "s_fast" : 5 }"#,
+                false,
+            ),
+            (r#"{"s":20,"d":6,"extra":{"s_int":15,"s_fast":5}}"#, true),
+            (r#"{"s":20,"d":6,"extra":{"s_int":15},"s_fast":5}"#, true),
             (r#"{"s":20,"s_int":15,"s_fast":5,"d":6}"#, false),
             (r#"{"s":20}"#, false),
             (r#"{"d":6}"#, false),
             (r#"{}"#, false),
+            ("", false),
+            (r#"{"s":20,"d":6"#, false),
         ] {
             storage.db.execute(
                 "update cards set data = ? where id = ?",
                 params![data, card.id],
             )?;
 
-            let ids = storage.card_ids_with_foreign_fsrs_state()?;
+            let ids = storage.card_ids_with_foreign_fsrs_state(None)?;
 
             assert_eq!(ids, if expected { vec![card.id] } else { vec![] }, "{data}");
         }

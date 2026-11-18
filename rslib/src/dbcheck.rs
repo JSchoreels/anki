@@ -164,7 +164,7 @@ impl Collection {
         self.check_revlog(&mut out)?;
 
         debug!("foreign FSRS memory states");
-        let foreign_cards = self.storage.card_ids_with_foreign_fsrs_state()?;
+        let foreign_cards = self.foreign_fsrs_repair_candidates()?;
         out.card_properties_invalid +=
             self.repair_foreign_fsrs_memory_states_inner(foreign_cards)?;
 

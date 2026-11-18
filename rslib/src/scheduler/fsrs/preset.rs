@@ -555,6 +555,39 @@ impl Collection {
         Ok(self.state.fsrs_preset_overlay_cache.as_ref().unwrap())
     }
 
+    /// A matching overlay can select FSRS-7 regardless of the native deck.
+    pub(super) fn fsrs7_repair_home_decks(&mut self) -> Result<Option<Vec<DeckId>>> {
+        let cache = self.fsrs_preset_overlay_cache()?;
+        if cache
+            .rules
+            .iter()
+            .any(|rule| cache.presets[&rule.preset_id].fsrs_version == FsrsVersion::Seven)
+        {
+            return Ok(None);
+        }
+        let fsrs7: HashSet<_> = self
+            .storage
+            .all_deck_config()?
+            .into_iter()
+            .filter(|config| {
+                FsrsVersion::try_from(config.inner.fsrs_version).unwrap_or(FsrsVersion::Seven)
+                    == FsrsVersion::Seven
+            })
+            .map(|config| config.id)
+            .collect();
+        if fsrs7.is_empty() {
+            return Ok(Some(vec![]));
+        }
+        let decks = self
+            .storage
+            .get_decks_map()?
+            .into_values()
+            .filter(|deck| deck.config_id().is_some_and(|id| fsrs7.contains(&id)))
+            .map(|deck| deck.id)
+            .collect();
+        Ok(Some(decks))
+    }
+
     fn fsrs_preset_rule_matches_card(&mut self, card_id: CardId, rule_node: Node) -> Result<bool> {
         let node = Node::Group(vec![
             Node::Search(SearchNode::CardIds(card_id.to_string())),
