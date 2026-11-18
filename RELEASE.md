@@ -39,6 +39,9 @@ Changes since [build 115](https://github.com/JSchoreels/anki/releases/tag/26.09.
 
 #### New Features
 
+- **Study suspended cards under your daily new-card limit.** In Deck Options → Daily Limits, enable **Include suspended cards in the learnable pool** and choose Suspended before New, New before Suspended, or Mixed. Answering a suspended card unsuspends it and resumes its existing schedule.
+- **Gather new cards by a note field.** In Display Order, choose a field and ascending or descending order. Numbers sort by value. Mixed ranks ordinary new and suspended cards together. Either “before” option ranks by field within each group.
+
 - **Explore recall by answer time.** Card Info estimates the chance of answering within 2, 4, 6, 8, 10, 15, 20 and 30 seconds if you press Good. Its graph shows the chance of recalling within each time limit (Hard, Good or Easy), alongside the chances of Good or better and Easy. The estimates are available when the Small Curve model is active and the card was last reviewed on an earlier day.
 
 #### Fixes

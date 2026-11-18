@@ -406,4 +406,11 @@ impl SqliteStorage {
             .query_and_then([notetype_id], |row| Ok(row.get(0)?))?
             .collect()
     }
+
+    pub(crate) fn all_field_names(&self) -> Result<Vec<String>> {
+        self.db
+            .prepare_cached("SELECT DISTINCT name FROM fields ORDER BY name")?
+            .query_and_then([], |row| Ok(row.get(0)?))?
+            .collect()
+    }
 }

@@ -368,7 +368,14 @@ Desktop-only RWKV review settings are stored separately in deck config `other`
 under the `jschoreels.rwkv` key. See `rwkv.MD` for RWKV queue scoring, warm-up
 state, settings, inference runtime, and Rust/NEON parity coverage.
 
-General display-order settings use deck config `other["jschoreels.deckoptions"]`.
+General deck options use deck config `other["jschoreels.deckoptions"]`.
+`include_suspended_cards_in_learnable_pool` opts a preset's decks into offering
+suspended cards under the daily new-card limit. `suspended_card_order` controls
+how the selected deck mixes these with ordinary new cards. Mixed (0) is the
+default, Suspended before New is 1, and New before Suspended is 2.
+`new_card_gather_field` stores the field name for ascending (8) and descending
+(9) note-field gather orders. An empty name uses each note type’s sort field.
+Mixed ranks both groups together by field, and each “before” mode ranks within groups.
 `intraday_learning_mix` defaults to Mix (0), with After (1) and Before (2) placing
 due intraday learning/relearning after or before the remaining queue while
 retaining the selected review sort within each group. The earlier

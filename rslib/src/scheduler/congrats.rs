@@ -2,6 +2,7 @@
 // License: GNU AGPL, version 3 or later; http://www.gnu.org/licenses/agpl.html
 
 use crate::prelude::*;
+use crate::storage::card::learnable::learnable_suspended_filter;
 
 #[derive(Debug)]
 pub(crate) struct CongratsInfo {
@@ -16,8 +17,23 @@ pub(crate) struct CongratsInfo {
 impl Collection {
     pub fn congrats_info(&mut self) -> Result<anki_proto::scheduler::CongratsInfoResponse> {
         let deck = self.get_current_deck()?;
-        let today = self.timing_today()?.days_elapsed;
-        let info = self.storage.congrats_info(&deck, today)?;
+        let timing = self.timing_today()?;
+        let mut info = self.storage.congrats_info(&deck, timing.days_elapsed)?;
+        if !info.new_remaining {
+            let configs = self.storage.get_deck_config_map()?;
+            if configs
+                .values()
+                .any(|c| c.inner.include_suspended_cards_in_learnable_pool)
+            {
+                let decks = self.storage.get_decks_map()?;
+                let scope = self.storage.deck_id_with_children(&deck)?;
+                if let Some(filter) =
+                    learnable_suspended_filter(scope.into_iter(), &decks, &configs, timing)
+                {
+                    info.new_remaining = self.storage.have_learnable_suspended_cards(&filter)?;
+                }
+            }
+        }
         let is_filtered_deck = deck.is_filtered();
         let deck_description = deck.rendered_description();
         let secs_until_next_learn = if info.next_learn_due == 0 {

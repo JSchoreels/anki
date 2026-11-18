@@ -83,6 +83,8 @@ message DeckConfig {
       NEW_CARD_GATHER_PRIORITY_DESCENDING_RETRIEVABILITY = 6;
       // Ascending RWKV retrievability, then ascending position.
       NEW_CARD_GATHER_PRIORITY_ASCENDING_RETRIEVABILITY = 7;
+      NEW_CARD_GATHER_PRIORITY_NOTE_FIELD_ASCENDING = 8;
+      NEW_CARD_GATHER_PRIORITY_NOTE_FIELD_DESCENDING = 9;
     }
     enum NewCardSortOrder {
       // Ascending card template ordinal.
@@ -97,6 +99,11 @@ message DeckConfig {
       NEW_CARD_SORT_ORDER_RANDOM_NOTE_THEN_TEMPLATE = 3;
       // Fully randomized order.
       NEW_CARD_SORT_ORDER_RANDOM_CARD = 4;
+    }
+    enum SuspendedCardOrder {
+      SUSPENDED_CARD_ORDER_MIXED = 0;
+      SUSPENDED_CARD_ORDER_SUSPENDED_BEFORE_NEW = 1;
+      SUSPENDED_CARD_ORDER_NEW_BEFORE_SUSPENDED = 2;
     }
     enum ReviewCardOrder {
       REVIEW_CARD_ORDER_DAY = 0;
@@ -164,6 +171,10 @@ message DeckConfig {
 
     uint32 new_per_day = 9;
     uint32 reviews_per_day = 10;
+    bool include_suspended_cards_in_learnable_pool = 87;
+    SuspendedCardOrder suspended_card_order = 88;
+    // An empty name selects each note type's sort field.
+    string new_card_gather_field = 89;
 
     // not currently used
     uint32 new_per_day_minimum = 35;
@@ -303,6 +314,7 @@ message DeckConfigsForUpdate {
   RwkvProfileSettings rwkv_profile_settings = 21;
   // Desktop-only inputs for the RWKV model-state estimate.
   RwkvCollectionCounts rwkv_collection_counts = 22;
+  repeated string field_names = 23;
 }
 
 message RwkvCollectionCounts {

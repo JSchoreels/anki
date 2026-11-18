@@ -9,6 +9,8 @@ mod sorting;
 
 #[cfg(test)]
 mod benchmark;
+#[cfg(test)]
+mod suspended_tests;
 
 use std::collections::HashMap;
 use std::collections::HashSet;
@@ -33,6 +35,7 @@ use crate::deckconfig::NewCardGatherPriority;
 use crate::deckconfig::NewCardSortOrder;
 use crate::deckconfig::ReviewCardOrder;
 use crate::deckconfig::ReviewMix;
+use crate::deckconfig::SuspendedCardOrder;
 use crate::decks::limits::LimitTreeMap;
 use crate::prelude::*;
 use crate::scheduler::states::load_balancer::LoadBalancer;
@@ -117,6 +120,7 @@ pub(crate) struct NewCard {
     pub original_deck_id: DeckId,
     pub template_index: u32,
     pub hash: u64,
+    pub suspended: bool,
 }
 
 impl From<DueCard> for MainQueueEntry {
@@ -157,6 +161,8 @@ impl From<DueCard> for LearningQueueEntry {
 pub(super) struct QueueSortOptions {
     pub(super) new_order: NewCardSortOrder,
     pub(super) new_gather_priority: NewCardGatherPriority,
+    pub(super) new_gather_field: String,
+    pub(super) suspended_card_order: SuspendedCardOrder,
     pub(super) review_order: ReviewCardOrder,
     pub(super) day_learn_mix: ReviewMix,
     pub(super) intraday_learn_mix: ReviewMix,
@@ -324,7 +330,19 @@ impl QueueBuilder {
 
         let current_deck_id = card.deck_id;
         let original_deck_id = card.original_deck_id;
-        match card.queue {
+        let mut gather_queue = card.queue;
+        if card.queue == CardQueue::Suspended
+            && self
+                .context
+                .deck_map
+                .get(&current_deck_id)
+                .and_then(Deck::config_id)
+                .and_then(|id| self.context.config_map.get(&id))
+                .is_some_and(|c| c.inner.include_suspended_cards_in_learnable_pool)
+        {
+            gather_queue = CardQueue::New;
+        }
+        match gather_queue {
             CardQueue::New => {
                 let card = NewCard {
                     id: card.id,
@@ -334,6 +352,7 @@ impl QueueBuilder {
                     original_deck_id,
                     template_index: card.template_idx as u32,
                     hash: 0,
+                    suspended: card.queue == CardQueue::Suspended,
                 };
                 require!(self.add_new_card(card), "current new card was buried");
                 self.limits.reserve_new_card(current_deck_id)?;
@@ -508,6 +527,11 @@ impl QueueBuilder {
             current_learning_cutoff: now,
             shown_top_card: None,
             non_news_sorted_by_retrievability: shared_r_sort,
+            new_cards_gathered_by_field: matches!(
+                self.context.sort_options.new_gather_priority,
+                NewCardGatherPriority::NoteFieldAscending
+                    | NewCardGatherPriority::NoteFieldDescending
+            ),
             deferred_rwkv_reviews: self.deferred_rwkv_reviews,
             rwkv_learning_repeat_guards,
             blocked_rwkv_learning_cards: HashSet::new(),
@@ -577,6 +601,8 @@ fn sort_options(deck: &Deck, config_map: &HashMap<DeckConfigId, DeckConfig>) -> 
         .map(|config| QueueSortOptions {
             new_order: config.inner.new_card_sort_order(),
             new_gather_priority: config.inner.new_card_gather_priority(),
+            new_gather_field: config.inner.new_card_gather_field.clone(),
+            suspended_card_order: config.inner.suspended_card_order(),
             review_order: config.inner.review_order(),
             day_learn_mix: config.inner.interday_learning_mix(),
             intraday_learn_mix: config.intraday_learning_mix(),

@@ -411,13 +411,29 @@ impl Collection {
         let configs_by_id = self.storage.get_deck_config_map()?;
         let enabled_deck_ids = (!input.include_disabled_decks)
             .then(|| rwkv_enabled_deck_ids(&decks_by_id, &configs_by_id));
-        let (searched_cards, cards) = self
+        let suspended_filter = if input.include_new_cards {
+            crate::storage::card::learnable::learnable_suspended_filter(
+                deck_ids.iter().copied(),
+                &decks_by_id,
+                &configs_by_id,
+                timing,
+            )
+        } else {
+            None
+        };
+        let (searched_cards, mut cards) = self
             .storage
             .rwkv_review_input_candidate_cards_for_deck_review_queue(
                 &deck_ids,
                 enabled_deck_ids.as_ref(),
                 input.include_new_cards,
+                suspended_filter.as_deref(),
             )?;
+        for card in &mut cards {
+            if card.queue == CardQueue::Suspended {
+                card.restore_queue_from_type();
+            }
+        }
         let mut response = self.rwkv_review_input_rows_from_cards(
             cards,
             timing,

@@ -10,10 +10,19 @@ import {
     DeckConfig_Config_QuestionAction,
     DeckConfig_Config_ReviewCardOrder,
     DeckConfig_Config_ReviewMix,
+    DeckConfig_Config_SuspendedCardOrder as SuspendedCardOrder,
 } from "@generated/anki/deck_config_pb";
 import * as tr from "@generated/ftl";
 
 import type { Choice } from "$lib/components/EnumSelector.svelte";
+
+export function suspendedCardOrderChoices(): Choice<SuspendedCardOrder>[] {
+    return [
+        { label: tr.deckConfigSuspendedBeforeNew(), value: SuspendedCardOrder.SUSPENDED_BEFORE_NEW },
+        { label: tr.deckConfigNewBeforeSuspended(), value: SuspendedCardOrder.NEW_BEFORE_SUSPENDED },
+        { label: tr.deckConfigSuspendedOrderMixed(), value: SuspendedCardOrder.MIXED },
+    ];
+}
 
 export function newGatherPriorityChoices(): Choice<DeckConfig_Config_NewCardGatherPriority>[] {
     return [
@@ -32,6 +41,14 @@ export function newGatherPriorityChoices(): Choice<DeckConfig_Config_NewCardGath
         {
             label: tr.deckConfigNewGatherPriorityPositionHighestFirst(),
             value: DeckConfig_Config_NewCardGatherPriority.HIGHEST_POSITION,
+        },
+        {
+            label: tr.deckConfigNoteFieldAscending(),
+            value: DeckConfig_Config_NewCardGatherPriority.NOTE_FIELD_ASCENDING,
+        },
+        {
+            label: tr.deckConfigNoteFieldDescending(),
+            value: DeckConfig_Config_NewCardGatherPriority.NOTE_FIELD_DESCENDING,
         },
         {
             label: tr.deckConfigNewGatherPriorityAscendingRetrievability(),

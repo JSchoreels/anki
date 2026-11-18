@@ -112,6 +112,8 @@ pub struct StateChanges {
     pub notetype: bool,
     pub config: bool,
     pub deck_config: bool,
+    /// A note edit changed the ordering inputs of the current study queue.
+    pub study_queue_order: bool,
     pub mtime: bool,
 }
 
@@ -168,6 +170,7 @@ impl OpChanges {
     pub fn requires_study_queue_rebuild(&self) -> bool {
         let c = &self.changes;
         (c.card && self.op != Op::SetFlag)
+            || c.study_queue_order
             || c.deck
             || (c.config
                 && matches!(

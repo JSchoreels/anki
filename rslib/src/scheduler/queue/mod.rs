@@ -47,6 +47,7 @@ pub(crate) struct CardQueues {
     current_learning_cutoff: TimestampSecs,
     shown_top_card: Option<CardId>,
     non_news_sorted_by_retrievability: bool,
+    new_cards_gathered_by_field: bool,
     deferred_rwkv_reviews: HashMap<CardId, DeferredRwkvReview>,
     rwkv_learning_repeat_guards: Option<RwkvLearningRepeatGuards>,
     blocked_rwkv_learning_cards: HashSet<CardId>,
@@ -405,7 +406,14 @@ impl Collection {
         }
     }
 
-    pub(crate) fn maybe_clear_study_queues_after_op(&mut self, op: &OpChanges) {
+    pub(crate) fn maybe_clear_study_queues_after_op(&mut self, op: &mut OpChanges) {
+        if op.op != Op::AnswerCard && (op.changes.note || op.changes.notetype) {
+            op.changes.study_queue_order = self
+                .state
+                .card_queues
+                .as_ref()
+                .is_some_and(|queues| queues.new_cards_gathered_by_field);
+        }
         if op.op != Op::AnswerCard && op.requires_study_queue_rebuild() {
             self.clear_study_queues();
         }

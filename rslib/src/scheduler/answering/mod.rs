@@ -350,6 +350,7 @@ impl Collection {
         desired_retention_override: Option<f32>,
     ) -> Result<(SchedulingStates, Card)> {
         let note_id = card.note_id;
+        let stored_queue = card.queue;
         let ctx = self.card_state_updater(card, desired_retention_override)?;
         let current = ctx.current_card_state();
 
@@ -357,7 +358,9 @@ impl Collection {
 
         let state_ctx = ctx.state_context(load_balancer_ctx)?;
         let states = ctx.next_answer_states(current, &state_ctx)?;
-        Ok((states, ctx.into_card()))
+        let mut card = ctx.into_card();
+        card.queue = stored_queue;
+        Ok((states, card))
     }
 
     fn review_load_balancer_ctx(
@@ -479,6 +482,14 @@ impl Collection {
             );
         }
         let mut updater = self.card_state_updater(card, answer.desired_retention_override)?;
+        let daily_limit_queue = if answer.from_queue
+            && original.queue == CardQueue::Suspended
+            && updater.card.queue != CardQueue::Suspended
+        {
+            CardQueue::New
+        } else {
+            original.queue
+        };
         if answer.desired_retention_override_is_final {
             // The supplied scheduling state already uses the final target. Do
             // not replace it with a second native Dynamic DR mapping on save.
@@ -545,7 +556,7 @@ impl Collection {
             }
         }
 
-        self.update_deck_stats_from_answer(usn, answer, &updater, original.queue)?;
+        self.update_deck_stats_from_answer(usn, answer, &updater, daily_limit_queue)?;
         self.maybe_bury_siblings(&original, &updater.config)?;
         let timing = updater.timing;
         let deckconfig_id = updater.original_deck.config_id();
@@ -702,6 +713,14 @@ impl Collection {
             .storage
             .get_deck_config(home_deck_config_id)?
             .unwrap_or_default();
+        if card.queue == CardQueue::Suspended
+            && !deck.is_filtered()
+            && config.inner.include_suspended_cards_in_learnable_pool
+        {
+            // Only the scheduling copy is unsuspended. The answer transaction
+            // records the real transition, with the suspended original for undo.
+            card.restore_queue_from_type();
+        }
         let fsrs_preset = self.fsrs_preset_for_card(&card)?;
 
         let desired_retention = desired_retention_override.unwrap_or(fsrs_preset.desired_retention);

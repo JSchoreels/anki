@@ -981,7 +981,10 @@ impl RwkvInference {
                             NewCardGatherPriority::DeckThenRandomNotes => {
                                 deck().then_with(|| random(a, true).total_cmp(&random(b, true)))
                             }
-                            NewCardGatherPriority::LowestPosition => position(),
+                            // Forecast inputs carry positions but no note fields.
+                            NewCardGatherPriority::LowestPosition
+                            | NewCardGatherPriority::NoteFieldAscending
+                            | NewCardGatherPriority::NoteFieldDescending => position(),
                             NewCardGatherPriority::HighestPosition => position().reverse(),
                             NewCardGatherPriority::RandomNotes => {
                                 random(a, true).total_cmp(&random(b, true))

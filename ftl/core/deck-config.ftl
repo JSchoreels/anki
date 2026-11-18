@@ -43,6 +43,19 @@ deck-config-new-cards-ignore-review-limit-tooltip =
     By default, the review limit also applies to new cards, and no new cards will be
     shown when the review limit has been reached. If this option is enabled, new cards
     will be shown regardless of the review limit.
+deck-config-include-suspended-cards-in-learnable-pool = Include suspended cards in the learnable pool
+deck-config-include-suspended-cards-in-learnable-pool-tooltip =
+    Suspended cards in decks using this preset can fill slots in New cards/day.
+    Answering one unsuspends it and uses one new-card slot. Previously studied
+    cards resume from their existing scheduling state.
+deck-config-suspended-card-order = Suspended card order
+deck-config-suspended-card-order-tooltip =
+    Choose which group fills the available new-card slots first. Mixed alternates
+    between groups while both have cards. If you gather by a note field, Mixed
+    ranks both groups together by that field. Either “before” option ranks each group separately.
+deck-config-suspended-before-new = Suspended before New
+deck-config-new-before-suspended = New before Suspended
+deck-config-suspended-order-mixed = Mixed
 deck-config-same-day-reviews-ignore-review-limit = Same-day reviews ignore review limit
 deck-config-same-day-reviews-ignore-review-limit-tooltip =
     Cards already answered during the current scheduler day can be shown again
@@ -159,6 +172,9 @@ deck-config-new-gather-priority-tooltip-2 =
     `Descending position`: Gathers cards by descending position (due #), which is typically
     the latest-added first.
 
+    `Note field (ascending/descending)`: Gathers and shows cards by the current
+    value of the selected note field. Numeric values sort by magnitude.
+
     `Ascending/descending retrievability (RWKV)`: Gathers cards by RWKV retrievability when
     RWKV queue scores are available. Cards without an RWKV score fall back to ascending position.
     These are desktop-only RWKV gather modes.
@@ -167,6 +183,14 @@ deck-config-new-gather-priority-tooltip-2 =
     
     `Random cards`: Gathers cards in a random order.
 deck-config-new-card-sort-order = New card sort order
+deck-config-note-field-ascending = Note field (ascending)
+deck-config-note-field-descending = Note field (descending)
+deck-config-note-field = Note field
+deck-config-note-type-sort-field = Note type’s sort field
+deck-config-note-field-tooltip =
+    Choose a field by name, or use each note type’s sort field. Numbers come first
+    and sort by value. Text follows in case-insensitive order. Blank and missing
+    fields come last in both directions.
 deck-config-new-card-sort-order-tooltip-2 =
     `Card type, then order gathered`: Shows cards in order of card type number.
     Cards of each card type number are shown in the order they were gathered. 

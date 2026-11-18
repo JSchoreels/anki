@@ -9,4 +9,3 @@ WHERE did IN (
     SELECT id
     FROM active_decks
   )
-  AND queue = 0

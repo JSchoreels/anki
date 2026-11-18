@@ -17,6 +17,7 @@ use crate::card::CardQueue;
 use crate::collection::RwkvReviewQueueScoreEntry;
 use crate::deckconfig::NewCardGatherPriority;
 use crate::deckconfig::ReviewCardOrder;
+use crate::deckconfig::SuspendedCardOrder;
 use crate::decks::limits::LimitKind;
 use crate::prelude::*;
 use crate::scheduler::fsrs::preset::FsrsPresetCard;
@@ -28,6 +29,7 @@ use crate::scheduler::rwkv::rwkv_review_score_eligibility;
 use crate::scheduler::rwkv::rwkv_review_score_eligibility_ignoring_retention;
 use crate::scheduler::rwkv::RwkvReviewScoreEligibility;
 use crate::scheduler::timing::SchedTimingToday;
+use crate::storage::card::learnable::learnable_suspended_filter;
 use crate::storage::card::NewCardSorting;
 
 #[derive(Debug, Clone, Copy)]
@@ -677,41 +679,85 @@ impl QueueBuilder {
     }
 
     fn gather_new_cards(&mut self, col: &mut Collection) -> Result<()> {
-        let salt = Self::knuth_salt(self.context.timing.days_elapsed);
-        match self.context.sort_options.new_gather_priority {
-            NewCardGatherPriority::Deck => {
-                self.gather_new_cards_by_deck(col, NewCardSorting::LowestPosition)
-            }
-            NewCardGatherPriority::DeckThenRandomNotes => {
-                self.gather_new_cards_by_deck(col, NewCardSorting::RandomNotes(salt))
-            }
-            NewCardGatherPriority::LowestPosition => {
-                self.gather_new_cards_sorted(col, NewCardSorting::LowestPosition)
-            }
-            NewCardGatherPriority::HighestPosition => {
-                self.gather_new_cards_sorted(col, NewCardSorting::HighestPosition)
-            }
-            NewCardGatherPriority::AscendingRetrievability => {
-                self.gather_new_cards_by_retrievability(col, false)
-            }
-            NewCardGatherPriority::DescendingRetrievability => {
-                self.gather_new_cards_by_retrievability(col, true)
-            }
-            NewCardGatherPriority::RandomNotes => {
-                self.gather_new_cards_sorted(col, NewCardSorting::RandomNotes(salt))
-            }
-            NewCardGatherPriority::RandomCards => {
-                self.gather_new_cards_sorted(col, NewCardSorting::RandomCards(salt))
-            }
+        if self.limits.root_limit_reached(LimitKind::New) {
+            return Ok(());
         }
+        let priority = self.context.sort_options.new_gather_priority;
+        let by_deck = matches!(
+            priority,
+            NewCardGatherPriority::Deck | NewCardGatherPriority::DeckThenRandomNotes
+        );
+        let salt = Self::knuth_salt(self.context.timing.days_elapsed);
+        let active_decks = col.storage.get_active_deck_ids_sorted()?;
+        let suspended_filter = learnable_suspended_filter(
+            active_decks.iter().copied(),
+            &self.context.deck_map,
+            &self.context.config_map,
+            self.context.timing,
+        );
+        let sort = match priority {
+            NewCardGatherPriority::NoteFieldAscending
+            | NewCardGatherPriority::NoteFieldDescending => {
+                let field = self.context.sort_options.new_gather_field.clone();
+                return col.storage.for_each_new_card_by_field(
+                    &field,
+                    priority == NewCardGatherPriority::NoteFieldDescending,
+                    self.context.sort_options.suspended_card_order,
+                    suspended_filter.as_deref(),
+                    |card| {
+                        self.gather_new_card_if_eligible(card)?;
+                        Ok(!self.limits.root_limit_reached(LimitKind::New))
+                    },
+                );
+            }
+            NewCardGatherPriority::Deck
+            | NewCardGatherPriority::LowestPosition
+            | NewCardGatherPriority::AscendingRetrievability
+            | NewCardGatherPriority::DescendingRetrievability => NewCardSorting::LowestPosition,
+            NewCardGatherPriority::HighestPosition => NewCardSorting::HighestPosition,
+            NewCardGatherPriority::DeckThenRandomNotes | NewCardGatherPriority::RandomNotes => {
+                NewCardSorting::RandomNotes(salt)
+            }
+            NewCardGatherPriority::RandomCards => NewCardSorting::RandomCards(salt),
+        };
+        // The usual deck-first gather can stop at the limit without sorting
+        // the entire deck tree when there is only one group.
+        if by_deck && suspended_filter.is_none() {
+            return self.gather_new_cards_by_deck(col, &active_decks, sort);
+        }
+        let scores = self.context.rwkv_review_queue_scores.clone();
+        col.storage.with_new_card_candidates(
+            sort,
+            by_deck,
+            suspended_filter.as_deref(),
+            |new, suspended| {
+                if let (
+                    Some(scores),
+                    NewCardGatherPriority::AscendingRetrievability
+                    | NewCardGatherPriority::DescendingRetrievability,
+                ) = (scores, priority)
+                {
+                    let descending = priority == NewCardGatherPriority::DescendingRetrievability;
+                    let new = new_cards_by_retrievability(new, &scores, descending)?;
+                    let suspended = new_cards_by_retrievability(suspended, &scores, descending)?;
+                    self.gather_new_card_groups(
+                        &mut new.into_iter().map(Ok),
+                        &mut suspended.into_iter().map(Ok),
+                    )
+                } else {
+                    self.gather_new_card_groups(new, suspended)
+                }
+            },
+        )
     }
 
     fn gather_new_cards_by_deck(
         &mut self,
         col: &mut Collection,
+        deck_ids: &[DeckId],
         sort: NewCardSorting,
     ) -> Result<()> {
-        for deck_id in col.storage.get_active_deck_ids_sorted()? {
+        for &deck_id in deck_ids {
             if self.limits.root_limit_reached(LimitKind::New) {
                 break;
             }
@@ -732,81 +778,47 @@ impl QueueBuilder {
         Ok(())
     }
 
-    fn gather_new_cards_sorted(
+    fn gather_new_card_groups(
         &mut self,
-        col: &mut Collection,
-        order: NewCardSorting,
+        new: &mut dyn Iterator<Item = Result<NewCard>>,
+        suspended: &mut dyn Iterator<Item = Result<NewCard>>,
     ) -> Result<()> {
-        col.storage
-            .for_each_new_card_in_active_decks(order, |card| {
-                if self.limits.root_limit_reached(LimitKind::New) {
-                    return Ok(false);
-                }
-                if !self
-                    .limits
-                    .limit_reached(card.current_deck_id, LimitKind::New)?
-                    && self.add_new_card(card)
-                {
-                    self.limits
-                        .decrement_deck_and_parent_limits(card.current_deck_id, LimitKind::New)?;
-                }
-                Ok(true)
-            })
-    }
-
-    fn gather_new_cards_by_retrievability(
-        &mut self,
-        col: &mut Collection,
-        descending: bool,
-    ) -> Result<()> {
-        let mut cards = Vec::new();
-        col.storage
-            .for_each_new_card_in_active_decks(NewCardSorting::LowestPosition, |card| {
-                cards.push(card);
-                Ok(true)
-            })?;
-
-        if let Some(scores) = self.context.rwkv_review_queue_scores.as_ref() {
-            cards.sort_by(|card_a, card_b| {
-                let score_a = scores
-                    .get(&card_a.id)
-                    .map(|score| score.retrievability)
-                    .filter(|score| score.is_finite());
-                let score_b = scores
-                    .get(&card_b.id)
-                    .map(|score| score.retrievability)
-                    .filter(|score| score.is_finite());
-                match (score_a, score_b) {
-                    (Some(score_a), Some(score_b)) => {
-                        let ord = score_a.total_cmp(&score_b);
-                        if descending {
-                            ord.reverse()
-                        } else {
-                            ord
-                        }
-                    }
-                    (Some(_), None) => std::cmp::Ordering::Less,
-                    (None, Some(_)) => std::cmp::Ordering::Greater,
-                    (None, None) => std::cmp::Ordering::Equal,
-                }
+        let day = self.context.timing.days_elapsed;
+        let studied = self.context.root_deck.new_rev_counts(day).0;
+        let mut suspended_next = self
+            .new
+            .first()
+            .map_or((i64::from(day) + i64::from(studied)) % 2 != 0, |pinned| {
+                !pinned.suspended
             });
-        }
-
-        for card in cards {
-            if self.limits.root_limit_reached(LimitKind::New) {
-                break;
-            }
-            if !self
-                .limits
-                .limit_reached(card.current_deck_id, LimitKind::New)?
-                && self.add_new_card(card)
-            {
-                self.limits
-                    .decrement_deck_and_parent_limits(card.current_deck_id, LimitKind::New)?;
+        while !self.limits.root_limit_reached(LimitKind::New) {
+            let prefer_suspended = match self.context.sort_options.suspended_card_order {
+                SuspendedCardOrder::Mixed => suspended_next,
+                SuspendedCardOrder::SuspendedBeforeNew => true,
+                SuspendedCardOrder::NewBeforeSuspended => false,
+            };
+            let next = if prefer_suspended {
+                suspended.next().or_else(|| new.next())
+            } else {
+                new.next().or_else(|| suspended.next())
+            };
+            let Some(card) = next.transpose()? else { break };
+            if self.gather_new_card_if_eligible(card)? {
+                suspended_next = !card.suspended;
             }
         }
 
         Ok(())
+    }
+
+    fn gather_new_card_if_eligible(&mut self, card: NewCard) -> Result<bool> {
+        let deck = card.current_deck_id;
+        if self.limits.limit_reached(deck, LimitKind::New)? || !self.add_new_card(card) {
+            return Ok(false);
+        }
+        self.limits
+            .decrement_deck_and_parent_limits(deck, LimitKind::New)?;
+        Ok(true)
     }
 
     /// True if limit should be decremented.
@@ -867,6 +879,25 @@ impl QueueBuilder {
     fn knuth_salt(base_salt: u32) -> u32 {
         base_salt.wrapping_mul(2654435761)
     }
+}
+
+fn new_cards_by_retrievability(
+    rows: &mut dyn Iterator<Item = Result<NewCard>>,
+    scores: &HashMap<CardId, RwkvReviewQueueScoreEntry>,
+    descending: bool,
+) -> Result<Vec<NewCard>> {
+    let mut cards = rows.collect::<Result<Vec<_>>>()?;
+    // Unscored cards follow scored cards in their original gather order.
+    let score = |id| {
+        scores
+            .get(&id)
+            .map(|score| score.retrievability)
+            .filter(|score| score.is_finite())
+            .map(|score| if descending { -score } else { score })
+            .unwrap_or(f32::INFINITY)
+    };
+    cards.sort_by(|a, b| score(a.id).total_cmp(&score(b.id)));
+    Ok(cards)
 }
 
 fn exact_review_order_keys(

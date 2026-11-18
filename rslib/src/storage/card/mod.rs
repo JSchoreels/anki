@@ -3,6 +3,7 @@
 
 pub(crate) mod data;
 pub(crate) mod filtered;
+pub(crate) mod learnable;
 
 use std::collections::HashSet;
 use std::convert::TryFrom;
@@ -141,7 +142,7 @@ fn row_to_card_entry(row: &Row) -> Result<CardEntry> {
     })
 }
 
-fn row_to_new_card(row: &Row) -> result::Result<NewCard, rusqlite::Error> {
+fn row_to_new_card(row: &Row, suspended: bool) -> result::Result<NewCard, rusqlite::Error> {
     Ok(NewCard {
         id: row.get(0)?,
         note_id: row.get(1)?,
@@ -150,6 +151,7 @@ fn row_to_new_card(row: &Row) -> result::Result<NewCard, rusqlite::Error> {
         current_deck_id: row.get(4)?,
         original_deck_id: row.get(5)?,
         hash: 0,
+        suspended,
     })
 }
 
@@ -543,36 +545,11 @@ impl super::SqliteStorage {
         let mut stmt = self.db.prepare_cached(&format!(
             "{} ORDER BY {}",
             include_str!("new_cards.sql"),
-            sort.write()
+            sort.sql(false)
         ))?;
         let mut rows = stmt.query(params![deck])?;
         while let Some(row) = rows.next()? {
-            if !func(row_to_new_card(row)?)? {
-                break;
-            }
-        }
-
-        Ok(())
-    }
-
-    /// Call func() for each new card in the active decks, stopping when it
-    /// returns false or no more cards found.
-    pub(crate) fn for_each_new_card_in_active_decks<F>(
-        &self,
-        order: NewCardSorting,
-        mut func: F,
-    ) -> Result<()>
-    where
-        F: FnMut(NewCard) -> Result<bool>,
-    {
-        let mut stmt = self.db.prepare_cached(&format!(
-            "{} ORDER BY {}",
-            include_str!("active_new_cards.sql"),
-            order.write(),
-        ))?;
-        let mut rows = stmt.query(params![])?;
-        while let Some(row) = rows.next()? {
-            if !func(row_to_new_card(row)?)? {
+            if !func(row_to_new_card(row, false)?)? {
                 break;
             }
         }
@@ -868,6 +845,7 @@ impl super::SqliteStorage {
         deck_ids: &[DeckId],
         enabled_deck_ids: Option<&HashSet<DeckId>>,
         include_new_cards: bool,
+        suspended_filter: Option<&str>,
     ) -> Result<(u32, Vec<Card>)> {
         if deck_ids.is_empty() {
             return Ok((0, Vec::new()));
@@ -878,10 +856,13 @@ impl super::SqliteStorage {
         sorted_deck_ids.sort_unstable();
         ids_to_string(&mut deck_ids_sql, sorted_deck_ids);
 
+        let suspended_clause = suspended_filter
+            .map(|filter| format!(" or ({filter})"))
+            .unwrap_or_default();
         let searched_cards = self
             .db
             .prepare(&format!(
-                "select count() from cards where did in {deck_ids_sql} and queue in ({})",
+                "select count() from cards where did in {deck_ids_sql} and (queue in ({}){suspended_clause})",
                 if include_new_cards { "0, 2" } else { "2" }
             ))?
             .query_row([], |row| row.get(0))?;
@@ -907,7 +888,7 @@ impl super::SqliteStorage {
         };
 
         let mut sql = format!(
-            "{} where did in {deck_ids_sql} and {queue_filter}",
+            "{} where did in {deck_ids_sql} and ({queue_filter}{suspended_clause})",
             include_str!("get_card.sql"),
         );
 
@@ -1412,10 +1393,19 @@ pub(crate) enum NewCardSorting {
 }
 
 impl NewCardSorting {
-    fn write(self) -> String {
+    fn sql(self, suspended: bool) -> String {
+        let position_order = |direction| {
+            if suspended {
+                // A studied card's due value is a day or timestamp. With no saved
+                // position, use note creation and template order after positioned cards.
+                format!("case when type = 0 then due else extract_original_position(data) end {direction} nulls last, nid, ord, id")
+            } else {
+                format!("due {direction}, ord asc")
+            }
+        };
         match self {
-            NewCardSorting::LowestPosition => "due ASC, ord ASC".to_string(),
-            NewCardSorting::HighestPosition => "due DESC, ord ASC".to_string(),
+            NewCardSorting::LowestPosition => position_order("asc"),
+            NewCardSorting::HighestPosition => position_order("desc"),
             NewCardSorting::RandomNotes(salt) => format!("fnvhash(nid, {salt}), ord ASC"),
             NewCardSorting::RandomCards(salt) => format!("fnvhash(id, {salt})"),
         }

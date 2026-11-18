@@ -54,6 +54,16 @@ License: GNU AGPL, version 3 or later; http://www.gnu.org/licenses/agpl.html
 
     const currentDeck = "\n\n" + tr.deckConfigDisplayOrderWillUseCurrentDeck();
 
+    $: gatheringByField =
+        $config.newCardGatherPriority === GatherOrder.NOTE_FIELD_ASCENDING ||
+        $config.newCardGatherPriority === GatherOrder.NOTE_FIELD_DESCENDING;
+    $: fieldChoices = [
+        { value: "", label: tr.deckConfigNoteTypeSortField() },
+        ...Array.from(new Set([...state.fieldNames, $config.newCardGatherField]))
+            .filter(Boolean)
+            .map((field) => ({ value: field, label: field })),
+    ];
+
     let disabledNewSortOrders: number[] = [];
     $: {
         switch ($config.newCardGatherPriority) {
@@ -100,6 +110,10 @@ License: GNU AGPL, version 3 or later; http://www.gnu.org/licenses/agpl.html
         newCardSortOrder: {
             title: tr.deckConfigNewCardSortOrder(),
             help: tr.deckConfigNewCardSortOrderTooltip2() + currentDeck,
+        },
+        gatherField: {
+            title: tr.deckConfigNoteField(),
+            help: tr.deckConfigNoteFieldTooltip() + currentDeck,
         },
         newReviewPriority: {
             title: tr.deckConfigNewReviewPriority(),
@@ -158,23 +172,40 @@ License: GNU AGPL, version 3 or later; http://www.gnu.org/licenses/agpl.html
             </EnumSelectorRow>
         </Item>
 
-        <Item>
-            <EnumSelectorRow
-                bind:value={$config.newCardSortOrder}
-                defaultValue={defaults.newCardSortOrder}
-                choices={newSortOrderChoices()}
-                disabledChoices={disabledNewSortOrders}
-            >
-                <SettingTitle
-                    on:click={() =>
-                        openHelpModal(
-                            Object.keys(settings).indexOf("newCardSortOrder"),
-                        )}
+        {#if gatheringByField}
+            <Item>
+                <EnumSelectorRow
+                    bind:value={$config.newCardGatherField}
+                    defaultValue={defaults.newCardGatherField}
+                    choices={fieldChoices}
                 >
-                    {settings.newCardSortOrder.title}
-                </SettingTitle>
-            </EnumSelectorRow>
-        </Item>
+                    <SettingTitle
+                        on:click={() =>
+                            openHelpModal(Object.keys(settings).indexOf("gatherField"))}
+                    >
+                        {settings.gatherField.title}
+                    </SettingTitle>
+                </EnumSelectorRow>
+            </Item>
+        {:else}
+            <Item>
+                <EnumSelectorRow
+                    bind:value={$config.newCardSortOrder}
+                    defaultValue={defaults.newCardSortOrder}
+                    choices={newSortOrderChoices()}
+                    disabledChoices={disabledNewSortOrders}
+                >
+                    <SettingTitle
+                        on:click={() =>
+                            openHelpModal(
+                                Object.keys(settings).indexOf("newCardSortOrder"),
+                            )}
+                    >
+                        {settings.newCardSortOrder.title}
+                    </SettingTitle>
+                </EnumSelectorRow>
+            </Item>
+        {/if}
 
         <Item>
             <EnumSelectorRow

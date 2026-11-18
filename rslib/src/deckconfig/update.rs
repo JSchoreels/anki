@@ -120,6 +120,7 @@ impl Collection {
             review_fuzz_factor_mid: review_fuzz_config.factor_mid,
             review_fuzz_factor_long: review_fuzz_config.factor_long,
             all_config: self.get_deck_config_with_extra_for_update()?,
+            field_names: self.storage.all_field_names()?,
             current_deck: Some(self.get_current_deck_for_update(deck)?),
             defaults: Some(defaults.into()),
             schema_modified: self

@@ -116,6 +116,18 @@ When studying a deck that has subdecks inside it, the review limit behaves simil
 Anki includes any learning cards that have [crossed the day boundary](./preferences#scheduler) (interday learning cards) in the review count,
 so those learning cards will be subject to the review limit.
 
+### Include Suspended Cards in the Learnable Pool
+
+Turn this on to let suspended cards from decks using this preset fill **New cards/day** slots. It is off by default. A card stays suspended until you answer it. That answer uses one new-card slot and resumes the card from its existing scheduling state. Undoing the answer restores its suspension and the slot.
+
+**Suspended card order** controls which group gets the available slots when you study the selected deck, including its subdecks.
+
+- **Suspended before New** draws from suspended cards first.
+- **New before Suspended** draws from ordinary new cards first.
+- **Mixed** ranks both groups together when gathering by a note field. With other gather orders, it alternates groups while both have eligible cards, then fills the remaining slots from the other group. The starting group rotates by scheduler day.
+
+With either **before** option, the gather order applies within each group. When gathering by position, a suspended new card uses its new-card position. A previously studied card uses its saved original position. Cards without a saved position come last, in note creation and template order.
+
 ### Same-Day Reviews Ignore Review Limit
 
 When enabled, a card already answered during the current scheduler day may be
@@ -267,6 +279,8 @@ Controls how Anki gathers new cards from a deck. The options are:
 - **Ascending position**: Gathers cards by ascending position (due #), which is typically the oldest-added first.
 
 - **Descending position**: Gathers cards by descending position (due #), which is typically the latest-added first.
+
+- **Note field (ascending)** and **Note field (descending)** gather and show cards by the current value of a field. Select its name, such as _Frequency_, or use each note type’s sort field. Numbers sort by magnitude, so ascending order puts `-1.5`, `2`, and `10` in that order. Text follows, ignoring case. Blank values and notes without the field come last in either direction. Ties use note creation and template order. Anki applies this ranking before the daily limit, using the field values at the time it builds the study queue.
 
 - **Random notes**: Gathers cards from randomly selected notes.
 

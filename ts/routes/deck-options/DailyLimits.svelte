@@ -9,6 +9,7 @@
     import type Modal from "bootstrap/js/dist/modal";
 
     import DynamicallySlottable from "$lib/components/DynamicallySlottable.svelte";
+    import EnumSelectorRow from "$lib/components/EnumSelectorRow.svelte";
     import HelpModal from "$lib/components/HelpModal.svelte";
     import Item from "$lib/components/Item.svelte";
     import SettingTitle from "$lib/components/SettingTitle.svelte";
@@ -16,6 +17,7 @@
     import TitledContainer from "$lib/components/TitledContainer.svelte";
     import type { HelpItem } from "$lib/components/types";
 
+    import { suspendedCardOrderChoices } from "./choices";
     import GlobalLabel from "./GlobalLabel.svelte";
     import type { DeckOptionsState } from "./lib";
     import { ValueTab } from "./lib";
@@ -131,6 +133,16 @@
             help: tr.deckConfigReviewLimitTooltip() + reviewV3Extra,
             url: HelpPage.DeckOptions.maximumReviewsday,
         },
+        includeSuspendedCards: {
+            title: tr.deckConfigIncludeSuspendedCardsInLearnablePool(),
+            help: tr.deckConfigIncludeSuspendedCardsInLearnablePoolTooltip(),
+            url: HelpPage.DeckOptions.newCardsday,
+        },
+        suspendedCardOrder: {
+            title: tr.deckConfigSuspendedCardOrder(),
+            help: tr.deckConfigSuspendedCardOrderTooltip(),
+            url: HelpPage.DeckOptions.newCardsday,
+        },
         sameDayReviewsIgnoreReviewLimit: {
             title: tr.deckConfigSameDayReviewsIgnoreReviewLimit(),
             help: tr.deckConfigSameDayReviewsIgnoreReviewLimitTooltip(),
@@ -199,6 +211,41 @@
         <Item>
             <Warning warning={reviewsTooLow} />
         </Item>
+
+        <Item>
+            <SwitchRow
+                bind:value={$config.includeSuspendedCardsInLearnablePool}
+                defaultValue={defaults.includeSuspendedCardsInLearnablePool}
+            >
+                <SettingTitle
+                    on:click={() =>
+                        openHelpModal(
+                            Object.keys(settings).indexOf("includeSuspendedCards"),
+                        )}
+                >
+                    {settings.includeSuspendedCards.title}
+                </SettingTitle>
+            </SwitchRow>
+        </Item>
+
+        {#if $config.includeSuspendedCardsInLearnablePool}
+            <Item>
+                <EnumSelectorRow
+                    bind:value={$config.suspendedCardOrder}
+                    defaultValue={defaults.suspendedCardOrder}
+                    choices={suspendedCardOrderChoices()}
+                >
+                    <SettingTitle
+                        on:click={() =>
+                            openHelpModal(
+                                Object.keys(settings).indexOf("suspendedCardOrder"),
+                            )}
+                    >
+                        {settings.suspendedCardOrder.title}
+                    </SettingTitle>
+                </EnumSelectorRow>
+            </Item>
+        {/if}
 
         <Item>
             <SwitchRow

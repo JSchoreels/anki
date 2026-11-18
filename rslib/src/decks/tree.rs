@@ -17,6 +17,7 @@ use super::limits::RemainingLimits;
 use super::DueCounts;
 use crate::ops::OpOutput;
 use crate::prelude::*;
+use crate::storage::card::learnable::learnable_suspended_filter;
 use crate::undo::Op;
 
 fn deck_names_to_tree(names: impl Iterator<Item = (DeckId, String)>) -> DeckTreeNode {
@@ -322,6 +323,16 @@ impl Collection {
                 .then(Default::default);
             let dconf = self.storage.get_deck_config_map()?;
             let mut counts = self.due_counts(timing_at_stamp, learn_cutoff)?;
+            if let Some(filter) = learnable_suspended_filter(
+                decks_map.keys().copied(),
+                &decks_map,
+                &dconf,
+                timing_at_stamp,
+            ) {
+                for (deck, suspended) in self.storage.learnable_suspended_counts(&filter)? {
+                    counts.entry(deck).or_default().new += suspended;
+                }
+            }
             for (deck_id, count) in &mut counts {
                 let enabled = decks_map
                     .get(deck_id)

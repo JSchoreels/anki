@@ -1156,9 +1156,10 @@ class Reviewer:
             update_undo_actions = getattr(self.mw, "update_undo_actions", None)
             if callable(update_undo_actions):
                 update_undo_actions()
-            if gui_hooks.reviewer_did_answer_card.count() > 0:
+            leeched = sched.state_is_leech(answer.new_state)
+            if gui_hooks.reviewer_did_answer_card.count() > 0 or leeched:
                 self.card.load()
-            # v3 scheduler doesn't report this
+            # The leech action can change the card's suspension on this answer.
             suspended = self.card is not None and self.card.queue < 0
             self._rwkv_undo_restored_card_active = False
             self._after_answering(ease)
@@ -1170,7 +1171,7 @@ class Reviewer:
                 (time.monotonic() - start) * 1000,
                 (time.monotonic() - after_answer_start) * 1000,
             )
-            if sched.state_is_leech(answer.new_state):
+            if leeched:
                 self.onLeech(suspended)
 
         self.state = "transition"

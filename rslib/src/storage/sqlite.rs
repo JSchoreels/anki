@@ -18,6 +18,7 @@ use rusqlite::functions::FunctionFlags;
 use rusqlite::params;
 use rusqlite::trace::TraceEvent;
 use rusqlite::types::FromSqlError;
+use rusqlite::types::Value as SqlValue;
 use rusqlite::types::ValueRef;
 use rusqlite::Connection;
 use serde_json::Value;
@@ -34,6 +35,7 @@ use crate::prelude::*;
 use crate::scheduler::timing::local_minutes_west_for_stamp;
 use crate::scheduler::timing::v1_creation_date;
 use crate::storage::card::data::CardData;
+use crate::text::strip_html_preserving_media_filenames;
 use crate::text::without_combining;
 use crate::text::CowMapping;
 
@@ -81,6 +83,7 @@ fn open_or_create_collection_db(
     db.set_prepared_statement_cache_capacity(50);
 
     add_field_index_function(&db)?;
+    add_field_sort_value_function(&db)?;
     add_regexp_function(&db)?;
     add_regexp_fields_function(&db)?;
     add_regexp_tags_function(&db)?;
@@ -245,6 +248,37 @@ fn add_field_index_function(db: &Connection) -> rusqlite::Result<()> {
             let mut fields = ctx.get_raw(0).as_str()?.split('\x1f');
             let idx: u16 = ctx.get(1)?;
             Ok(fields.nth(idx as usize).unwrap_or("").to_string())
+        },
+    )
+}
+
+/// Return a SQLite number, text, or NULL so ORDER BY can compare field values
+/// without treating a partial number like "10a" as numeric.
+fn add_field_sort_value_function(db: &Connection) -> rusqlite::Result<()> {
+    db.create_scalar_function(
+        "field_sort_value",
+        2,
+        FunctionFlags::SQLITE_DETERMINISTIC,
+        |ctx| {
+            if ctx.get_raw(0) == ValueRef::Null {
+                return Ok(SqlValue::Null);
+            }
+            let raw = ctx.get_raw(0).as_str()?;
+            let field = if ctx.get::<bool>(1)? {
+                strip_html_preserving_media_filenames(raw)
+            } else {
+                Cow::Borrowed(raw)
+            };
+            let value = field.trim();
+            Ok(if value.is_empty() {
+                SqlValue::Null
+            } else if let Ok(number) = value.parse::<i64>() {
+                SqlValue::Integer(number)
+            } else if let Some(number) = value.parse::<f64>().ok().filter(|n| n.is_finite()) {
+                SqlValue::Real(number)
+            } else {
+                SqlValue::Text(value.into())
+            })
         },
     )
 }

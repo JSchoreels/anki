@@ -102,6 +102,7 @@ export class DeckOptionsState {
     readonly configList: Readable<ConfigListEntry[]>;
     readonly cardStateCustomizer: Writable<string>;
     readonly currentDeck: DeckConfigsForUpdate_CurrentDeck;
+    readonly fieldNames: string[];
     readonly deckLimits: Writable<DeckConfigsForUpdate_CurrentDeck_Limits>;
     readonly rwkvRespectSubdeckMinimums: Writable<boolean>;
     readonly rwkvApplyRespectSubdeckMinimumsToChildren: Writable<boolean> = writable(false);
@@ -143,6 +144,7 @@ export class DeckOptionsState {
     constructor(targetDeckId: DeckOptionsId, data: DeckConfigsForUpdate) {
         this.targetDeckId = targetDeckId;
         this.currentDeck = data.currentDeck!;
+        this.fieldNames = data.fieldNames;
         this.rwkvProfileSettings = writable(
             data.rwkvProfileSettings ?? new RwkvProfileSettings({
                 model: RWKV_MODEL_SMALL,

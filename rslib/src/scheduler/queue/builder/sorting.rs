@@ -17,42 +17,66 @@ impl QueueBuilder {
             self.context.sort_options.new_gather_priority,
             NewCardGatherPriority::AscendingRetrievability
                 | NewCardGatherPriority::DescendingRetrievability
+                | NewCardGatherPriority::NoteFieldAscending
+                | NewCardGatherPriority::NoteFieldDescending
         ) {
             return;
         }
 
-        match self.context.sort_options.new_order {
-            // preserve gather order
-            NewCardSortOrder::NoSort => (),
-            NewCardSortOrder::Template => {
-                // stable sort to preserve gather order
-                self.new.sort_by_key(|a| a.template_index)
+        let order = self.context.sort_options.new_order;
+        if order == NewCardSortOrder::NoSort {
+            return;
+        }
+        let salt = i64::from(self.context.timing.days_elapsed);
+        if self.new.iter().any(|card| card.suspended) && self.new.iter().any(|card| !card.suspended)
+        {
+            // Preserve the group chosen for each daily slot, even when the
+            // display order shuffles cards or groups them by template.
+            let (mut suspended, mut new): (Vec<_>, Vec<_>) =
+                self.new.iter().copied().partition(|card| card.suspended);
+            sort_new_group(&mut suspended, order, salt);
+            sort_new_group(&mut new, order, salt);
+            let (mut suspended, mut new) = (suspended.into_iter(), new.into_iter());
+            for slot in &mut self.new {
+                *slot = if slot.suspended {
+                    suspended.next()
+                } else {
+                    new.next()
+                }
+                .unwrap();
             }
-            NewCardSortOrder::TemplateThenRandom => {
-                self.hash_new_cards_by_id();
-                self.new.sort_unstable_by(cmp_template_then_hash);
-            }
-            NewCardSortOrder::RandomNoteThenTemplate => {
-                self.hash_new_cards_by_note_id();
-                self.new.sort_unstable_by(cmp_hash_then_template);
-            }
-            NewCardSortOrder::RandomCard => {
-                self.hash_new_cards_by_id();
-                self.new.sort_unstable_by(cmp_hash)
-            }
+        } else {
+            sort_new_group(&mut self.new, order, salt);
         }
     }
+}
 
-    fn hash_new_cards_by_id(&mut self) {
-        self.new
-            .iter_mut()
-            .for_each(|card| card.hash_id_with_salt(self.context.timing.days_elapsed as i64));
-    }
-
-    fn hash_new_cards_by_note_id(&mut self) {
-        self.new
-            .iter_mut()
-            .for_each(|card| card.hash_note_id_with_salt(self.context.timing.days_elapsed as i64));
+fn sort_new_group(cards: &mut [NewCard], order: NewCardSortOrder, salt: i64) {
+    match order {
+        // preserve gather order
+        NewCardSortOrder::NoSort => (),
+        NewCardSortOrder::Template => {
+            // stable sort to preserve gather order
+            cards.sort_by_key(|a| a.template_index)
+        }
+        NewCardSortOrder::TemplateThenRandom => {
+            cards
+                .iter_mut()
+                .for_each(|card| card.hash_id_with_salt(salt));
+            cards.sort_unstable_by(cmp_template_then_hash);
+        }
+        NewCardSortOrder::RandomNoteThenTemplate => {
+            cards
+                .iter_mut()
+                .for_each(|card| card.hash_note_id_with_salt(salt));
+            cards.sort_unstable_by(cmp_hash_then_template);
+        }
+        NewCardSortOrder::RandomCard => {
+            cards
+                .iter_mut()
+                .for_each(|card| card.hash_id_with_salt(salt));
+            cards.sort_unstable_by(cmp_hash)
+        }
     }
 }
 

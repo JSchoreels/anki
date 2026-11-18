@@ -6,7 +6,9 @@ import {
     DeckConfig,
     DeckConfig_Config,
     DeckConfig_Config_FsrsVersion,
+    DeckConfig_Config_NewCardGatherPriority as GatherOrder,
     DeckConfig_Config_ReviewMix as ReviewMix,
+    DeckConfig_Config_SuspendedCardOrder as SuspendedCardOrder,
     DeckConfigsForUpdate,
     DeckConfigsForUpdate_ConfigWithExtra,
     DeckConfigsForUpdate_CurrentDeck_Limits,
@@ -26,6 +28,49 @@ import {
 
 import { expect, test } from "./fixtures";
 import { decodeRequestBody } from "./helpers";
+
+test("Daily Limits saves suspended card inclusion and order", async ({ page }) => {
+    let saved: DeckConfig_Config | undefined;
+    await page.route("**/_anki/updateDeckConfigsAndClose", async (route) => {
+        const request = decodeRequestBody(route.request(), UpdateDeckConfigsRequest);
+        saved = request.configs.at(-1)?.config;
+        await route.fulfill({ body: Buffer.from(new OpChanges().toBinary()) });
+    });
+    await page.goto("/deck-options/1");
+    const section = page.getByRole("heading", { name: "Daily Limits", exact: true }).locator("../..");
+    const toggle = section.getByRole("checkbox", { name: "Include suspended cards in the learnable pool" });
+    const order = section.getByRole("combobox");
+    await expect(toggle).not.toBeChecked();
+    await expect(order).toHaveCount(0);
+    await toggle.check();
+    await expect(order).toHaveText("Mixed");
+    await order.click();
+    await expect(page.getByRole("option", { name: "New before Suspended", exact: true })).toBeVisible();
+    await page.getByRole("option", { name: "Suspended before New", exact: true }).click();
+    await page.getByRole("button", { name: "Save", exact: true }).click();
+    await expect.poll(() => saved?.includeSuspendedCardsInLearnablePool).toBe(true);
+    expect(saved?.suspendedCardOrder).toBe(SuspendedCardOrder.SUSPENDED_BEFORE_NEW);
+});
+
+test("Display Order saves the selected note field and gather direction", async ({ page }) => {
+    let saved: DeckConfig_Config | undefined;
+    await page.route("**/_anki/updateDeckConfigsAndClose", async (route) => {
+        saved = decodeRequestBody(route.request(), UpdateDeckConfigsRequest).configs.at(-1)?.config;
+        await route.fulfill({ body: Buffer.from(new OpChanges().toBinary()) });
+    });
+    await page.goto("/deck-options/1");
+    const display = page.getByRole("heading", { name: "Display Order", exact: true }).locator("../..");
+    const gather = display.getByRole("combobox").first();
+    await gather.click();
+    await expect(page.getByRole("option", { name: "Note field (ascending)", exact: true })).toBeVisible();
+    await page.getByRole("option", { name: "Note field (descending)", exact: true }).click();
+    const field = display.getByRole("combobox").filter({ hasText: "Note type’s sort field" });
+    await field.click();
+    await page.getByRole("option", { name: "Back", exact: true }).click();
+    await page.getByRole("button", { name: "Save", exact: true }).click();
+    await expect.poll(() => saved?.newCardGatherField).toBe("Back");
+    expect(saved?.newCardGatherPriority).toBe(GatherOrder.NOTE_FIELD_DESCENDING);
+});
 
 test("RWKV comparison explains that it needs RWKV-Curve on an instant-only runtime", async ({ page }) => {
     let started = 0;

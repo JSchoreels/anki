@@ -591,6 +591,10 @@ impl From<DeckConfSchema11> for DeckConfig {
             rwkv_review_refresh_on_exit: c.rwkv_review_refresh_on_exit,
             rwkv_review_allow_same_day_review: c.rwkv_review_allow_same_day_review,
             same_day_reviews_ignore_review_limit: c.same_day_reviews_ignore_review_limit,
+            // Restored from the preset's extra data below.
+            include_suspended_cards_in_learnable_pool: false,
+            suspended_card_order: 0,
+            new_card_gather_field: String::new(),
             rwkv_review_min_intervening_reviews: c.rwkv_review_min_intervening_reviews,
             rwkv_review_min_elapsed_secs: c.rwkv_review_min_elapsed_secs,
             rwkv_review_instant_order_enabled: c.rwkv_review_instant_order_enabled,
@@ -901,6 +905,9 @@ mod test {
         ] {
             let metadata = json!({
                 "intraday_learning_mix": mix as i32,
+                "include_suspended_cards_in_learnable_pool": true,
+                "suspended_card_order": 1,
+                "new_card_gather_field": "Frequency",
                 "future_option": "preserve",
             });
             let mut wire = serde_json::to_value(DeckConfSchema11::default())?;
@@ -920,6 +927,10 @@ mod test {
                     .encode_to_vec()
                     .as_slice(),
             )?;
+            restore_fork_fields_from_other(&mut restored.inner);
+            assert!(restored.inner.include_suspended_cards_in_learnable_pool);
+            assert_eq!(restored.inner.suspended_card_order, 1);
+            assert_eq!(restored.inner.new_card_gather_field, "Frequency");
             assert_eq!(restored.intraday_learning_mix(), mix);
             assert_eq!(restored.name, "Edited on another client");
             assert_eq!(restored.inner.reviews_per_day, 123);
