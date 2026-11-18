@@ -49,6 +49,7 @@ Changes since [build 115](https://github.com/JSchoreels/anki/releases/tag/26.09.
 
 ### Technical details
 
+- **FSRS engine:** Updated to the official [fsrs-rs 7.0.0 release](https://github.com/open-spaced-repetition/fsrs-rs/releases/tag/v7.0.0), which includes the previously backported training and simulation fixes and the updated FSRS-6 optimizer.
 - **Answer-time thresholds:** The time head's bin probabilities are interpolated in log time. The graph combines them with the active RWKV answer-button probabilities to estimate recall conditional on answering within each threshold; it does not measure the effect of answering faster. The model weights are unchanged from build 115. See [answer-time evaluation](https://github.com/JSchoreels/anki/blob/main/docs/rwkv-answer-time-2026-11-01.MD).
 
 The existing model selector and released RWKV family are shown below for context.
