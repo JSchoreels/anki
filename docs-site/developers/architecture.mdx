@@ -597,5 +597,6 @@ Current exact-vs-scalar status:
       helper uses the same preset path while allowing each item to request a
       different target retrievability. The config batch helper reads deck config
       parameters directly.
-- Legacy sqlite FSRS helper expressions continue to use stored scalar decay, but
-  the standard retrievability search/order paths above no longer depend on them.
+- Legacy SQLite recall functions use the stored scalar decay and the card's
+  public S90. They give 90% recall at that interval. Standard recall searches
+  and ordering use the resolved preset's full model.

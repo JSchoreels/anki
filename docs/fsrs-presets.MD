@@ -52,7 +52,7 @@ uses the same resolver as review scheduling, so it includes add-on overlay
 matches from `fsrsPresetOverlay` and falls back to the card's home deck config
 when no overlay rule matches.
 
-Optimize All saves successful fits and the settings edited in Deck Options. An invalid search on another preset leaves its saved parameters in place. Scheduled imports replay memory state under the destination preset when source parameters differ or were omitted. The no-review workload estimate follows each card’s current two-trace curve. Simulations with future answers retain the simulator library’s scalar approximation.
+Optimize All saves successful fits and the settings edited in Deck Options. An invalid search on another preset leaves its saved parameters in place. Scheduled imports replay memory state under the destination preset when source parameters differ or were omitted. The no-review workload estimate follows each card’s current two-trace curve. Simulations with future answers initialize the library’s single stability value to match each existing FSRS-7 card’s S90 under its simulation preset. Later simulated reviews follow the library’s single-trace model.
 
 ## FSRS-6 comparisons
 

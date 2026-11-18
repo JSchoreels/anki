@@ -524,26 +524,6 @@ fn simulation_preset_route(
     })
 }
 
-fn simulation_addon_preset_for_card(
-    card_id: CardId,
-    preset: Arc<FsrsPreset>,
-    max_interval: u32,
-    apply_dynamic_desired_retention: bool,
-) -> Result<Option<(i64, SimulationPreset)>> {
-    if !matches!(preset.id, FsrsPresetId::Addon(_)) {
-        return Ok(None);
-    }
-
-    Ok(Some((
-        card_id.0,
-        simulation_preset_from_fsrs_preset(
-            Arc::unwrap_or_clone(preset),
-            max_interval,
-            apply_dynamic_desired_retention,
-        )?,
-    )))
-}
-
 impl Collection {
     fn simulation_route_card_ids(
         &mut self,
@@ -575,19 +555,24 @@ impl Collection {
     ) -> Result<Option<SimulationPresetRouter>> {
         let apply_dynamic_desired_retention = req.simulate_dynamic_desired_retention;
         let mut fallback = simulation_fallback_preset(req)?;
-        let presets_by_card = self
-            .fsrs_presets_for_cards(cards)?
-            .into_iter()
-            .filter_map(|(card_id, preset)| {
-                simulation_addon_preset_for_card(
-                    card_id,
-                    preset,
-                    req.max_interval,
-                    apply_dynamic_desired_retention,
-                )
-                .transpose()
-            })
-            .collect::<Result<HashMap<_, _>>>()?;
+        let mut addon_presets = HashMap::new();
+        let mut presets_by_card = HashMap::new();
+        for (card_id, preset) in self.fsrs_presets_for_cards(cards)? {
+            let FsrsPresetId::Addon(id) = &preset.id else {
+                continue;
+            };
+            let preset = match addon_presets.entry(id.clone()) {
+                std::collections::hash_map::Entry::Occupied(entry) => entry.into_mut(),
+                std::collections::hash_map::Entry::Vacant(entry) => {
+                    entry.insert(simulation_preset_from_fsrs_preset(
+                        Arc::unwrap_or_clone(preset),
+                        req.max_interval,
+                        apply_dynamic_desired_retention,
+                    )?)
+                }
+            };
+            presets_by_card.insert(card_id.0, preset.clone());
+        }
         let included_card_ids = cards.iter().map(|card| card.id).collect::<HashSet<_>>();
         let mut search_cache = HashMap::new();
         let mut routes = Vec::new();
@@ -646,7 +631,7 @@ impl Collection {
         req: &SimulateFsrsReviewRequest,
     ) -> Result<(SimulatorConfig, Vec<fsrs::Card>)> {
         let (config, cards, _) =
-            self.simulate_request_to_config_inner(req, false, |_, _, _, _| Ok(()))?;
+            self.simulate_request_to_config_inner(req, false, |_, _, _, _, _| {})?;
         Ok((config, cards))
     }
 
@@ -656,10 +641,11 @@ impl Collection {
         with_preset_router: bool,
         mut observe_state: impl FnMut(
             &fsrs::Card,
+            &FSRS,
             FsrsMemoryState,
             f32,
             Option<&SimulationPresetRouter>,
-        ) -> Result<()>,
+        ),
     ) -> Result<(
         SimulatorConfig,
         Vec<fsrs::Card>,
@@ -697,50 +683,57 @@ impl Collection {
             + req.deck_size as usize;
         let filled_params = normalized_fsrs_parameters(&req.params)?;
         let shared_parameters = Arc::new(filled_params);
-        let mut converted_cards = cards
-            .into_iter()
-            .filter(is_included_card)
-            .filter_map(|mut c| {
-                let card_parameters = preset_router
-                    .as_ref()
-                    .and_then(|router| {
-                        router.parameters_for_card_state(c.id.0, c.reps, c.interval as f32)
-                    })
-                    .unwrap_or_else(|| shared_parameters.clone());
-                let memory_state = match c.memory_state {
-                    Some(state) => state,
-                    // cards that lack memory states after compute_memory_state have no FSRS items,
-                    // implying a truncated or ignored revlog
-                    None => {
-                        let fsrs = FSRS::new(&card_parameters).ok()?;
-                        memory_state_from_sm2_with_params(
-                            &fsrs,
-                            &card_parameters,
-                            c.ease_factor(),
-                            c.interval as f32,
-                            req.historical_retention,
-                        )
-                        .ok()?
-                        .into()
-                    }
-                };
-                // Simulator DR should reflect the request, regardless of any
-                // stale per-card desired retention persisted on cards.
-                apply_simulation_desired_retention(&mut c, req.desired_retention);
-                let elapsed = c.days_since_last_review(&timing);
-                let converted = Card::convert_with_options(
-                    c,
-                    days_elapsed,
+        let mut models = HashMap::new();
+        let mut converted_cards = Vec::new();
+        for mut card in cards.into_iter().filter(is_included_card) {
+            let parameters = preset_router
+                .as_ref()
+                .and_then(|router| {
+                    router.parameters_for_card_state(card.id.0, card.reps, card.interval as f32)
+                })
+                .unwrap_or_else(|| shared_parameters.clone());
+            let model = match models.entry(Arc::as_ptr(&parameters)) {
+                std::collections::hash_map::Entry::Occupied(entry) => entry.into_mut(),
+                std::collections::hash_map::Entry::Vacant(entry) => {
+                    entry.insert(FSRS::new(&parameters)?)
+                }
+            };
+            let memory_state = match card.memory_state {
+                Some(state) => state,
+                // A truncated or ignored revlog may leave no FSRS items.
+                None => {
+                    let Ok(state) = memory_state_from_sm2_with_params(
+                        model,
+                        &parameters,
+                        card.ease_factor(),
+                        card.interval as f32,
+                        req.historical_retention,
+                    ) else {
+                        continue;
+                    };
+                    state.into()
+                }
+            };
+            apply_simulation_desired_retention(&mut card, req.desired_retention);
+            let elapsed = card.days_since_last_review(&timing);
+            if let Some(converted) = Card::convert(
+                card,
+                days_elapsed,
+                memory_state,
+                req.desired_retention,
+                parameters,
+                model,
+            ) {
+                observe_state(
+                    &converted,
+                    model,
                     memory_state,
-                    req.desired_retention,
-                    &card_parameters,
-                )?;
-                Some(
-                    observe_state(&converted, memory_state, elapsed, preset_router.as_ref())
-                        .map(|()| converted),
-                )
-            })
-            .collect::<Result<Vec<_>>>()?;
+                    elapsed,
+                    preset_router.as_ref(),
+                );
+                converted_cards.push(converted);
+            }
+        }
         let introduced_today_count = self
             .search_cards(&format!("{} introduced:1", req.search), SortMode::NoOrder)?
             .len()
@@ -821,7 +814,7 @@ impl Collection {
         req: SimulateFsrsReviewRequest,
     ) -> Result<SimulateFsrsReviewResponse> {
         let (config, cards, preset_router) =
-            self.simulate_request_to_config_inner(&req, true, |_, _, _, _| Ok(()))?;
+            self.simulate_request_to_config_inner(&req, true, |_, _, _, _, _| {})?;
         let result = simulate_workload_for_desired_retention(
             &config,
             &req.params,
@@ -851,20 +844,15 @@ impl Collection {
     ) -> Result<SimulateFsrsWorkloadResponse> {
         let total_start = Instant::now();
         let fallback_preset_name = workload_preset_label(&req);
-        let mut models = HashMap::new();
         let mut reviewless = PresetReviewlessWorkloadPoint::default();
         let mut reviewless_by_preset = HashMap::<String, PresetReviewlessWorkloadPoint>::new();
-        let (mut config, cards, preset_router) =
-            self.simulate_request_to_config_inner(&req, true, |card, state, elapsed, router| {
-                let model = match models.entry(Arc::as_ptr(&card.parameters)) {
-                    std::collections::hash_map::Entry::Occupied(entry) => entry.into_mut(),
-                    std::collections::hash_map::Entry::Vacant(entry) => {
-                        entry.insert(FSRS::new(&card.parameters)?)
-                    }
-                };
+        let (mut config, cards, preset_router) = self.simulate_request_to_config_inner(
+            &req,
+            true,
+            |card, model, state, elapsed, router| {
                 let r = model
                     .current_retrievability(state.into(), elapsed + req.days_to_simulate as f32);
-                let weighted = r * stability_weight(card.stability);
+                let weighted = r * stability_weight(state.stability_internal);
                 reviewless.memorized += r;
                 reviewless.weighted_memorized += weighted;
                 if req.split_workload_by_preset {
@@ -875,8 +863,8 @@ impl Collection {
                     point.memorized += r;
                     point.weighted_memorized += weighted;
                 }
-                Ok(())
-            })?;
+            },
+        )?;
         let default_review_costs = config.state_rating_costs[1];
         let review_time_model_start = Instant::now();
         let model = self.build_help_me_decide_review_time_model(&req, default_review_costs)?;
@@ -1383,6 +1371,54 @@ fn weighted_memorized_for_cards(cards: &[fsrs::Card], date: f32) -> f32 {
         .sum()
 }
 
+/// fsrs-rs simulates an existing card with equal traces and difficulty 5
+/// in its forgetting curve. Match that curve at the full state's S90.
+fn simulation_stability(model: &FSRS, state: FsrsMemoryState, parameters: &[f32]) -> f32 {
+    if model.version() != fsrs::ModelVersion::Fsrs7 {
+        return state.stability_internal;
+    }
+    let s90 = model.s90(state.into());
+    if !s90.is_finite() || s90 <= 0.0 {
+        return state.stability_internal;
+    }
+    // fsrs-rs's state projection clamps the target interval to 8.64 seconds.
+    // The simulator curve can reach 90% earlier, e.g. after the first Again.
+    // Evaluate it directly with the parameters the simulator actually uses.
+    let mut probe = fsrs::Card::default();
+    let mut retention = |stability| {
+        probe.stability = stability;
+        probe.power_forgetting_curve(parameters, s90)
+    };
+    // The stability bounds used by fsrs-rs's simulator.
+    let (mut low, mut high) = (0.0001, 36500.0);
+    let (minimum_r, maximum_r) = (retention(low), retention(high));
+    if !minimum_r.is_finite() || !maximum_r.is_finite() || minimum_r > maximum_r {
+        return state.stability_internal;
+    }
+    if minimum_r >= 0.9 {
+        return low;
+    }
+    if maximum_r <= 0.9 {
+        return high;
+    }
+    for _ in 0..24 {
+        let mid = (low * high).sqrt();
+        let r = retention(mid);
+        if !r.is_finite() {
+            return state.stability_internal;
+        }
+        if (r - 0.9).abs() <= 1e-6 {
+            return mid;
+        }
+        if r < 0.9 {
+            low = mid;
+        } else {
+            high = mid;
+        }
+    }
+    (low * high).sqrt()
+}
+
 impl Card {
     pub(crate) fn convert(
         card: Card,
@@ -1390,57 +1426,28 @@ impl Card {
         memory_state: FsrsMemoryState,
         desired_retention: f32,
         parameters: Arc<Vec<f32>>,
+        model: &FSRS,
     ) -> Option<fsrs::Card> {
-        Self::convert_with_options(
-            card,
-            days_elapsed,
-            memory_state,
-            desired_retention,
-            &parameters,
-        )
-    }
-
-    pub(crate) fn convert_with_options(
-        card: Card,
-        days_elapsed: i32,
-        memory_state: FsrsMemoryState,
-        default_desired_retention: f32,
-        parameters: &Arc<Vec<f32>>,
-    ) -> Option<fsrs::Card> {
-        match card.queue {
+        let (last_date, due) = match card.queue {
             CardQueue::DayLearn | CardQueue::Review => {
-                let due = card.original_or_current_due();
-                let relative_due = due - days_elapsed;
-                let last_date = (relative_due - card.interval as i32).min(0) as f32;
-                Some(fsrs::Card {
-                    id: card.id.0,
-                    difficulty: memory_state.difficulty,
-                    stability: memory_state.stability_internal,
-                    last_date,
-                    due: relative_due as f32,
-                    interval: card.interval as f32,
-                    reps: card.reps,
-                    lapses: card.lapses,
-                    desired_retention: card.desired_retention.unwrap_or(default_desired_retention),
-                    parameters: parameters.clone(),
-                })
+                let due = card.original_or_current_due() - days_elapsed;
+                ((due - card.interval as i32).min(0) as f32, due as f32)
             }
-            CardQueue::New => None,
-            CardQueue::Learn | CardQueue::SchedBuried | CardQueue::UserBuried => Some(fsrs::Card {
-                id: card.id.0,
-                difficulty: memory_state.difficulty,
-                stability: memory_state.stability_internal,
-                last_date: 0.0,
-                due: 0.0,
-                interval: card.interval as f32,
-                reps: card.reps,
-                lapses: card.lapses,
-                desired_retention: card.desired_retention.unwrap_or(default_desired_retention),
-                parameters: parameters.clone(),
-            }),
-            CardQueue::PreviewRepeat => None,
-            CardQueue::Suspended => None,
-        }
+            CardQueue::Learn | CardQueue::SchedBuried | CardQueue::UserBuried => (0.0, 0.0),
+            CardQueue::New | CardQueue::PreviewRepeat | CardQueue::Suspended => return None,
+        };
+        Some(fsrs::Card {
+            id: card.id.0,
+            difficulty: memory_state.difficulty,
+            stability: simulation_stability(model, memory_state, &parameters),
+            last_date,
+            due,
+            interval: card.interval as f32,
+            reps: card.reps,
+            lapses: card.lapses,
+            desired_retention: card.desired_retention.unwrap_or(desired_retention),
+            parameters,
+        })
     }
 }
 
@@ -1508,6 +1515,71 @@ mod tests {
     use crate::tests::NoteAdder;
 
     #[test]
+    fn existing_simulator_card_reaches_ninety_percent_at_its_models_s90() -> Result<()> {
+        let mut col = Collection::new();
+        crate::tests::NoteAdder::basic(&mut col).add(&mut col);
+        let mut card = col.get_first_card();
+        card.ctype = crate::card::CardType::Review;
+        card.queue = crate::card::CardQueue::Review;
+        card.interval = 10;
+        let state = crate::card::FsrsMemoryState {
+            stability: 4.11,
+            stability_internal: 10.0,
+            stability_fast: Some(3.0),
+            difficulty: 8.0,
+        };
+        card.memory_state = Some(state);
+        col.storage.update_card(&card)?;
+        let mut custom = fsrs::DEFAULT_PARAMETERS.to_vec();
+        custom[28] = 0.4;
+        // Manual weights are clipped by the scheduler, while the simulator
+        // accepts the supplied finite values.
+        let mut manual = fsrs::DEFAULT_PARAMETERS.to_vec();
+        manual[28] = 2.0;
+        for params in [
+            fsrs::DEFAULT_PARAMETERS.to_vec(),
+            custom,
+            manual,
+            fsrs::FSRS6_DEFAULT_PARAMETERS.to_vec(),
+        ] {
+            let model = fsrs::FSRS::new(&params)?;
+            let (_, cards) = col.simulate_request_to_config(&SimulateFsrsReviewRequest {
+                params,
+                desired_retention: 0.85,
+                historical_retention: 0.9,
+                max_interval: 36500,
+                easy_days_percentages: vec![1.0; 7],
+                ..Default::default()
+            })?;
+            let [card] = cards.as_slice() else {
+                panic!("expected one existing simulation card");
+            };
+            let r = card.retention_on(card.last_date + model.s90(state.into()));
+            assert!((r - 0.9).abs() < 1e-5, "{r}");
+            if model.version() == fsrs::ModelVersion::Fsrs6 {
+                assert_eq!(card.stability, state.stability_internal);
+            }
+        }
+        Ok(())
+    }
+
+    #[test]
+    fn simulation_preserves_the_first_again_states_sub_minute_s90() -> Result<()> {
+        let parameters = Arc::new(fsrs::DEFAULT_PARAMETERS.to_vec());
+        let model = fsrs::FSRS::new(&parameters)?;
+        let state = model.next_states(None, 0.9, 0)?.again.memory;
+        let s90 = model.s90(state);
+        assert!(s90 > 0.0 && s90 < 0.0001);
+        let card = Card {
+            queue: crate::card::CardQueue::Learn,
+            ..Default::default()
+        };
+        let simulated = Card::convert(card, 0, state.into(), 0.9, parameters, &model).unwrap();
+        assert!((simulated.retention_on(s90) - 0.9).abs() < 1e-5);
+        Ok(())
+    }
+
+    #[test]
     fn reviewless_forecast_uses_both_traces_and_the_last_review_time() -> Result<()> {
         let mut col = Collection::new();
         col.set_config_bool(crate::config::BoolKey::Fsrs, true, false)?;
@@ -1532,6 +1604,15 @@ mod tests {
             fsrs::FSRS::new(&[])?.current_retrievability(card.memory_state.unwrap().into(), 12.0);
         let response = col.simulate_workload(req)?;
         let forecast = response.reviewless_end_memorized;
+        let weighted =
+            expected * super::stability_weight(card.memory_state.unwrap().stability_internal);
+        assert!((response.reviewless_end_weighted_memorized - weighted).abs() < 1e-5);
+        for value in response.preset_workload[0]
+            .reviewless_end_weighted_memorized
+            .values()
+        {
+            assert!((value - weighted).abs() < 1e-5);
+        }
         for value in response.preset_workload[0]
             .reviewless_end_memorized
             .values()
@@ -1959,6 +2040,39 @@ mod tests {
         assert_eq!(tagged_mature.as_slice(), vec![1.0; 21].as_slice());
         assert_eq!(untagged_mature.as_slice(), DEFAULT_PARAMETERS.as_slice());
 
+        // The routed card uses FSRS-6's original scalar, while the fallback
+        // uses FSRS-7's full state to calibrate the simulator's scalar.
+        let state = crate::card::FsrsMemoryState {
+            stability: 4.11,
+            stability_internal: 10.0,
+            stability_fast: Some(3.0),
+            difficulty: 8.0,
+        };
+        for mut card in cards {
+            card.ctype = crate::card::CardType::Review;
+            card.queue = crate::card::CardQueue::Review;
+            card.interval = 30;
+            card.memory_state = Some(state);
+            col.storage.update_card(&card)?;
+        }
+        let request = SimulateFsrsReviewRequest {
+            easy_days_percentages: vec![1.0; 7],
+            desired_retention: 0.9,
+            ..request
+        };
+        let (_, converted, _) =
+            col.simulate_request_to_config_inner(&request, true, |_, _, _, _, _| {})?;
+        assert_eq!(converted.len(), 2);
+        for card in converted {
+            let params = if card.id == tagged_card_id {
+                &tagged_mature
+            } else {
+                &untagged_mature
+            };
+            let model = fsrs::FSRS::new(params)?;
+            let r = card.retention_on(card.last_date + model.s90(state.into()));
+            assert!((r - 0.9).abs() < 1e-5, "{r}");
+        }
         Ok(())
     }
 
