@@ -9,32 +9,55 @@ License: GNU AGPL, version 3 or later; http://www.gnu.org/licenses/agpl.html
 
     import type { ValueTab } from "./lib";
     import TabbedValue from "./TabbedValue.svelte";
+    import InlineNumber from "./InlineNumber.svelte";
+    import * as tr from "@generated/ftl";
 
     export let value: number;
+    export let study = false;
     export let defaultValue: number;
     export let focused: boolean;
     export let tabs: ValueTab[];
 </script>
 
-<div class="scheduler-retention">
-    <div class="retention-label"><slot /></div>
-    <div class="retention-controls">
-        <div class="retention-input">
-            <ConfigInput grow={false}>
-                <SpinBox
-                    bind:value
-                    min={0.1}
-                    max={0.99}
-                    step={0.01}
-                    percentage
-                    bind:focused
-                />
-                <RevertButton slot="revert" bind:value {defaultValue} />
-            </ConfigInput>
-        </div>
-        <TabbedValue {tabs} bind:value compact />
+{#if study}
+    <div class="study-line">
+        <span>
+            <slot />
+            <InlineNumber
+                label={tr.deckConfigDesiredRetention()}
+                bind:value
+                bind:focused
+                scale={100}
+                min={10}
+                max={99}
+            />% <TabbedValue
+                {tabs}
+                bind:value
+                inlineLabel={tr.deckConfigStudyRetentionScope()}
+            />
+        </span>
     </div>
-</div>
+{:else}
+    <div class="scheduler-retention">
+        <div class="retention-label"><slot /></div>
+        <div class="retention-controls">
+            <div class="retention-input">
+                <ConfigInput grow={false}>
+                    <SpinBox
+                        bind:value
+                        min={0.1}
+                        max={0.99}
+                        step={0.01}
+                        percentage
+                        bind:focused
+                    />
+                    <RevertButton slot="revert" bind:value {defaultValue} />
+                </ConfigInput>
+            </div>
+            <TabbedValue {tabs} bind:value compact />
+        </div>
+    </div>
+{/if}
 
 <style>
     .scheduler-retention {

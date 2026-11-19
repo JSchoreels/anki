@@ -1,0 +1,51 @@
+/* Copyright: Ankitects Pty Ltd and contributors
+ * License: GNU AGPL, version 3 or later; http://www.gnu.org/licenses/agpl.html */
+
+// The desktop webview supplies the user's interface font. Standalone pages
+// use the system UI font until the host provides its more specific body style.
+:where(html:has(.deck-options-page.study)) {
+    font-family: system-ui, sans-serif;
+}
+
+.deck-options-page.study {
+    h1 { font-size: 1.4rem; }
+    .study-line {
+        display: flex;
+        flex-wrap: wrap;
+        align-items: baseline;
+        gap: 0.35rem 1.15rem;
+        padding-block: 0.35rem;
+        line-height: 1.6;
+
+        label {
+            display: inline-flex;
+            align-items: baseline;
+            gap: 0.3rem;
+            cursor: pointer;
+        }
+        input[type="checkbox"] { accent-color: var(--border-focus); }
+    }
+    .study-muted { color: var(--fg-subtle); }
+    input.study-value {
+        font: inherit;
+        line-height: 1.35;
+        text-align: center;
+        color: var(--fg-link);
+        background: transparent;
+        border: 0;
+        border-bottom: 1px dotted currentColor;
+        border-radius: 0.15rem;
+        padding: 0 0.05em;
+        box-shadow: none;
+        appearance: textfield;
+        &::-webkit-inner-spin-button, &::-webkit-outer-spin-button {
+            appearance: none;
+            margin: 0;
+        }
+        &:focus-visible {
+            outline: 2px solid var(--border-focus);
+            outline-offset: 2px;
+            background: var(--canvas-inset);
+        }
+    }
+}

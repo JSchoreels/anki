@@ -2,6 +2,10 @@
 Copyright: Ankitects Pty Ltd and contributors
 License: GNU AGPL, version 3 or later; http://www.gnu.org/licenses/agpl.html
 -->
+<script context="module" lang="ts">
+    let nextSelectId = 0;
+</script>
+
 <script lang="ts">
     import { altPressed, isArrowDown, isArrowUp } from "@tslib/keys";
     import { createEventDispatcher, setContext } from "svelte";
@@ -23,6 +27,8 @@ License: GNU AGPL, version 3 or later; http://www.gnu.org/licenses/agpl.html
     export { className as class };
 
     export let disabled = false;
+    export let inlineValue = false;
+    export let accessibleLabel: string | undefined = undefined;
     export let label = "<br>";
     export let value: T;
 
@@ -53,11 +59,9 @@ License: GNU AGPL, version 3 or later; http://www.gnu.org/licenses/agpl.html
             };
         });
     const buttons: HTMLButtonElement[] = Array(list.length);
-    const last = list.length - 1;
-    const ids = {
-        popover: "popover",
-        focused: "focused",
-    };
+    $: last = list.length - 1;
+    const prefix = `select-${++nextSelectId}`;
+    const ids = { popover: `${prefix}-options`, focused: `${prefix}-focused` };
 
     export let id: string | undefined = undefined;
 
@@ -102,12 +106,10 @@ License: GNU AGPL, version 3 or later; http://www.gnu.org/licenses/agpl.html
                 event.code === "End")
         ) {
             showFloating = true;
-            if (selected === undefined) {
-                selected = initialSelected;
-            }
+            selected = initialSelected;
             return;
         }
-        if (selected === undefined) {
+        if (!showFloating || selected === undefined) {
             return;
         }
 
@@ -118,7 +120,9 @@ License: GNU AGPL, version 3 or later; http://www.gnu.org/licenses/agpl.html
             (arrowUp && alt)
         ) {
             showFloating = false;
-            setValue(parsed[selected].parsedValue);
+            if (parsed[selected] && !parsed[selected].disabled) {
+                setValue(parsed[selected].parsedValue);
+            }
         } else if (arrowUp) {
             if (selected < 0) {
                 selected = last + 1;
@@ -163,11 +167,14 @@ License: GNU AGPL, version 3 or later; http://www.gnu.org/licenses/agpl.html
         }
 
         if (selected !== undefined && 0 <= selected && selected <= last) {
-            buttons[selected].classList.remove("focus");
+            buttons[selected]?.classList.remove("focus");
         }
 
         if (num >= 0) {
             const el = buttons[num];
+            if (!el) {
+                return;
+            }
             el.classList.add("focus");
             if (!isScrolledIntoView(el)) {
                 el.scrollIntoView();
@@ -185,8 +192,8 @@ License: GNU AGPL, version 3 or later; http://www.gnu.org/licenses/agpl.html
 
 <WithFloating
     show={showFloating}
-    offset={0}
-    shift={0}
+    offset={inlineValue ? 7 : 0}
+    shift={inlineValue ? 8 : 0}
     hideArrow
     inline
     closeOnInsideClick
@@ -198,20 +205,24 @@ License: GNU AGPL, version 3 or later; http://www.gnu.org/licenses/agpl.html
     <div
         {id}
         class="{className} select-container"
+        class:inline-value={inlineValue}
         class:rtl
         class:hover
         class:disabled
         title={tooltip}
         tabindex="0"
         role="combobox"
-        aria-controls={ids.popover}
+        aria-label={accessibleLabel}
+        aria-controls={showFloating ? ids.popover : undefined}
         aria-expanded={showFloating}
-        aria-activedescendant={ids.focused}
+        aria-activedescendant={showFloating && selected !== undefined
+            ? ids.focused
+            : undefined}
         on:keydown={onKeyDown}
         on:mouseenter={() => (hover = true)}
         on:mouseleave={() => (hover = false)}
         on:click={() => {
-            if (selected === undefined) {
+            if (!showFloating) {
                 selected = initialSelected;
             }
             showFloating = !showFloating;
@@ -231,7 +242,8 @@ License: GNU AGPL, version 3 or later; http://www.gnu.org/licenses/agpl.html
     <Popover
         slot="floating"
         scrollable
-        --popover-width="{clientWidth}px"
+        --popover-width={inlineValue ? "9rem" : `${clientWidth}px`}
+        --border-radius={inlineValue ? "10px" : undefined}
         id={ids.popover}
         on:revealed={revealed}
     >
@@ -282,6 +294,36 @@ License: GNU AGPL, version 3 or later; http://www.gnu.org/licenses/agpl.html
     .disabled {
         pointer-events: none;
         opacity: 0.5;
+    }
+
+    .select-container.inline-value {
+        display: inline-flex;
+        vertical-align: baseline;
+        width: auto;
+        height: auto;
+        max-width: 100%;
+        color: var(--fg-link);
+        font: inherit;
+        line-height: 1.45;
+        padding: 0 0.1em;
+        background: transparent;
+        box-shadow: none;
+        border: 0;
+        border-radius: 0.2em;
+        text-decoration: underline dotted;
+        text-underline-offset: 0.24em;
+        cursor: pointer;
+        .inner .label {
+            position: static;
+            white-space: normal;
+        }
+        .chevron {
+            display: none;
+        }
+        &:hover,
+        &:focus-visible {
+            background: var(--canvas-inset);
+        }
     }
 
     .chevron {

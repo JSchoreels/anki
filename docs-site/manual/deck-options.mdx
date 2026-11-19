@@ -20,6 +20,14 @@ Here are some community posts about deck options that have been contributed in t
 - [Deck Options Explained](https://forums.ankiweb.net/t/deck-options-explained/213)
 - [Deck Options in a Mental Map](https://forums.ankiweb.net/t/deck-options-in-a-mental-map/15757)
 
+## Study layout
+
+The **Session Preview** at the top shows the current queue for the deck you opened, including its subdecks. Edit a daily limit or an ordering rule to see its effect before saving. Numbered positions refer to the whole queue. Gaps stand for the intervening cards. Select a card to highlight its explanation. Previewing a suspended card leaves it suspended.
+
+Use the deck name in the preview to switch to a 120-card example or an example with learning steps. The examples use your draft settings. Your answers, elapsed time, and newly available RWKV scores can change the order during a real session.
+
+**Learning** controls which new and suspended cards are selected, how they are sorted, and where they appear among reviews. **Reviews** controls review priority, learning steps that are due again, and study behavior such as sibling burying. Click a blue dotted value to change it. The **Classic view** switch at the top changes the layout for every deck in this profile.
+
 ## Presets
 
 Anki allows you to share options between different decks, to make
@@ -429,7 +437,8 @@ study screen, use the Auto Advance action from the **More** button to start adva
 
 If you want to spend less time on Anki on some days of the week, such as Sundays, this feature can help you do that.
 After the interval is calculated, it will be adjusted by a small amount to change the due date.
-Note that setting all days to "Reduced" or "Minimum" will result in the same workload as setting all days to "Normal".
+Each weekday slider sets a target share of a normal day’s review load, from 0% to 100% in steps of 25%. Keep at least one day at 100%. At 0%, the scheduler favors other days whenever the card's interval allows it.
+Older clients that offer three Easy Days levels interpret both 25% and 75% as Reduced.
 This feature works with both FSRS and the legacy SM-2 algorithm.
 Changing your Easy Days configuration doesn't retroactively change existing intervals and will only affect future intervals. Simply put, you will not see immediate changes in the number of due cards.
 

@@ -19,6 +19,7 @@ License: GNU AGPL, version 3 or later; http://www.gnu.org/licenses/agpl.html
     import type { DeckOptionsState } from "./lib";
 
     export let state: DeckOptionsState;
+    export let study = false;
     export let api: Record<string, never>;
 
     const config = state.currentConfig;
@@ -45,7 +46,7 @@ License: GNU AGPL, version 3 or later; http://www.gnu.org/licenses/agpl.html
     }
 </script>
 
-<TitledContainer title={tr.deckConfigAudioTitle()}>
+<TitledContainer title={tr.deckConfigAudioTitle()} flat={study}>
     <HelpModal
         title={tr.deckConfigAudioTitle()}
         url={HelpPage.DeckOptions.audio}
@@ -57,34 +58,57 @@ License: GNU AGPL, version 3 or later; http://www.gnu.org/licenses/agpl.html
         }}
     />
     <DynamicallySlottable slotHost={Item} {api}>
-        <Item>
-            <SwitchRow
-                bind:value={$config.disableAutoplay}
-                defaultValue={defaults.disableAutoplay}
-            >
-                <SettingTitle
-                    on:click={() =>
-                        openHelpModal(Object.keys(settings).indexOf("disableAutoplay"))}
+        {#if study}
+            <Item>
+                <div class="study-line checks">
+                    <span>{tr.deckConfigAudioTitle()}</span>
+                    <label>
+                        <input type="checkbox" bind:checked={$config.disableAutoplay} />
+                        {tr.deckConfigDisableAutoplay()}
+                    </label>
+                    <label>
+                        <input
+                            type="checkbox"
+                            bind:checked={$config.skipQuestionWhenReplayingAnswer}
+                        />
+                        {tr.deckConfigSkipQuestionWhenReplaying()}
+                    </label>
+                </div>
+            </Item>
+        {:else}
+            <Item>
+                <SwitchRow
+                    bind:value={$config.disableAutoplay}
+                    defaultValue={defaults.disableAutoplay}
                 >
-                    {settings.disableAutoplay.title}
-                </SettingTitle>
-            </SwitchRow>
-        </Item>
+                    <SettingTitle
+                        on:click={() =>
+                            openHelpModal(
+                                Object.keys(settings).indexOf("disableAutoplay"),
+                            )}
+                    >
+                        {settings.disableAutoplay.title}
+                    </SettingTitle>
+                </SwitchRow>
+            </Item>
 
-        <Item>
-            <SwitchRow
-                bind:value={$config.skipQuestionWhenReplayingAnswer}
-                defaultValue={defaults.skipQuestionWhenReplayingAnswer}
-            >
-                <SettingTitle
-                    on:click={() =>
-                        openHelpModal(
-                            Object.keys(settings).indexOf("skipQuestionWhenReplaying"),
-                        )}
+            <Item>
+                <SwitchRow
+                    bind:value={$config.skipQuestionWhenReplayingAnswer}
+                    defaultValue={defaults.skipQuestionWhenReplayingAnswer}
                 >
-                    {settings.skipQuestionWhenReplaying.title}
-                </SettingTitle>
-            </SwitchRow>
-        </Item>
+                    <SettingTitle
+                        on:click={() =>
+                            openHelpModal(
+                                Object.keys(settings).indexOf(
+                                    "skipQuestionWhenReplaying",
+                                ),
+                            )}
+                    >
+                        {settings.skipQuestionWhenReplaying.title}
+                    </SettingTitle>
+                </SwitchRow>
+            </Item>
+        {/if}
     </DynamicallySlottable>
 </TitledContainer>

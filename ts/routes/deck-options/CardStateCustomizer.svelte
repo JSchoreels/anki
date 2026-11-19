@@ -10,12 +10,13 @@ License: GNU AGPL, version 3 or later; http://www.gnu.org/licenses/agpl.html
 
     export let value: string;
     export let title: string;
+    export let expanded = false;
 </script>
 
 <div class="m-2">
     <ConfigInput>
         <RevertButton slot="revert" bind:value defaultValue="" />
-        <details>
+        <details open={expanded}>
             <summary><GlobalLabel {title} /></summary>
             <div class="text">
                 <textarea

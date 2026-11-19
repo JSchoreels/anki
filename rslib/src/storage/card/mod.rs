@@ -435,6 +435,38 @@ impl super::SqliteStorage {
         Ok(())
     }
 
+    /// Find one representative card outside the preview, preferring due work.
+    pub(crate) fn first_card_outside_preview(
+        &self,
+        included: &HashSet<CardId>,
+        today: u32,
+    ) -> Result<Option<(CardId, CardQueue, i32)>> {
+        let mut stmt = self.db.prepare_cached(
+            "select id, due from cards where did in (select id from active_decks)
+             and queue = ?1 and due between ?2 and ?3 order by due, id",
+        )?;
+        let today = today as i32;
+        for (queue, low, high) in [
+            (CardQueue::Review, i32::MIN, today),
+            (CardQueue::DayLearn, i32::MIN, today),
+            (CardQueue::Learn, i32::MIN, i32::MAX),
+            (CardQueue::Suspended, i32::MIN, i32::MAX),
+            (CardQueue::SchedBuried, i32::MIN, i32::MAX),
+            (CardQueue::UserBuried, i32::MIN, i32::MAX),
+            (CardQueue::Review, today + 1, i32::MAX),
+            (CardQueue::DayLearn, today + 1, i32::MAX),
+        ] {
+            let mut rows = stmt.query(params![queue as i8, low, high])?;
+            while let Some(row) = rows.next()? {
+                let id = row.get(0)?;
+                if !included.contains(&id) {
+                    return Ok(Some((id, queue, row.get(1)?)));
+                }
+            }
+        }
+        Ok(None)
+    }
+
     /// Scheduling state for exact queue scoring, without an intermediate SQL
     /// sort or one additional card lookup per candidate. The two ranges let
     /// SQLite use the scheduling index with the appropriate day/second

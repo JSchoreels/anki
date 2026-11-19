@@ -18,6 +18,13 @@ use crate::scheduler::fsrs::simulator::normalized_fsrs_parameters;
 use crate::scheduler::states::fuzz::StoredReviewFuzzConfig;
 
 impl crate::services::DeckConfigService for Collection {
+    fn preview_study_session(
+        &mut self,
+        input: anki_proto::deck_config::PreviewStudySessionRequest,
+    ) -> Result<anki_proto::deck_config::StudySessionPreview> {
+        self.study_session_preview(input)
+    }
+
     fn add_or_update_deck_config_legacy(
         &mut self,
         input: generic::Json,

@@ -17,6 +17,8 @@ License: GNU AGPL, version 3 or later; http://www.gnu.org/licenses/agpl.html
     export let value: T;
     export let choices: Choice<T>[] = [];
     export let disabled: boolean = false;
+    export let inlineValue = false;
+    export let accessibleLabel: string | undefined = undefined;
     export let disabledChoices: T[] = [];
 
     $: label = choices.find((c) => c.value === value)?.label;
@@ -27,4 +29,13 @@ License: GNU AGPL, version 3 or later; http://www.gnu.org/licenses/agpl.html
     });
 </script>
 
-<Select bind:value {label} {disabled} list={choices} {parser} />
+<Select
+    bind:value
+    {label}
+    {disabled}
+    {inlineValue}
+    {accessibleLabel}
+    list={choices}
+    {parser}
+    on:change
+/>

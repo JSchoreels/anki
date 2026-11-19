@@ -725,7 +725,7 @@ fn normal_deck_to_limits(deck: &NormalDeck, today: u32) -> Limits {
     }
 }
 
-fn update_deck_limits(deck: &mut NormalDeck, limits: &Limits, today: u32) {
+pub(crate) fn update_deck_limits(deck: &mut NormalDeck, limits: &Limits, today: u32) {
     deck.review_limit = limits.review;
     deck.new_limit = limits.new;
     update_day_limit(&mut deck.review_limit_today, limits.review_today, today);

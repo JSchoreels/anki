@@ -17,7 +17,7 @@ import {
     RwkvProfileSettings,
     UpdateDeckConfigsRequest,
 } from "@generated/anki/deck_config_pb";
-import { Bool } from "@generated/anki/generic_pb";
+import { Bool, Json, String as GenericString } from "@generated/anki/generic_pb";
 import {
     RwkvComparisonOptions_Learner,
     RwkvComparisonOptions_PerformanceScenario,
@@ -28,6 +28,17 @@ import {
 
 import { expect, test } from "./fixtures";
 import { decodeRequestBody } from "./helpers";
+
+// This suite exercises the original panel layout and its add-on entry points.
+test.beforeEach(async ({ page }) => {
+    await page.route("**/_anki/getProfileConfigJson", async (route) => {
+        if (decodeRequestBody(route.request(), GenericString).val === "deckOptionsClassicView") {
+            await route.fulfill({ body: Buffer.from(new Json({ json: Buffer.from("true") }).toBinary()) });
+        } else {
+            await route.fallback();
+        }
+    });
+});
 
 test("Daily Limits saves suspended card inclusion and order", async ({ page }) => {
     let saved: DeckConfig_Config | undefined;

@@ -1566,6 +1566,8 @@ post_handler_list = [
 
 
 exposed_backend_list = [
+    # DeckConfigService
+    "preview_study_session",
     # CollectionService
     "latest_progress",
     "get_custom_colours",

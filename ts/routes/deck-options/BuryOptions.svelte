@@ -19,6 +19,7 @@ License: GNU AGPL, version 3 or later; http://www.gnu.org/licenses/agpl.html
     import type { DeckOptionsState } from "./lib";
 
     export let state: DeckOptionsState;
+    export let study = false;
     export let api: Record<string, never>;
 
     const config = state.currentConfig;
@@ -51,7 +52,7 @@ License: GNU AGPL, version 3 or later; http://www.gnu.org/licenses/agpl.html
     }
 </script>
 
-<TitledContainer title={tr.deckConfigBuryTitle()}>
+<TitledContainer title={tr.deckConfigBuryTitle()} flat={study}>
     <HelpModal
         title={tr.deckConfigBuryTitle()}
         url={HelpPage.Studying.siblingsAndBurying}
@@ -63,49 +64,74 @@ License: GNU AGPL, version 3 or later; http://www.gnu.org/licenses/agpl.html
         }}
     />
     <DynamicallySlottable slotHost={Item} {api}>
-        <Item>
-            <SwitchRow bind:value={$config.buryNew} defaultValue={defaults.buryNew}>
-                <SettingTitle
-                    on:click={() =>
-                        openHelpModal(Object.keys(settings).indexOf("buryNewSiblings"))}
-                >
-                    {settings.buryNewSiblings.title}
-                </SettingTitle>
-            </SwitchRow>
-        </Item>
+        {#if study}
+            <Item>
+                <div class="study-line checks">
+                    <span>{tr.deckConfigStudyBury()}</span>
+                    <label>
+                        <input type="checkbox" bind:checked={$config.buryNew} />
+                        {tr.deckConfigStudyBuryNew()}
+                    </label>
+                    <label>
+                        <input type="checkbox" bind:checked={$config.buryReviews} />
+                        {tr.deckConfigStudyBuryReview()}
+                    </label>
+                    <label>
+                        <input
+                            type="checkbox"
+                            bind:checked={$config.buryInterdayLearning}
+                        />
+                        {tr.deckConfigStudyBuryCarried()}
+                    </label>
+                </div>
+            </Item>
+        {:else}
+            <Item>
+                <SwitchRow bind:value={$config.buryNew} defaultValue={defaults.buryNew}>
+                    <SettingTitle
+                        on:click={() =>
+                            openHelpModal(
+                                Object.keys(settings).indexOf("buryNewSiblings"),
+                            )}
+                    >
+                        {settings.buryNewSiblings.title}
+                    </SettingTitle>
+                </SwitchRow>
+            </Item>
 
-        <Item>
-            <SwitchRow
-                bind:value={$config.buryReviews}
-                defaultValue={defaults.buryReviews}
-            >
-                <SettingTitle
-                    on:click={() =>
-                        openHelpModal(
-                            Object.keys(settings).indexOf("buryReviewSiblings"),
-                        )}
+            <Item>
+                <SwitchRow
+                    bind:value={$config.buryReviews}
+                    defaultValue={defaults.buryReviews}
                 >
-                    {settings.buryReviewSiblings.title}
-                </SettingTitle>
-            </SwitchRow>
-        </Item>
+                    <SettingTitle
+                        on:click={() =>
+                            openHelpModal(
+                                Object.keys(settings).indexOf("buryReviewSiblings"),
+                            )}
+                    >
+                        {settings.buryReviewSiblings.title}
+                    </SettingTitle>
+                </SwitchRow>
+            </Item>
 
-        <Item>
-            <SwitchRow
-                bind:value={$config.buryInterdayLearning}
-                defaultValue={defaults.buryInterdayLearning}
-            >
-                <SettingTitle
-                    on:click={() =>
-                        openHelpModal(
-                            Object.keys(settings).indexOf(
-                                "buryInterdayLearningSiblings",
-                            ),
-                        )}
+            <Item>
+                <SwitchRow
+                    bind:value={$config.buryInterdayLearning}
+                    defaultValue={defaults.buryInterdayLearning}
                 >
-                    {settings.buryInterdayLearningSiblings.title}
-                </SettingTitle>
-            </SwitchRow>
-        </Item>
+                    <SettingTitle
+                        on:click={() =>
+                            openHelpModal(
+                                Object.keys(settings).indexOf(
+                                    "buryInterdayLearningSiblings",
+                                ),
+                            )}
+                    >
+                        {settings.buryInterdayLearningSiblings.title}
+                    </SettingTitle>
+                </SwitchRow>
+            </Item>
+        {/if}
     </DynamicallySlottable>
 </TitledContainer>

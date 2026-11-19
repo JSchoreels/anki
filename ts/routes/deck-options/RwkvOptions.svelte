@@ -28,6 +28,7 @@ License: GNU AGPL, version 3 or later; http://www.gnu.org/licenses/agpl.html
     import SpinBoxFloatRow from "./SpinBoxFloatRow.svelte";
 
     export let state: DeckOptionsState;
+    export let study = false;
     export let onPresetChange: () => void;
 
     const config = state.currentConfig;
@@ -184,21 +185,22 @@ License: GNU AGPL, version 3 or later; http://www.gnu.org/licenses/agpl.html
                     {tr.deckConfigRwkvInstantDescription()}
                 </p>
 
-                <div class="rwkv-minimum-reviews">
-                    <SpinBoxFloatRow
-                        bind:value={$config.rwkvReviewMinimumReviewsPerDay}
-                        defaultValue={defaults.rwkvReviewMinimumReviewsPerDay}
-                        min={0}
-                        max={9999}
-                        step={1}
-                    >
-                        <SettingTitle
-                            on:click={() => openSettingHelp("rwkvMinimumReviewsPerDay")}
+                {#if !study}<div class="rwkv-minimum-reviews">
+                        <SpinBoxFloatRow
+                            bind:value={$config.rwkvReviewMinimumReviewsPerDay}
+                            defaultValue={defaults.rwkvReviewMinimumReviewsPerDay}
+                            min={0}
+                            max={9999}
+                            step={1}
                         >
-                            {tr.deckConfigRwkvReviewMinimumReviewsPerDay()}
-                        </SettingTitle>
-                    </SpinBoxFloatRow>
-                </div>
+                            <SettingTitle
+                                on:click={() =>
+                                    openSettingHelp("rwkvMinimumReviewsPerDay")}
+                            >
+                                {tr.deckConfigRwkvReviewMinimumReviewsPerDay()}
+                            </SettingTitle>
+                        </SpinBoxFloatRow>
+                    </div>{/if}
 
                 <Item>
                     <SwitchRow
@@ -220,6 +222,7 @@ License: GNU AGPL, version 3 or later; http://www.gnu.org/licenses/agpl.html
                 <h2 class="rwkv-subheading">Same-Day Repeats</h2>
 
                 <RwkvRepeatSpacing
+                    {study}
                     bind:reviews={$config.rwkvReviewMinInterveningReviews}
                     bind:seconds={$config.rwkvReviewMinElapsedSecs}
                     defaultReviews={defaults.rwkvReviewMinInterveningReviews}
@@ -298,7 +301,7 @@ License: GNU AGPL, version 3 or later; http://www.gnu.org/licenses/agpl.html
                 </div>
             {/if}
 
-            <details class="rwkv-advanced">
+            <details class="rwkv-advanced" open={study}>
                 <summary>{tr.deckConfigAdvancedTitle()}</summary>
                 <RwkvModelOptions {state} disabled={rwkvActionInProgress} />
 
@@ -326,6 +329,9 @@ License: GNU AGPL, version 3 or later; http://www.gnu.org/licenses/agpl.html
                     </SwitchRow>
                     <SpinBoxFloatRow
                         bind:value={$config.rwkvReviewRefreshInterval}
+                        inlineLabel={study
+                            ? tr.deckConfigRwkvReviewRefreshInterval()
+                            : undefined}
                         defaultValue={defaults.rwkvReviewRefreshInterval}
                         min={1}
                         max={10000}

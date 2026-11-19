@@ -69,14 +69,14 @@ export function newGatherPriorityChoices(): Choice<DeckConfig_Config_NewCardGath
     ];
 }
 
-export function newSortOrderChoices(): Choice<DeckConfig_Config_NewCardSortOrder>[] {
+export function newSortOrderChoices(study = false): Choice<DeckConfig_Config_NewCardSortOrder>[] {
     return [
         {
-            label: tr.deckConfigSortOrderTemplateThenGather(),
+            label: study ? tr.deckConfigStudyTypeThenSelection() : tr.deckConfigSortOrderTemplateThenGather(),
             value: DeckConfig_Config_NewCardSortOrder.TEMPLATE,
         },
         {
-            label: tr.deckConfigSortOrderGather(),
+            label: study ? tr.deckConfigStudySelectionOrder() : tr.deckConfigSortOrderGather(),
             value: DeckConfig_Config_NewCardSortOrder.NO_SORT,
         },
         {
@@ -92,6 +92,15 @@ export function newSortOrderChoices(): Choice<DeckConfig_Config_NewCardSortOrder
             value: DeckConfig_Config_NewCardSortOrder.RANDOM_CARD,
         },
     ];
+}
+
+export function disabledSortOrders(
+    priority: DeckConfig_Config_NewCardGatherPriority,
+): DeckConfig_Config_NewCardSortOrder[] {
+    const sort = DeckConfig_Config_NewCardSortOrder;
+    const redundant = [sort.TEMPLATE_THEN_RANDOM, sort.RANDOM_NOTE_THEN_TEMPLATE];
+    if (priority === DeckConfig_Config_NewCardGatherPriority.RANDOM_CARDS) { return [...redundant, sort.RANDOM_CARD]; }
+    return priority === DeckConfig_Config_NewCardGatherPriority.RANDOM_NOTES ? redundant : [];
 }
 
 export function reviewOrderChoices(

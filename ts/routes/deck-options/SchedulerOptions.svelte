@@ -6,6 +6,7 @@ License: GNU AGPL, version 3 or later; http://www.gnu.org/licenses/agpl.html
     import * as tr from "@generated/ftl";
 
     import type { Choice } from "$lib/components/EnumSelector.svelte";
+    import EnumSelector from "$lib/components/EnumSelector.svelte";
     import Item from "$lib/components/Item.svelte";
 
     import type { DeckOptionsState } from "./lib";
@@ -20,6 +21,7 @@ License: GNU AGPL, version 3 or later; http://www.gnu.org/licenses/agpl.html
     import SchedulerSelect from "./SchedulerSelect.svelte";
 
     export let state: DeckOptionsState;
+    export let study = false;
     export let onSelect: () => void;
     export let openHelp: (key: string) => void;
 
@@ -46,30 +48,59 @@ License: GNU AGPL, version 3 or later; http://www.gnu.org/licenses/agpl.html
 </script>
 
 <div class="scheduler-options">
-    <Item>
-        <SchedulerSelect
-            id="review-scheduler"
-            title={tr.deckConfigSchedulerReview()}
-            recommended="RWKV-Instant"
-            value={scheduler($config)}
-            choices={schedulerChoices}
-            onChange={selectScheduler}
-            onHelp={() => openHelp("review")}
-        />
-    </Item>
-
-    {#if $config.rwkvReviewInstantOrderEnabled}
+    {#if study}
+        <Item>
+            <div class="study-line">
+                <span>
+                    {tr.deckConfigSchedulerReview()}
+                    <EnumSelector
+                        inlineValue
+                        accessibleLabel={tr.deckConfigSchedulerReview()}
+                        value={scheduler($config)}
+                        choices={schedulerChoices}
+                        on:change={(e) => selectScheduler(e.detail.value)}
+                    />
+                </span>
+                {#if $config.rwkvReviewInstantOrderEnabled}
+                    <span>
+                        {tr.deckConfigSchedulerDueDates()}
+                        <EnumSelector
+                            inlineValue
+                            accessibleLabel={tr.deckConfigSchedulerDueDates()}
+                            value={dueDateScheduler($config)}
+                            choices={dueDateChoices}
+                            on:change={(e) => selectDueDates(e.detail.value)}
+                        />
+                    </span>
+                {/if}
+            </div>
+        </Item>
+    {:else}
         <Item>
             <SchedulerSelect
-                id="due-date-scheduler"
-                title={tr.deckConfigSchedulerDueDates()}
-                recommended="FSRS-7"
-                value={dueDateScheduler($config)}
-                choices={dueDateChoices}
-                onChange={selectDueDates}
-                onHelp={() => openHelp("dueDates")}
+                id="review-scheduler"
+                title={tr.deckConfigSchedulerReview()}
+                recommended="RWKV-Instant"
+                value={scheduler($config)}
+                choices={schedulerChoices}
+                onChange={selectScheduler}
+                onHelp={() => openHelp("review")}
             />
         </Item>
+
+        {#if $config.rwkvReviewInstantOrderEnabled}
+            <Item>
+                <SchedulerSelect
+                    id="due-date-scheduler"
+                    title={tr.deckConfigSchedulerDueDates()}
+                    recommended="FSRS-7"
+                    value={dueDateScheduler($config)}
+                    choices={dueDateChoices}
+                    onChange={selectDueDates}
+                    onHelp={() => openHelp("dueDates")}
+                />
+            </Item>
+        {/if}
     {/if}
 </div>
 

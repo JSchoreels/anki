@@ -42,4 +42,9 @@ License: GNU AGPL, version 3 or later; http://www.gnu.org/licenses/agpl.html
     });
 </script>
 
-<DeckOptionsPage state={data.state} bind:this={page} on:close={closeRequested} />
+<DeckOptionsPage
+    state={data.state}
+    classic={data.classic}
+    bind:this={page}
+    on:close={closeRequested}
+/>

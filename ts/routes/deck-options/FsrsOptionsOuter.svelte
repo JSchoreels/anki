@@ -15,6 +15,7 @@ License: GNU AGPL, version 3 or later; http://www.gnu.org/licenses/agpl.html
     import FsrsOptions from "./FsrsOptions.svelte";
     import GlobalLabel from "./GlobalLabel.svelte";
     import { type DeckOptionsState, ValueTab } from "./lib";
+    import MaximumIntervalInputRow from "./MaximumIntervalInputRow.svelte";
     import SchedulerHelp from "./SchedulerHelp.svelte";
     import SchedulerOptions from "./SchedulerOptions.svelte";
     import SchedulerHelpButton from "./SchedulerHelpButton.svelte";
@@ -23,6 +24,7 @@ License: GNU AGPL, version 3 or later; http://www.gnu.org/licenses/agpl.html
     import Warning from "./Warning.svelte";
 
     export let state: DeckOptionsState;
+    export let study = false;
     export let api: Record<string, never>;
 
     export function onPresetChange() {
@@ -71,7 +73,7 @@ License: GNU AGPL, version 3 or later; http://www.gnu.org/licenses/agpl.html
 </script>
 
 <Row class="row-columns">
-    <TitledContainer title={"Scheduler"}>
+    <TitledContainer title={study ? tr.deckConfigStudyScheduling() : "Scheduler"}>
         <ApplyScheduleModal slot="header-actions" {state} />
         <SchedulerHelp
             title={"Scheduler"}
@@ -98,28 +100,58 @@ License: GNU AGPL, version 3 or later; http://www.gnu.org/licenses/agpl.html
 
             <SchedulerOptions
                 {state}
+                {study}
                 onSelect={() => fsrs.set(true)}
                 openHelp={(key) => schedulerHelp.open(key)}
             />
 
+            <div
+                class:study-line={study}
+                class:combined-values={study}
+                class:pass-through={!study}
+            >
+                {#if $fsrs || $config.rwkvReviewEnabled}
+                    <Item>
+                        <SchedulerRetention
+                            {study}
+                            bind:value={effectiveDesiredRetention}
+                            defaultValue={defaults.desiredRetention}
+                            tabs={desiredRetentionTabs}
+                            bind:focused={desiredRetentionFocused}
+                        >
+                            <span>{tr.deckConfigDesiredRetention()}</span>
+                            <SchedulerHelpButton
+                                title={tr.deckConfigDesiredRetention()}
+                                on:click={() => schedulerHelp.open("desiredRetention")}
+                            />
+                        </SchedulerRetention>
+                    </Item>
+                {/if}
+                {#if study}
+                    <Item>
+                        <span>
+                            {tr.schedulingMaximumInterval()}
+                            <MaximumIntervalInputRow
+                                inlineLabel={tr.schedulingMaximumInterval()}
+                                defaultValue={defaults.maximumReviewInterval}
+                                bind:value={$config.maximumReviewInterval}
+                            />
+                        </span>
+                    </Item>
+                {/if}
+            </div>
             {#if $fsrs || $config.rwkvReviewEnabled}
-                <Item>
-                    <SchedulerRetention
-                        bind:value={effectiveDesiredRetention}
-                        defaultValue={defaults.desiredRetention}
-                        tabs={desiredRetentionTabs}
-                        bind:focused={desiredRetentionFocused}
-                    >
-                        <span>{tr.deckConfigDesiredRetention()}</span>
-                        <SchedulerHelpButton
-                            title={tr.deckConfigDesiredRetention()}
-                            on:click={() => schedulerHelp.open("desiredRetention")}
-                        />
-                    </SchedulerRetention>
-                </Item>
                 <Warning
                     warning={desiredRetentionWarning}
                     className={retentionWarningClass}
+                />
+            {/if}
+            {#if study && $config.maximumReviewInterval < 180}
+                <Warning
+                    warning={tr.deckConfigTooShortMaximumInterval()}
+                    className={$config.maximumReviewInterval < 50
+                        ? "alert-danger"
+                        : "alert-warning"}
                 />
             {/if}
         </DynamicallySlottable>
@@ -134,6 +166,7 @@ License: GNU AGPL, version 3 or later; http://www.gnu.org/licenses/agpl.html
         <DynamicallySlottable slotHost={Item} api={{}}>
             <FsrsOptions
                 {state}
+                {study}
                 {newlyEnabled}
                 {desiredRetentionTabs}
                 bind:effectiveDesiredRetention
@@ -148,6 +181,12 @@ License: GNU AGPL, version 3 or later; http://www.gnu.org/licenses/agpl.html
 {/each}
 
 <style>
+    .pass-through {
+        display: contents;
+    }
+    .combined-values {
+        align-items: baseline;
+    }
     .scheduler-setting-label {
         display: inline-flex;
         align-items: center;

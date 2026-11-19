@@ -92,6 +92,7 @@ License: GNU AGPL, version 3 or later; http://www.gnu.org/licenses/agpl.html
     import { buildSimulateFsrsRequest } from "./simulate-fsrs-request";
 
     export let state: DeckOptionsState;
+    export let study = false;
     export let openSchedulerHelp: (key: string) => void;
     export let newlyEnabled = false;
     export let effectiveDesiredRetention: number;
@@ -1543,7 +1544,7 @@ License: GNU AGPL, version 3 or later; http://www.gnu.org/licenses/agpl.html
                 </div>
             </div>
 
-            <details class="fsrs-advanced m-1">
+            <details class="fsrs-advanced m-1" open={study}>
                 <summary>{tr.deckConfigAdvancedSettings()}</summary>
 
                 <div>

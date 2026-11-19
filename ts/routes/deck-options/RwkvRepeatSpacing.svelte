@@ -8,8 +8,10 @@ License: GNU AGPL, version 3 or later; http://www.gnu.org/licenses/agpl.html
     import RevertButton from "$lib/components/RevertButton.svelte";
     import SettingTitle from "$lib/components/SettingTitle.svelte";
     import SpinBox from "$lib/components/SpinBox.svelte";
+    import InlineNumber from "./InlineNumber.svelte";
 
     export let reviews: number;
+    export let study = false;
     export let seconds: number;
     export let defaultReviews: number;
     export let defaultSeconds: number;
@@ -28,7 +30,25 @@ License: GNU AGPL, version 3 or later; http://www.gnu.org/licenses/agpl.html
 <fieldset class="repeat-spacing">
     <legend class="visually-hidden">{tr.deckConfigRwkvRepeatSpacingTitle()}</legend>
     {#each parts as part}
-        {#if part === reviewsMarker}
+        {#if study && part === reviewsMarker}
+            <span>
+                <InlineNumber
+                    label={tr.deckConfigRwkvReviewMinInterveningReviews()}
+                    bind:value={reviews}
+                    max={10000}
+                />
+                {tr.deckConfigRwkvRepeatReviewsUnit({ count: reviews })}
+            </span>
+        {:else if study && part === secondsMarker}
+            <span>
+                <InlineNumber
+                    label={tr.deckConfigRwkvReviewMinElapsedSecs()}
+                    bind:value={seconds}
+                    max={86400}
+                />
+                {tr.deckConfigRwkvRepeatSecondsUnit({ count: seconds })}
+            </span>
+        {:else if part === reviewsMarker}
             <div class="repeat-value">
                 <label class="repeat-input">
                     <span class="visually-hidden">

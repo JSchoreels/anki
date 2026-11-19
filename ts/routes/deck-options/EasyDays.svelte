@@ -21,6 +21,7 @@ License: GNU AGPL, version 3 or later; http://www.gnu.org/licenses/agpl.html
     import { type HelpItem, HelpItemScheduler } from "$lib/components/types";
 
     export let state: DeckOptionsState;
+    export let study = false;
     export let api: Record<string, never>;
 
     const fsrsEnabled = state.fsrs;
@@ -205,30 +206,47 @@ License: GNU AGPL, version 3 or later; http://www.gnu.org/licenses/agpl.html
         }}
     />
     <DynamicallySlottable slotHost={Item} {api}>
-        <Item>
-            <SwitchRow bind:value={$loadBalancerEnabled} defaultValue={false}>
-                <SettingTitle on:click={() => openHelpModal("loadBalancerEnabled")}>
-                    <GlobalLabel title={tr.deckConfigLoadBalancerEnabled()} />
-                </SettingTitle>
-            </SwitchRow>
-        </Item>
-        <Item>
-            <SwitchRow
-                bind:value={$reviewFuzzEnabled}
-                defaultValue={defaultReviewFuzzEnabled}
-            >
-                <SettingTitle on:click={() => openHelpModal("reviewFuzzEnabled")}>
-                    <GlobalLabel title={tr.deckConfigReviewFuzzEnabled()} />
-                </SettingTitle>
-            </SwitchRow>
-        </Item>
-        <EasyDaysInput bind:values={$config.easyDaysPercentages} />
+        {#if study}
+            <EasyDaysInput equalizer bind:values={$config.easyDaysPercentages} />
+            <Item>
+                <div class="study-line checks">
+                    <label title={tr.deckConfigLoadBalancerEnabledTooltip()}>
+                        <input type="checkbox" bind:checked={$loadBalancerEnabled} />
+                        {tr.deckConfigLoadBalancerEnabled()}
+                    </label>
+                    <label title={tr.deckConfigReviewFuzzEnabledTooltip()}>
+                        <input type="checkbox" bind:checked={$reviewFuzzEnabled} />
+                        {tr.deckConfigReviewFuzzEnabled()}
+                    </label>
+                </div>
+            </Item>
+        {:else}
+            <Item>
+                <SwitchRow bind:value={$loadBalancerEnabled} defaultValue={false}>
+                    <SettingTitle on:click={() => openHelpModal("loadBalancerEnabled")}>
+                        <GlobalLabel title={tr.deckConfigLoadBalancerEnabled()} />
+                    </SettingTitle>
+                </SwitchRow>
+            </Item>
+            <Item>
+                <SwitchRow
+                    bind:value={$reviewFuzzEnabled}
+                    defaultValue={defaultReviewFuzzEnabled}
+                >
+                    <SettingTitle on:click={() => openHelpModal("reviewFuzzEnabled")}>
+                        <GlobalLabel title={tr.deckConfigReviewFuzzEnabled()} />
+                    </SettingTitle>
+                </SwitchRow>
+            </Item>
+            <EasyDaysInput bind:values={$config.easyDaysPercentages} />
+        {/if}
         <Item>
             <div class="review-fuzz-title">{tr.deckConfigReviewFuzzTitle()}</div>
         </Item>
         <Item>
             <SpinBoxFloatRow
                 bind:value={$reviewFuzzBase}
+                inlineLabel={study ? tr.deckConfigReviewFuzzBase() : undefined}
                 defaultValue={defaultReviewFuzzBase}
                 min={0}
                 max={10}
@@ -240,6 +258,7 @@ License: GNU AGPL, version 3 or later; http://www.gnu.org/licenses/agpl.html
         <Item>
             <SpinBoxFloatRow
                 bind:value={$reviewFuzzFactorShort}
+                inlineLabel={study ? tr.deckConfigReviewFuzzFactorShort() : undefined}
                 defaultValue={defaultReviewFuzzFactorShort}
                 min={0}
                 max={1}
@@ -252,6 +271,7 @@ License: GNU AGPL, version 3 or later; http://www.gnu.org/licenses/agpl.html
         <Item>
             <SpinBoxFloatRow
                 bind:value={$reviewFuzzFactorMid}
+                inlineLabel={study ? tr.deckConfigReviewFuzzFactorMid() : undefined}
                 defaultValue={defaultReviewFuzzFactorMid}
                 min={0}
                 max={1}
@@ -264,6 +284,7 @@ License: GNU AGPL, version 3 or later; http://www.gnu.org/licenses/agpl.html
         <Item>
             <SpinBoxFloatRow
                 bind:value={$reviewFuzzFactorLong}
+                inlineLabel={study ? tr.deckConfigReviewFuzzFactorLong() : undefined}
                 defaultValue={defaultReviewFuzzFactorLong}
                 min={0}
                 max={1}

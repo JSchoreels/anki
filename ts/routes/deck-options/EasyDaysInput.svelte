@@ -17,34 +17,128 @@ License: GNU AGPL, version 3 or later; http://www.gnu.org/licenses/agpl.html
     ];
 
     export let values = [0, 0, 0, 0, 0, 0, 0];
+    export let equalizer = false;
+    const levels = [100, 75, 50, 25, 0];
+    $: normalDays = values.filter((value) => value === 1).length;
+    function updateDay(index, input) {
+        const level = Number(input.value);
+        if (values[index] !== 1 || normalDays > 1) {
+            values[index] = level;
+        }
+        input.value = String(values[index]);
+    }
 </script>
 
 <Item>
-    <div class="container">
-        <div class="easy-days-settings">
-            <span></span>
-            <span class="header min-col">{tr.deckConfigEasyDaysMinimum()}</span>
-            <span class="header">{tr.deckConfigEasyDaysReduced()}</span>
-            <span class="header normal-col">{tr.deckConfigEasyDaysNormal()}</span>
-
-            {#each easyDays as day, index}
-                <span class="day">{day}</span>
-                <div class="input-container">
+    {#if equalizer}
+        <div class="equalizer" role="group" aria-label={tr.deckConfigStudyWeekLoad()}>
+            <div class="scale" aria-hidden="true">
+                {#each levels as level}<span>{level}%</span>{/each}
+            </div>
+            <div class="guides" aria-hidden="true">
+                {#each levels as _}<i></i>{/each}
+            </div>
+            {#each easyDays as day, i}
+                <label class="channel">
                     <input
                         type="range"
-                        bind:value={values[index]}
-                        step={0.5}
-                        max={1.0}
-                        min={0.0}
-                        list="easy_day_steplist"
+                        min="0"
+                        max="1"
+                        step=".25"
+                        value={values[i]}
+                        aria-label={day}
+                        aria-orientation="vertical"
+                        aria-valuetext={`${values[i] * 100}%`}
+                        title={`${day} · ${values[i] * 100}%`}
+                        on:input={(e) => updateDay(i, e.currentTarget)}
                     />
-                </div>
+                    <span>{day}</span>
+                </label>
             {/each}
         </div>
-    </div>
+        <p class="week-caption">
+            {tr.deckConfigStudyWeekLoad()}{#if normalDays === 1}
+                · {tr.deckConfigStudyWeekGuard()}{/if}
+        </p>
+    {:else}
+        <div class="container">
+            <div class="easy-days-settings">
+                <span></span>
+                <span class="header min-col">{tr.deckConfigEasyDaysMinimum()}</span>
+                <span class="header">{tr.deckConfigEasyDaysReduced()}</span>
+                <span class="header normal-col">{tr.deckConfigEasyDaysNormal()}</span>
+
+                {#each easyDays as day, index}
+                    <span class="day">{day}</span>
+                    <div class="input-container">
+                        <input
+                            type="range"
+                            bind:value={values[index]}
+                            step={0.25}
+                            aria-label={day}
+                            max={1.0}
+                            min={0.0}
+                            list="easy_day_steplist"
+                        />
+                    </div>
+                {/each}
+            </div>
+        </div>
+    {/if}
 </Item>
 
 <style lang="scss">
+    .equalizer {
+        position: relative;
+        display: grid;
+        grid-template-columns: 3.1rem repeat(7, minmax(0, 1fr));
+        max-width: 38rem;
+        margin-block: 1rem 0.4rem;
+        font-size: 0.8rem;
+    }
+    .scale,
+    .guides {
+        display: flex;
+        height: 5rem;
+        flex-direction: column;
+        justify-content: space-between;
+    }
+    .scale {
+        color: var(--fg-subtle);
+        align-items: flex-end;
+        padding-inline-end: 0.65rem;
+        font-size: 0.7rem;
+    }
+    .guides {
+        position: absolute;
+        inset-inline: 3.1rem 0;
+        top: 0;
+        padding-block: 0.35rem;
+        pointer-events: none;
+    }
+    .guides i {
+        border-top: 1px solid var(--border-subtle);
+    }
+    .channel {
+        position: relative;
+        display: grid;
+        justify-items: center;
+        gap: 0.35rem;
+    }
+    .channel input {
+        writing-mode: vertical-lr;
+        direction: rtl;
+        width: 1.45rem;
+        height: 5rem;
+        margin: 0;
+        accent-color: var(--border-focus);
+        cursor: pointer;
+    }
+    .week-caption {
+        margin: 0.35rem 0;
+        color: var(--fg-subtle);
+        font-size: 0.8rem;
+    }
     .container {
         display: flex;
         justify-content: center;

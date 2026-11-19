@@ -11,6 +11,7 @@ import "./deck-options-base.scss";
 import { getDeckConfigsForUpdate } from "@generated/backend";
 import { ModuleName, setupI18n } from "@tslib/i18n";
 import { checkNightMode } from "@tslib/nightmode";
+import { getProfileConfig } from "@tslib/profile";
 
 import { modalsKey, touchDeviceKey } from "$lib/components/context-keys";
 import EnumSelectorRow from "$lib/components/EnumSelectorRow.svelte";
@@ -36,7 +37,11 @@ const i18n = setupI18n({
 
 export async function setupDeckOptions(did_: number): Promise<DeckOptionsPage> {
     const did = BigInt(did_);
-    const [info] = await Promise.all([getDeckConfigsForUpdate({ did }), i18n]);
+    const [info, classic] = await Promise.all([
+        getDeckConfigsForUpdate({ did }),
+        getProfileConfig("deckOptionsClassicView"),
+        i18n,
+    ]);
 
     checkNightMode();
 
@@ -47,7 +52,7 @@ export async function setupDeckOptions(did_: number): Promise<DeckOptionsPage> {
     const state = new DeckOptionsState(BigInt(did), info);
     return new DeckOptionsPage({
         target: document.body,
-        props: { state },
+        props: { state, classic: classic === true },
         context,
     });
 }

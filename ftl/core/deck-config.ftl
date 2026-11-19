@@ -964,3 +964,94 @@ deck-config-fsrs-on-all-clients =
     Please ensure all of your Anki clients are Anki(Mobile) 23.10+ or AnkiDroid 2.17+. FSRS will
     not work correctly if one of your clients is older.
 deck-config-optimize-all-tip = You can optimize all presets at once by using the dropdown button next to "Save".
+## Study layout and session preview
+
+deck-config-study-classic = Classic view
+deck-config-study-classic-help = Use the classic Deck Options layout for all decks in this profile.
+deck-config-study-preview = Session Preview
+deck-config-study-why-title = Why this order?
+deck-config-study-preview-source = Preview cards from
+deck-config-study-numbered = Example · 120 new cards
+deck-config-study-steps-example = Example · learning steps
+deck-config-study-preview-count = { $count ->
+    [one] 1 card in the current queue
+   *[other] { $count } cards in the current queue
+}
+deck-config-study-preview-empty = No cards are ready to study with these settings.
+deck-config-study-preview-loading = Building the preview…
+deck-config-study-preview-failed = The session preview could not be loaded.
+deck-config-study-preview-unsaved = The preview uses your current edits. Answering cards can change the order.
+deck-config-study-preview-score-fallback = RWKV-Instant scores are unavailable for this preview.
+deck-config-study-example-scores = Recall estimates in this example are simulated.
+deck-config-study-new = New
+deck-config-study-suspended = Suspended
+deck-config-study-review = Review
+deck-config-study-same-day = Same-day step
+deck-config-study-carried = Carried-over step
+deck-config-study-held = Postponed
+deck-config-study-later = Due later
+deck-config-study-excluded = Excluded
+deck-config-study-why-selection = Select new cards by “{ $order }”.
+deck-config-study-why-gather = Selected #{ $rank }.
+deck-config-study-deck-position = Deck position { $position }.
+deck-config-study-card-type = Card type { $number }.
+deck-config-study-interval = { $days } d interval.
+deck-config-study-why-field = { $field } = { $value }.
+deck-config-study-missing-field = empty or missing
+deck-config-study-why-new-order = Selected cards follow “{ $order }”.
+deck-config-study-why-mix = Session placement follows “{ $order }”.
+deck-config-study-why-review = Ordered by “{ $order }”.
+deck-config-study-due-today = Due today.
+deck-config-study-overdue = { $days } d overdue.
+deck-config-study-due-in = Due in { $days } d.
+deck-config-study-why-step-now = Ready for its next learning step.
+deck-config-study-why-step-later = Next step in { $minutes } min.
+deck-config-study-why-suspended = Uses a new-card slot and will be unsuspended when answered.
+deck-config-study-why-limit = Outside the remaining daily allowance.
+deck-config-study-why-sibling = Another card from the same note takes priority today.
+deck-config-study-why-buried = Buried until the next study day.
+deck-config-study-why-excluded = Suspended and outside the current selection.
+deck-config-study-why-not-selected = Outside the current review selection.
+deck-config-study-why-minimum = Selected to meet the RWKV-Instant review minimum.
+deck-config-study-recall = Estimated recall { $percent }%.
+deck-config-study-gap = { $count ->
+    [one] 1 other card
+   *[other] { $count } other cards
+}
+deck-config-study-learning = Learning
+deck-config-study-reviews = Reviews
+deck-config-study-scheduling = Scheduling
+deck-config-study-behavior = Study behavior
+deck-config-study-new-limit = New cards per day
+deck-config-study-minimum = Review minimum
+deck-config-study-maximum = Review maximum
+deck-config-study-new-scope = New-card limit scope
+deck-config-study-review-scope = Review limit scope
+deck-config-study-retention-scope = Desired retention scope
+deck-config-study-pool = Cards to select
+deck-config-study-only-new = New cards only
+deck-config-study-mixed = Mix new and suspended cards
+deck-config-study-by = Select by
+deck-config-study-position = Position in deck
+deck-config-study-retrievability = Estimated recall (RWKV)
+deck-config-study-direction = Sort direction
+deck-config-study-ascending = Ascending
+deck-config-study-descending = Descending
+deck-config-study-show-selected = Show selected cards in
+deck-config-study-selection-order = Selection order
+deck-config-study-type-then-selection = Card type, then selection order
+deck-config-study-show-new = Show new cards
+deck-config-study-insertion = Add new cards
+deck-config-study-prioritize = Prioritize reviews by
+deck-config-study-carried-steps = Show steps carried over from a previous day
+deck-config-study-same-day-steps = Show same-day steps
+deck-config-study-when-due = As soon as they are due
+deck-config-study-relearn = After a lapse, use steps
+deck-config-study-allow-steps = Allow same-day reviews for learning and relearning steps
+deck-config-study-skip-steps = Skip learning and relearning queues with FSRS/RWKV
+deck-config-study-bury = Bury siblings until tomorrow
+deck-config-study-bury-new = New cards
+deck-config-study-bury-review = Review cards
+deck-config-study-bury-carried = Steps from a previous day
+deck-config-study-week-load = Share of a normal day’s review load
+deck-config-study-week-guard = Keep at least one day at 100%.

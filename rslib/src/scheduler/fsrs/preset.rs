@@ -425,13 +425,32 @@ impl Collection {
         cards: &[FsrsPresetCard],
         missing: MissingHomePreset,
     ) -> Result<HashMap<CardId, Arc<FsrsPreset>>> {
+        let decks = self.storage.get_decks_map()?;
+        let configs = self.storage.get_deck_config_map()?;
+        self.fsrs_presets_from_deck_maps(cards, missing, &decks, &configs)
+    }
+
+    pub(crate) fn fsrs_metric_presets_for_draft(
+        &mut self,
+        cards: &[FsrsPresetCard],
+        decks: &HashMap<DeckId, Deck>,
+        configs: &HashMap<DeckConfigId, DeckConfig>,
+    ) -> Result<HashMap<CardId, Arc<FsrsPreset>>> {
+        self.fsrs_presets_from_deck_maps(cards, MissingHomePreset::UseDefault, decks, configs)
+    }
+
+    fn fsrs_presets_from_deck_maps(
+        &mut self,
+        cards: &[FsrsPresetCard],
+        missing: MissingHomePreset,
+        decks_by_id: &HashMap<DeckId, Deck>,
+        configs_by_id: &HashMap<DeckConfigId, DeckConfig>,
+    ) -> Result<HashMap<CardId, Arc<FsrsPreset>>> {
         let start = Instant::now();
         let mut presets_by_card = self.fsrs_overlay_presets_for_cards(cards)?;
         let overlay_matches = presets_by_card.len();
         presets_by_card.reserve(cards.len() - overlay_matches);
         let fallback_start = Instant::now();
-        let decks_by_id = self.storage.get_decks_map()?;
-        let configs_by_id = self.storage.get_deck_config_map()?;
         let mut presets_by_deck = HashMap::new();
 
         for card in cards {

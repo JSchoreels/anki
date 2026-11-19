@@ -14,6 +14,7 @@ License: GNU AGPL, version 3 or later; http://www.gnu.org/licenses/agpl.html
     } from "./minimum-interval";
 
     export let value: number;
+    export let inlineLabel: string | undefined = undefined;
     export let defaultValue: number;
 
     let inputValue = maximumIntervalToString(value);
@@ -28,19 +29,35 @@ License: GNU AGPL, version 3 or later; http://www.gnu.org/licenses/agpl.html
     }
 </script>
 
-<Row --cols={13}>
-    <Col --col-size={7} breakpoint="xs">
-        <slot />
-    </Col>
-    <Col --col-size={6} breakpoint="xs">
-        <Row class="flex-grow-1">
-            <ConfigInput>
-                <input type="text" bind:value={inputValue} on:blur={update} />
-                <RevertButton slot="revert" bind:value {defaultValue} />
-            </ConfigInput>
-        </Row>
-    </Col>
-</Row>
+{#if inlineLabel}
+    <input
+        class="study-value"
+        type="text"
+        bind:value={inputValue}
+        aria-label={inlineLabel}
+        style:width={`${Math.max(3, inputValue.length + 1)}ch`}
+        on:blur={update}
+        on:keydown={(e) => {
+            if (e.key === "Enter") {
+                e.currentTarget.blur();
+            }
+        }}
+    />
+{:else}
+    <Row --cols={13}>
+        <Col --col-size={7} breakpoint="xs">
+            <slot />
+        </Col>
+        <Col --col-size={6} breakpoint="xs">
+            <Row class="flex-grow-1">
+                <ConfigInput>
+                    <input type="text" bind:value={inputValue} on:blur={update} />
+                    <RevertButton slot="revert" bind:value {defaultValue} />
+                </ConfigInput>
+            </Row>
+        </Col>
+    </Row>
+{/if}
 
 <style>
     input {

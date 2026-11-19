@@ -1,0 +1,95 @@
+// Copyright: Ankitects Pty Ltd and contributors
+// License: GNU AGPL, version 3 or later; http://www.gnu.org/licenses/agpl.html
+
+import { OpChanges } from "@generated/anki/collection_pb";
+import { UpdateDeckConfigsRequest } from "@generated/anki/deck_config_pb";
+import { SetSettingJsonRequest } from "@generated/anki/frontend_pb";
+import { Json, String as GenericString } from "@generated/anki/generic_pb";
+
+import { expect, test } from "./fixtures";
+import { decodeRequestBody } from "./helpers";
+
+test("study options preview the draft, retain it across layouts, and save the weekday load", async ({ page }) => {
+    let classic = false;
+    await page.setViewportSize({ width: 1100, height: 950 });
+    await page.route("**/_anki/getProfileConfigJson", async (route) => {
+        if (decodeRequestBody(route.request(), GenericString).val !== "deckOptionsClassicView") {
+            return route.fallback();
+        }
+        await route.fulfill({ body: Buffer.from(new Json({ json: Buffer.from(JSON.stringify(classic)) }).toBinary()) });
+    });
+    await page.route("**/_anki/setProfileConfigJson", async (route) => {
+        const setting = decodeRequestBody(route.request(), SetSettingJsonRequest);
+        if (setting.key !== "deckOptionsClassicView") {
+            return route.fallback();
+        }
+        classic = JSON.parse(new TextDecoder().decode(setting.valueJson));
+        await route.fulfill({ body: Buffer.alloc(0) });
+    });
+    let saved: UpdateDeckConfigsRequest | undefined;
+    await page.route("**/_anki/updateDeckConfigsAndClose", async (route) => {
+        saved = decodeRequestBody(route.request(), UpdateDeckConfigsRequest);
+        await route.fulfill({ body: Buffer.from(new OpChanges().toBinary()) });
+    });
+    await page.goto("/deck-options/1#night");
+    const preview = page.getByRole("region", { name: "Session Preview" });
+    await expect(preview).toBeVisible();
+    await page.getByRole("combobox", { name: "Preview cards from" }).click();
+    await page.getByRole("option", { name: "Example · 120 new cards" }).click();
+    await page.getByRole("spinbutton", { name: "New cards/day", exact: true }).fill("5");
+    await expect(preview.getByRole("button", { name: /Postponed.*N006/ })).toBeVisible();
+    const reasons = preview.getByRole("list", { name: "Why this order?" });
+    await expect(reasons.getByText("Outside the remaining daily allowance.", { exact: false })).toBeVisible();
+    const lines = await reasons.getByRole("listitem").count();
+    await preview.getByRole("button", { name: /Postponed.*N006/ }).click();
+    await expect(reasons.getByRole("listitem")).toHaveCount(lines);
+    await expect(preview.getByRole("button", { name: /Postponed.*N006/ })).toHaveAttribute("aria-pressed", "true");
+    await expect(reasons.getByText("N006", { exact: true }).locator("..")).toHaveAttribute("aria-current", "true");
+    await expect(page.getByRole("spinbutton", { name: "New cards/day", exact: true })).toHaveCSS(
+        "border-bottom-style",
+        "dotted",
+    );
+    await page.screenshot({ path: test.info().outputPath("deck-options-preview.jpg"), type: "jpeg", quality: 85 });
+    const wideCards = await preview.getByRole("button").count();
+    await page.setViewportSize({ width: 460, height: 900 });
+    await expect.poll(() => preview.getByRole("button").count()).toBeLessThan(wideCards);
+    await expect(preview.getByRole("button", { name: /Postponed.*N006/ })).toBeVisible();
+    const friday = page.getByRole("slider", { name: "Fri", exact: true });
+    await friday.focus();
+    await friday.press("Home");
+    await friday.press("ArrowUp");
+    await expect(friday).toHaveAttribute("aria-valuetext", "25%");
+    await expect(page.getByRole("heading", { level: 1 }).last()).toHaveText("Easy Days");
+    const layout = page.getByRole("switch", { name: "Classic view" });
+    await layout.check();
+    await expect.poll(() => classic).toBe(true);
+    await expect(page.getByRole("heading", { name: "Display Order", exact: true })).toBeVisible();
+    await expect(preview).toHaveCount(0);
+    await layout.uncheck();
+    await expect.poll(() => classic).toBe(false);
+    await expect(page.getByRole("spinbutton", { name: "New cards/day", exact: true })).toHaveValue("5");
+    await expect(friday).toHaveAttribute("aria-valuetext", "25%");
+    await page.getByRole("button", { name: "Save", exact: true }).click();
+    await expect.poll(() => saved?.configs.at(-1)?.config?.easyDaysPercentages[4]).toBe(0.25);
+});
+
+test("a numeric field orders the whole mixed pool or each priority group", async ({ page }) => {
+    await page.setViewportSize({ width: 1500, height: 950 });
+    await page.goto("/deck-options/1");
+    const choose = async (control: string, option: string) => {
+        await page.getByRole("combobox", { name: control, exact: true }).click();
+        await page.getByRole("option", { name: option, exact: true }).click();
+    };
+    await choose("Preview cards from", "Example · learning steps");
+    await choose("Cards to select", "Mix new and suspended cards");
+    await choose("Select by", "Note field");
+    await choose("Note field", "Back");
+    await choose("Sort direction", "Descending");
+    const pool = page.getByRole("region", { name: "Session Preview" })
+        .getByRole("button").filter({ hasText: /N00[1-3]|S01/ }).locator("strong");
+    await expect(pool).toHaveText(["N002", "N003", "S01", "N001"]);
+    await choose("Cards to select", "Suspended before New");
+    await expect(pool).toHaveText(["S01", "N002", "N003", "N001"]);
+    await choose("Cards to select", "New before Suspended");
+    await expect(pool).toHaveText(["N002", "N003", "N001", "S01"]);
+});

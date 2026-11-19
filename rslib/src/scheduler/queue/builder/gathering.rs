@@ -342,7 +342,7 @@ impl QueueBuilder {
                         }
                         RwkvReviewScoreEligibility::Blocked => continue,
                     }
-                    self.add_rwkv_review_card(card)?;
+                    self.add_minimum_review(card)?;
                     attempted.insert(card.id);
                 }
             }
@@ -451,7 +451,7 @@ impl QueueBuilder {
                         }
                         RwkvReviewScoreEligibility::Blocked => continue,
                     }
-                    self.add_rwkv_review_card(card)?;
+                    self.add_minimum_review(card)?;
                     attempted.insert(card_id);
                 }
             }
@@ -466,6 +466,14 @@ impl QueueBuilder {
 
     fn add_rwkv_review_card(&mut self, card: DueCard) -> Result<()> {
         self.add_due_card_respecting_review_limit(card)
+    }
+
+    fn add_minimum_review(&mut self, card: DueCard) -> Result<()> {
+        self.add_rwkv_review_card(card)?;
+        if let Some(trace) = &mut self.preview {
+            trace.minimum_reviews.insert(card.id);
+        }
+        Ok(())
     }
 
     fn card_ignores_review_limit(&self, card: DueCard) -> bool {
@@ -488,6 +496,9 @@ impl QueueBuilder {
                 .limits
                 .limit_reached(card.current_deck_id, LimitKind::Review)?
         {
+            if let Some(trace) = &mut self.preview {
+                trace.review_limit_card.get_or_insert(card.id);
+            }
             return Ok(());
         }
         if self.add_due_card(card) && !ignore_limit {
@@ -572,6 +583,7 @@ impl QueueBuilder {
             &cards,
             self.context.timing,
             self.context.sort_options.review_order,
+            self.preview.as_ref().map(|_| &self.context),
         )?;
         let scored = Instant::now();
         let mut with_key = Vec::with_capacity(due_cards.len());
@@ -599,6 +611,9 @@ impl QueueBuilder {
                         .limits
                         .limit_reached(candidate.card.current_deck_id, LimitKind::Review)?)
             {
+                if let Some(trace) = &mut self.preview {
+                    trace.review_limit_card.get_or_insert(candidate.card.id);
+                }
                 continue;
             }
 
@@ -660,7 +675,12 @@ impl QueueBuilder {
     }
 
     fn gather_due_cards(&mut self, col: &mut Collection, kind: DueCardKind) -> Result<()> {
-        if self.review_limit_stops_gathering() {
+        if self.review_limit_stops_gathering()
+            && self
+                .preview
+                .as_ref()
+                .is_none_or(|trace| trace.review_limit_card.is_some())
+        {
             return Ok(());
         }
         col.storage.for_each_due_card_in_active_decks(
@@ -670,6 +690,9 @@ impl QueueBuilder {
             self.context.fsrs,
             |card| {
                 if self.review_limit_stops_gathering() {
+                    if let Some(trace) = &mut self.preview {
+                        trace.review_limit_card.get_or_insert(card.id);
+                    }
                     return Ok(false);
                 }
                 self.add_due_card_respecting_review_limit(card)?;
@@ -679,7 +702,7 @@ impl QueueBuilder {
     }
 
     fn gather_new_cards(&mut self, col: &mut Collection) -> Result<()> {
-        if self.limits.root_limit_reached(LimitKind::New) {
+        if self.new_gather_finished() {
             return Ok(());
         }
         let priority = self.context.sort_options.new_gather_priority;
@@ -706,7 +729,7 @@ impl QueueBuilder {
                     suspended_filter.as_deref(),
                     |card| {
                         self.gather_new_card_if_eligible(card)?;
-                        Ok(!self.limits.root_limit_reached(LimitKind::New))
+                        Ok(!self.new_gather_finished())
                     },
                 );
             }
@@ -758,20 +781,18 @@ impl QueueBuilder {
         sort: NewCardSorting,
     ) -> Result<()> {
         for &deck_id in deck_ids {
-            if self.limits.root_limit_reached(LimitKind::New) {
+            if self.new_gather_finished() {
                 break;
             }
-            if self.limits.limit_reached(deck_id, LimitKind::New)? {
+            if self.limits.limit_reached(deck_id, LimitKind::New)? && !self.needs_preview_boundary()
+            {
                 continue;
             }
             col.storage
                 .for_each_new_card_in_deck(deck_id, sort, |card| {
-                    let limit_reached = self.limits.limit_reached(deck_id, LimitKind::New)?;
-                    if !limit_reached && self.add_new_card(card) {
-                        self.limits
-                            .decrement_deck_and_parent_limits(deck_id, LimitKind::New)?;
-                    }
-                    Ok(!limit_reached)
+                    self.gather_new_card_if_eligible(card)?;
+                    Ok(!self.limits.limit_reached(deck_id, LimitKind::New)?
+                        || self.needs_preview_boundary())
                 })?;
         }
 
@@ -791,7 +812,7 @@ impl QueueBuilder {
             .map_or((i64::from(day) + i64::from(studied)) % 2 != 0, |pinned| {
                 !pinned.suspended
             });
-        while !self.limits.root_limit_reached(LimitKind::New) {
+        while !self.new_gather_finished() {
             let prefer_suspended = match self.context.sort_options.suspended_card_order {
                 SuspendedCardOrder::Mixed => suspended_next,
                 SuspendedCardOrder::SuspendedBeforeNew => true,
@@ -813,12 +834,31 @@ impl QueueBuilder {
 
     fn gather_new_card_if_eligible(&mut self, card: NewCard) -> Result<bool> {
         let deck = card.current_deck_id;
-        if self.limits.limit_reached(deck, LimitKind::New)? || !self.add_new_card(card) {
+        if self.limits.limit_reached(deck, LimitKind::New)? {
+            if let Some(trace) = &mut self.preview {
+                trace.limit_card.get_or_insert(card.id);
+            }
+            return Ok(false);
+        }
+        if !self.add_new_card(card) {
+            if let Some(trace) = &mut self.preview {
+                trace.sibling.get_or_insert(card.id);
+            }
             return Ok(false);
         }
         self.limits
             .decrement_deck_and_parent_limits(deck, LimitKind::New)?;
         Ok(true)
+    }
+
+    fn needs_preview_boundary(&self) -> bool {
+        self.preview
+            .as_ref()
+            .is_some_and(|trace| trace.limit_card.is_none())
+    }
+
+    fn new_gather_finished(&self) -> bool {
+        self.limits.root_limit_reached(LimitKind::New) && !self.needs_preview_boundary()
     }
 
     /// True if limit should be decremented.
@@ -853,6 +893,11 @@ impl QueueBuilder {
                 DueCardKind::Learning => false,
             })
             .unwrap_or_default();
+        if bury_this_card {
+            if let Some(trace) = &mut self.preview {
+                trace.sibling.get_or_insert(card.id);
+            }
+        }
         !bury_this_card
     }
 
@@ -905,6 +950,7 @@ fn exact_review_order_keys(
     cards: &[DueCardWithState],
     timing: SchedTimingToday,
     order: ReviewCardOrder,
+    draft: Option<&super::Context>,
 ) -> Result<Vec<f32>> {
     let started = Instant::now();
     // Cards without memory state use the legacy fallback and need no preset.
@@ -920,7 +966,12 @@ fn exact_review_order_keys(
         })
         .collect::<Vec<_>>();
     let selected = Instant::now();
-    let presets = col.fsrs_metric_presets_for_card_inputs(&fsrs_cards)?;
+    let presets = match draft {
+        Some(draft) => {
+            col.fsrs_metric_presets_for_draft(&fsrs_cards, &draft.deck_map, &draft.config_map)?
+        }
+        None => col.fsrs_metric_presets_for_card_inputs(&fsrs_cards)?,
+    };
     let resolved = Instant::now();
     let mut models = HashMap::new();
     let keys = cards
@@ -992,6 +1043,7 @@ pub(super) fn benchmark_retrievability_sort(col: &mut Collection) -> Result<()> 
         &cards,
         timing,
         ReviewCardOrder::RetrievabilityAscending,
+        None,
     )?;
     let entries = cards
         .iter()

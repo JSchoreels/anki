@@ -4,6 +4,7 @@
 mod burying;
 mod gathering;
 pub(crate) mod intersperser;
+mod preview;
 pub(crate) mod sized_chain;
 mod sorting;
 
@@ -20,6 +21,7 @@ use std::sync::Arc;
 use intersperser::Intersperser;
 use sized_chain::SizedChain;
 
+use self::preview::PreviewTrace;
 use super::BuryMode;
 use super::CardQueues;
 use super::Counts;
@@ -186,6 +188,7 @@ pub(super) struct QueueBuilder {
     new_review_mix_progress: NewReviewMixProgress,
     limits: LimitTreeMap,
     load_balancer: Option<LoadBalancer>,
+    preview: Option<PreviewTrace>,
     context: Context,
 }
 
@@ -207,16 +210,43 @@ struct Context {
 
 impl QueueBuilder {
     pub(super) fn new(col: &mut Collection, deck_id: DeckId) -> Result<Self> {
+        Self::with_options(col, deck_id, None)
+    }
+
+    fn with_options(
+        col: &mut Collection,
+        deck_id: DeckId,
+        draft: Option<&crate::deckconfig::UpdateDeckConfigsRequest>,
+    ) -> Result<Self> {
         let timing = col.timing_for_timestamp(TimestampSecs::now())?;
-        let new_cards_ignore_review_limit = col.get_config_bool(BoolKey::NewCardsIgnoreReviewLimit);
-        let apply_all_parent_limits = col.get_config_bool(BoolKey::ApplyAllParentLimits);
-        let config_map = col.storage.get_deck_config_map()?;
-        let root_deck = col.storage.get_deck(deck_id)?.or_not_found(deck_id)?;
+        let new_cards_ignore_review_limit = draft.map_or_else(
+            || col.get_config_bool(BoolKey::NewCardsIgnoreReviewLimit),
+            |d| d.new_cards_ignore_review_limit,
+        );
+        let apply_all_parent_limits = draft.map_or_else(
+            || col.get_config_bool(BoolKey::ApplyAllParentLimits),
+            |d| d.apply_all_parent_limits,
+        );
+        let mut config_map = col.storage.get_deck_config_map()?;
+        let mut deck_map = col.storage.get_decks_map()?;
+        let mut root_deck = deck_map.get(&deck_id).cloned().or_not_found(deck_id)?;
         let mut decks = col.storage.child_decks(&root_deck)?;
         decks.insert(0, root_deck.clone());
         if apply_all_parent_limits {
             for parent in col.storage.parent_decks(&root_deck)? {
                 decks.insert(0, parent);
+            }
+        }
+        if let Some(draft) = draft {
+            preview::apply_draft(
+                draft,
+                &mut config_map,
+                &root_deck,
+                &mut deck_map,
+                timing.days_elapsed,
+            )?;
+            for deck in std::iter::once(&mut root_deck).chain(&mut decks) {
+                deck.clone_from(deck_map.get(&deck.id).or_not_found(deck.id)?);
             }
         }
         let mut limits = LimitTreeMap::build(
@@ -274,10 +304,8 @@ impl QueueBuilder {
         } else {
             None
         };
-        let deck_map = col.storage.get_decks_map()?;
-
-        let load_balancer = col
-            .get_config_bool(BoolKey::LoadBalancerEnabled)
+        // A preview never assigns a new due date.
+        let load_balancer = (draft.is_none() && col.get_config_bool(BoolKey::LoadBalancerEnabled))
             .then(|| {
                 let did_to_dcid = deck_map
                     .values()
@@ -305,6 +333,7 @@ impl QueueBuilder {
             new_review_mix_progress,
             limits,
             load_balancer,
+            preview: draft.map(|_| PreviewTrace::default()),
             context: Context {
                 timing,
                 config_map,
@@ -312,9 +341,11 @@ impl QueueBuilder {
                 sort_options,
                 seen_note_ids: HashMap::new(),
                 deck_map,
-                fsrs: col.get_config_bool(BoolKey::Fsrs),
-                fsrs_short_term_with_steps: col
-                    .get_config_bool(BoolKey::FsrsShortTermWithStepsEnabled),
+                fsrs: draft.map_or_else(|| col.get_config_bool(BoolKey::Fsrs), |d| d.fsrs),
+                fsrs_short_term_with_steps: draft.map_or_else(
+                    || col.get_config_bool(BoolKey::FsrsShortTermWithStepsEnabled),
+                    |d| d.fsrs_short_term_with_steps_enabled,
+                ),
                 rwkv_review_queue_scores,
                 reviewed_today_card_ids,
                 same_day_reviews_may_ignore_limit,

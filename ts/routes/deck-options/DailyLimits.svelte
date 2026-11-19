@@ -19,6 +19,7 @@
 
     import { suspendedCardOrderChoices } from "./choices";
     import GlobalLabel from "./GlobalLabel.svelte";
+    import InlineNumber from "./InlineNumber.svelte";
     import type { DeckOptionsState } from "./lib";
     import { ValueTab } from "./lib";
     import SpinBoxRow from "./SpinBoxRow.svelte";
@@ -26,6 +27,7 @@
     import Warning from "./Warning.svelte";
 
     export let state: DeckOptionsState;
+    export let study = false;
     export let api: Record<string, never>;
 
     export function onPresetChange() {
@@ -184,111 +186,185 @@
         }}
     />
     <DynamicallySlottable slotHost={Item} {api}>
-        <Item>
-            <SpinBoxRow bind:value={newValue} defaultValue={defaults.newPerDay}>
-                <TabbedValue slot="tabs" tabs={newTabs} bind:value={newValue} />
-                <SettingTitle
-                    on:click={() =>
-                        openHelpModal(Object.keys(settings).indexOf("newLimit"))}
-                >
-                    {settings.newLimit.title}
-                </SettingTitle>
-            </SpinBoxRow>
-        </Item>
-
-        <Item>
-            <SpinBoxRow bind:value={reviewsValue} defaultValue={defaults.reviewsPerDay}>
-                <TabbedValue slot="tabs" tabs={reviewTabs} bind:value={reviewsValue} />
-                <SettingTitle
-                    on:click={() =>
-                        openHelpModal(Object.keys(settings).indexOf("reviewLimit"))}
-                >
-                    {settings.reviewLimit.title}
-                </SettingTitle>
-            </SpinBoxRow>
-        </Item>
-
-        <Item>
-            <Warning warning={reviewsTooLow} />
-        </Item>
-
-        <Item>
-            <SwitchRow
-                bind:value={$config.includeSuspendedCardsInLearnablePool}
-                defaultValue={defaults.includeSuspendedCardsInLearnablePool}
-            >
-                <SettingTitle
-                    on:click={() =>
-                        openHelpModal(
-                            Object.keys(settings).indexOf("includeSuspendedCards"),
-                        )}
-                >
-                    {settings.includeSuspendedCards.title}
-                </SettingTitle>
-            </SwitchRow>
-        </Item>
-
-        {#if $config.includeSuspendedCardsInLearnablePool}
+        {#if study}
             <Item>
-                <EnumSelectorRow
-                    bind:value={$config.suspendedCardOrder}
-                    defaultValue={defaults.suspendedCardOrder}
-                    choices={suspendedCardOrderChoices()}
+                <div class="study-line limits">
+                    <span>
+                        {tr.deckConfigStudyNewLimit()}
+                        <InlineNumber
+                            label={settings.newLimit.title}
+                            bind:value={newValue}
+                        />
+                        <TabbedValue
+                            inlineLabel={tr.deckConfigStudyNewScope()}
+                            tabs={newTabs}
+                            bind:value={newValue}
+                        />
+                    </span>
+                    {#if $config.rwkvReviewInstantOrderEnabled}
+                        <span
+                            title={tr.deckConfigRwkvReviewMinimumReviewsPerDayTooltip()}
+                        >
+                            {tr.deckConfigStudyMinimum()}
+                            <InlineNumber
+                                label={tr.deckConfigRwkvReviewMinimumReviewsPerDay()}
+                                bind:value={$config.rwkvReviewMinimumReviewsPerDay}
+                            /> (RWKV-Instant)
+                        </span>
+                    {/if}
+                    <span>
+                        {tr.deckConfigStudyMaximum()}
+                        <InlineNumber
+                            label={settings.reviewLimit.title}
+                            bind:value={reviewsValue}
+                        />
+                        <TabbedValue
+                            inlineLabel={tr.deckConfigStudyReviewScope()}
+                            tabs={reviewTabs}
+                            bind:value={reviewsValue}
+                        />
+                    </span>
+                </div>
+            </Item>
+            <Item>
+                <div class="study-line checks">
+                    <label title={newCardsIgnoreReviewLimitHelp}>
+                        <input
+                            type="checkbox"
+                            bind:checked={$newCardsIgnoreReviewLimit}
+                        />
+                        {settings.newCardsIgnoreReviewLimit.title}
+                    </label>
+                    <label title={settings.sameDayReviewsIgnoreReviewLimit.help}>
+                        <input
+                            type="checkbox"
+                            bind:checked={$config.sameDayReviewsIgnoreReviewLimit}
+                        />
+                        {settings.sameDayReviewsIgnoreReviewLimit.title}
+                    </label>
+                    <label title={applyAllParentLimitsHelp}>
+                        <input type="checkbox" bind:checked={$applyAllParentLimits} />
+                        {settings.applyAllParentLimits.title}
+                    </label>
+                </div>
+            </Item>
+            <Warning warning={reviewsTooLow} />
+        {:else}
+            <Item>
+                <SpinBoxRow bind:value={newValue} defaultValue={defaults.newPerDay}>
+                    <TabbedValue slot="tabs" tabs={newTabs} bind:value={newValue} />
+                    <SettingTitle
+                        on:click={() =>
+                            openHelpModal(Object.keys(settings).indexOf("newLimit"))}
+                    >
+                        {settings.newLimit.title}
+                    </SettingTitle>
+                </SpinBoxRow>
+            </Item>
+
+            <Item>
+                <SpinBoxRow
+                    bind:value={reviewsValue}
+                    defaultValue={defaults.reviewsPerDay}
+                >
+                    <TabbedValue
+                        slot="tabs"
+                        tabs={reviewTabs}
+                        bind:value={reviewsValue}
+                    />
+                    <SettingTitle
+                        on:click={() =>
+                            openHelpModal(Object.keys(settings).indexOf("reviewLimit"))}
+                    >
+                        {settings.reviewLimit.title}
+                    </SettingTitle>
+                </SpinBoxRow>
+            </Item>
+
+            <Item>
+                <Warning warning={reviewsTooLow} />
+            </Item>
+
+            <Item>
+                <SwitchRow
+                    bind:value={$config.includeSuspendedCardsInLearnablePool}
+                    defaultValue={defaults.includeSuspendedCardsInLearnablePool}
                 >
                     <SettingTitle
                         on:click={() =>
                             openHelpModal(
-                                Object.keys(settings).indexOf("suspendedCardOrder"),
+                                Object.keys(settings).indexOf("includeSuspendedCards"),
                             )}
                     >
-                        {settings.suspendedCardOrder.title}
+                        {settings.includeSuspendedCards.title}
                     </SettingTitle>
-                </EnumSelectorRow>
+                </SwitchRow>
+            </Item>
+
+            {#if $config.includeSuspendedCardsInLearnablePool}
+                <Item>
+                    <EnumSelectorRow
+                        bind:value={$config.suspendedCardOrder}
+                        defaultValue={defaults.suspendedCardOrder}
+                        choices={suspendedCardOrderChoices()}
+                    >
+                        <SettingTitle
+                            on:click={() =>
+                                openHelpModal(
+                                    Object.keys(settings).indexOf("suspendedCardOrder"),
+                                )}
+                        >
+                            {settings.suspendedCardOrder.title}
+                        </SettingTitle>
+                    </EnumSelectorRow>
+                </Item>
+            {/if}
+
+            <Item>
+                <SwitchRow
+                    bind:value={$config.sameDayReviewsIgnoreReviewLimit}
+                    defaultValue={defaults.sameDayReviewsIgnoreReviewLimit}
+                >
+                    <SettingTitle
+                        on:click={() =>
+                            openHelpModal(
+                                Object.keys(settings).indexOf(
+                                    "sameDayReviewsIgnoreReviewLimit",
+                                ),
+                            )}
+                    >
+                        {settings.sameDayReviewsIgnoreReviewLimit.title}
+                    </SettingTitle>
+                </SwitchRow>
+            </Item>
+
+            <Item>
+                <SwitchRow bind:value={$newCardsIgnoreReviewLimit} defaultValue={false}>
+                    <SettingTitle
+                        on:click={() =>
+                            openHelpModal(
+                                Object.keys(settings).indexOf(
+                                    "newCardsIgnoreReviewLimit",
+                                ),
+                            )}
+                    >
+                        <GlobalLabel title={settings.newCardsIgnoreReviewLimit.title} />
+                    </SettingTitle>
+                </SwitchRow>
+            </Item>
+
+            <Item>
+                <SwitchRow bind:value={$applyAllParentLimits} defaultValue={false}>
+                    <SettingTitle
+                        on:click={() =>
+                            openHelpModal(
+                                Object.keys(settings).indexOf("applyAllParentLimits"),
+                            )}
+                    >
+                        <GlobalLabel title={settings.applyAllParentLimits.title} />
+                    </SettingTitle>
+                </SwitchRow>
             </Item>
         {/if}
-
-        <Item>
-            <SwitchRow
-                bind:value={$config.sameDayReviewsIgnoreReviewLimit}
-                defaultValue={defaults.sameDayReviewsIgnoreReviewLimit}
-            >
-                <SettingTitle
-                    on:click={() =>
-                        openHelpModal(
-                            Object.keys(settings).indexOf(
-                                "sameDayReviewsIgnoreReviewLimit",
-                            ),
-                        )}
-                >
-                    {settings.sameDayReviewsIgnoreReviewLimit.title}
-                </SettingTitle>
-            </SwitchRow>
-        </Item>
-
-        <Item>
-            <SwitchRow bind:value={$newCardsIgnoreReviewLimit} defaultValue={false}>
-                <SettingTitle
-                    on:click={() =>
-                        openHelpModal(
-                            Object.keys(settings).indexOf("newCardsIgnoreReviewLimit"),
-                        )}
-                >
-                    <GlobalLabel title={settings.newCardsIgnoreReviewLimit.title} />
-                </SettingTitle>
-            </SwitchRow>
-        </Item>
-
-        <Item>
-            <SwitchRow bind:value={$applyAllParentLimits} defaultValue={false}>
-                <SettingTitle
-                    on:click={() =>
-                        openHelpModal(
-                            Object.keys(settings).indexOf("applyAllParentLimits"),
-                        )}
-                >
-                    <GlobalLabel title={settings.applyAllParentLimits.title} />
-                </SettingTitle>
-            </SwitchRow>
-        </Item>
     </DynamicallySlottable>
 </TitledContainer>

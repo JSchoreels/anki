@@ -24,6 +24,7 @@ pub use schema11::DeckConfSchema11;
 pub use schema11::NewCardOrderSchema11;
 pub(crate) use update::fsrs7_enable_scheduling_penalties;
 pub(crate) use update::fsrs7_optimize_include_same_day_reviews;
+pub(crate) use update::update_deck_limits;
 pub use update::UpdateDeckConfigsRequest;
 
 /// Old deck config and cards table store 250% as 2500.

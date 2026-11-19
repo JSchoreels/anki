@@ -27,6 +27,8 @@ service DeckConfigService {
       returns (GetIgnoredBeforeCountResponse);
   rpc GetRetentionWorkload(GetRetentionWorkloadRequest)
       returns (GetRetentionWorkloadResponse);
+  rpc PreviewStudySession(PreviewStudySessionRequest)
+      returns (StudySessionPreview);
 }
 
 // Implicitly includes any of the above methods that are not listed in the
@@ -35,6 +37,53 @@ service BackendDeckConfigService {}
 
 message DeckConfigId {
   int64 dcid = 1;
+}
+
+message PreviewStudySessionRequest {
+  enum Source {
+    SOURCE_DECK = 0;
+    SOURCE_NUMBERED = 1;
+    SOURCE_STEPS = 2;
+  }
+  UpdateDeckConfigsRequest options = 1;
+  Source source = 2;
+}
+
+message StudySessionPreview {
+  enum Kind {
+    KIND_NEW = 0;
+    KIND_SUSPENDED = 1;
+    KIND_REVIEW = 2;
+    KIND_SAME_DAY = 3;
+    KIND_CARRIED_OVER = 4;
+  }
+  enum Reason {
+    REASON_SCHEDULED = 0;
+    REASON_DAILY_LIMIT = 1;
+    REASON_SIBLING = 2;
+    REASON_SUSPENDED = 3;
+    REASON_LATER = 4;
+    REASON_NOT_SELECTED = 5;
+    REASON_MINIMUM = 6;
+    REASON_BURIED = 7;
+  }
+  message Card {
+    int64 id = 1;
+    string label = 2;
+    Kind kind = 3;
+    Reason reason = 4;
+    uint32 position = 5;
+    uint32 gather_position = 6;
+    string field_value = 7;
+    sint32 due = 8;
+    uint32 interval = 9;
+    optional float recall = 10;
+    uint32 template_number = 11;
+  }
+  uint32 total = 1;
+  repeated Card cards = 2;
+  // True when the scheduler has Instant scores for the requested deck.
+  bool has_rwkv_scores = 3;
 }
 
 message GetRetentionWorkloadRequest {

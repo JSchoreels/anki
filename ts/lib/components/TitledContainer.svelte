@@ -12,18 +12,24 @@ License: GNU AGPL, version 3 or later; http://www.gnu.org/licenses/agpl.html
     export { className as class };
 
     export let title: string;
+    export let flat = false;
 </script>
 
 <div
     {id}
     class="container {className}"
+    class:flat
     class:light={!$pageTheme.isDark}
     class:dark={$pageTheme.isDark}
     class:rtl
     style:--gutter-block="2px"
     style:--container-margin="0"
 >
-    <div class="position-relative" class:inline-heading={!!$$slots["header-actions"]}>
+    <div
+        class="position-relative"
+        hidden={flat}
+        class:inline-heading={!!$$slots["header-actions"]}
+    >
         <h1>
             {title}
         </h1>
@@ -55,6 +61,9 @@ License: GNU AGPL, version 3 or later; http://www.gnu.org/licenses/agpl.html
             padding: 1rem 1.25rem 0.75rem 1.75rem;
         }
         page-break-inside: avoid;
+    }
+    .container.flat {
+        display: contents;
     }
     h1 {
         border-bottom: 1px solid var(--border);

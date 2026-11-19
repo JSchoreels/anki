@@ -93,6 +93,7 @@ License: GNU AGPL, version 3 or later; http://www.gnu.org/licenses/agpl.html
 
 <StickyContainer --gutter-block="0.5rem" --sticky-borders="0 0 1px" breakpoint="sm">
     <div class="button-bar">
+        <slot />
         <Select
             class="flex-grow-1 mr1"
             bind:value

@@ -39,8 +39,10 @@ Changes since [build 115](https://github.com/JSchoreels/anki/releases/tag/26.09.
 
 #### New Features
 
-- **Study suspended cards under your daily new-card limit.** In Deck Options → Daily Limits, enable **Include suspended cards in the learnable pool** and choose Suspended before New, New before Suspended, or Mixed. Answering a suspended card unsuspends it and resumes its existing schedule.
-- **Gather new cards by a note field.** In Display Order, choose a field and ascending or descending order. Numbers sort by value. Mixed ranks ordinary new and suspended cards together. Either “before” option ranks by field within each group.
+- **Preview a study session while editing Deck Options.** See cards from the selected deck, their positions, and why they were chosen or postponed. Try the same settings on a 120-card example or a learning-steps example. Learning and Reviews group related controls together. The Classic view switch applies to all decks in the profile.
+- **Study suspended cards under your daily new-card limit.** In Learning, choose Suspended before New, New before Suspended, or Mix new and suspended cards. In Classic view, use **Include suspended cards in the learnable pool** under Daily Limits. Answering a suspended card unsuspends it and resumes its existing schedule.
+- **Gather new cards by a note field.** In Learning, or Display Order in Classic view, choose a field and ascending or descending order. Numbers sort by value. Mixed ranks ordinary new and suspended cards together. Either “before” option ranks by field within each group.
+- **Set Easy Days in 25% increments.** Seven weekday sliders let you target 0%, 25%, 50%, 75%, or 100% of a normal review load.
 
 - **Explore recall by answer time.** Card Info estimates the chance of answering within 2, 4, 6, 8, 10, 15, 20 and 30 seconds if you press Good. Its graph shows the chance of recalling within each time limit (Hard, Good or Easy), alongside the chances of Good or better and Easy. The estimates are available when the Small Curve model is active and the card was last reviewed on an earlier day.
 

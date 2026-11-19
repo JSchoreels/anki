@@ -33,7 +33,9 @@ const SIBLING_MODIFIER_RANGE: [f32; 11] =
 #[derive(Debug, Copy, Clone, PartialEq, Eq)]
 pub enum EasyDay {
     Minimum,
+    Quarter,
     Reduced,
+    ThreeQuarters,
     Normal,
 }
 
@@ -42,6 +44,8 @@ impl From<f32> for EasyDay {
         match other {
             1.0 => EasyDay::Normal,
             0.0 => EasyDay::Minimum,
+            0.25 => EasyDay::Quarter,
+            0.75 => EasyDay::ThreeQuarters,
             _ => EasyDay::Reduced,
         }
     }
@@ -53,7 +57,9 @@ impl EasyDay {
             // this is a non-zero value so if all days are minimum, the load balancer will
             // proceed as normal
             EasyDay::Minimum => 0.0001,
+            EasyDay::Quarter => 0.25,
             EasyDay::Reduced => 0.5,
+            EasyDay::ThreeQuarters => 0.75,
             EasyDay::Normal => 1.0,
         }
     }
@@ -366,11 +372,11 @@ pub(crate) fn calculate_easy_days_modifiers(
         .zip(review_counts.iter())
         .map(|(&weekday, &review_count)| {
             let day = match easy_days_load[weekday] {
-                EasyDay::Reduced => {
-                    const HALF: f32 = 0.5;
+                reduced @ (EasyDay::Quarter | EasyDay::Reduced | EasyDay::ThreeQuarters) => {
+                    let share = reduced.load_modifier();
                     let other_days_review_total = (total_review_count - review_count) as f32;
-                    let other_days_percent_total = total_percents - HALF;
-                    let normalized_count = review_count as f32 / HALF;
+                    let other_days_percent_total = total_percents - share;
+                    let normalized_count = review_count as f32 / share;
                     let reduced_day_threshold = other_days_review_total / other_days_percent_total;
                     if normalized_count > reduced_day_threshold {
                         EasyDay::Minimum
@@ -532,6 +538,16 @@ mod test {
         days[0].remove(same_day_siblings[1]);
         assert!(!days[0].has_sibling(&NoteId(11)));
         assert_eq!(balancer.days_by_preset[&other_config.id][0].cards.len(), 1);
+        Ok(())
+    }
+
+    #[test]
+    fn easy_days_use_each_weekdays_target_share() -> Result<()> {
+        let targets = parse_easy_days_percentages(&[0.25, 0.5, 0.75, 1., 1., 1., 1.])?;
+        let weights = calculate_easy_days_modifiers(&targets, &[0, 1, 2, 3], &[4, 4, 4, 8]);
+        assert_eq!(weights, [EasyDay::Minimum.load_modifier(), 1., 1., 1.]);
+        let weights = calculate_easy_days_modifiers(&targets, &[0, 1, 2, 3], &[1, 3, 6, 6]);
+        assert_eq!(weights, [1., 1., EasyDay::Minimum.load_modifier(), 1.]);
         Ok(())
     }
 
