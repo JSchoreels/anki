@@ -1,0 +1,368 @@
+diff --git a/src/dataset.rs b/src/dataset.rs
+index 5e15246..19f744e 100644
+--- a/src/dataset.rs
++++ b/src/dataset.rs
+@@ -303,6 +303,30 @@ pub(crate) fn filter_outlier_train_indices<'a>(
+     (decisions.kept_initialization_indices, train_indices)
+ }
+ 
++// Benchmark prototype: apply the same outlier decisions without expanding every
++// selected card prefix into an owned FSRSItem.
++pub(crate) fn filter_outlier_card_prefix_indices(
++    dataset_for_initialization: &[FSRSItem],
++    card_prefixes: &CardPrefixes,
++) -> (Vec<usize>, Vec<usize>) {
++    let decisions = compute_outlier_bucket_decisions(dataset_for_initialization.iter());
++    let train_indices = card_prefixes
++        .prefixes
++        .iter()
++        .enumerate()
++        .filter_map(|(index, &prefix)| {
++            let reviews = card_prefixes.reviews(prefix);
++            let first_long_term = reviews.iter().find(|review| review.delta_t >= 1.0);
++            let survives = first_long_term.is_none_or(|review| {
++                let key = bucket_long_term_delta_t(review.delta_t).to_bits();
++                !decisions.removed_pairs[reviews[0].rating as usize].contains(&key)
++            });
++            survives.then_some(index)
++        })
++        .collect();
++    (decisions.kept_initialization_indices, train_indices)
++}
++
+ pub fn filter_outlier(
+     dataset_for_initialization: Vec<FSRSItem>,
+     trainset: Vec<FSRSItem>,
+diff --git a/src/lib.rs b/src/lib.rs
+index bdd23e3..fc3e57b 100644
+--- a/src/lib.rs
++++ b/src/lib.rs
+@@ -90,5 +90,5 @@ pub use training::{
+     CombinedProgressState, ComputeParametersInput, ComputeParametersVersion,
+     RecallClassificationCosts, RecallClassifierTrainingConfig, TrainingConfig, benchmark,
+     compute_parameters, compute_parameters_for_recall_classifier,
+-    compute_parameters_from_card_prefixes,
++    compute_parameters_from_card_prefixes, compute_parameters_from_card_prefixes_fsrs6,
+ };
+diff --git a/src/training.rs b/src/training.rs
+index 7fe5894..383f854 100644
+--- a/src/training.rs
++++ b/src/training.rs
+@@ -17,6 +17,8 @@ use std::sync::{Arc, Mutex};
+ 
+ #[path = "training_card_prefixes.rs"]
+ mod card_prefixes;
++#[path = "training_card_prefixes_v6.rs"]
++mod card_prefixes_v6;
+ #[path = "training_v6.rs"]
+ mod training_v6;
+ #[path = "training_v7.rs"]
+@@ -25,6 +27,7 @@ mod training_v7;
+ #[path = "training_windowed.rs"]
+ mod windowed;
+ pub use card_prefixes::compute_parameters_from_card_prefixes;
++pub use card_prefixes_v6::compute_parameters_from_card_prefixes_fsrs6;
+ #[cfg(not(all(target_arch = "aarch64", target_feature = "neon")))]
+ use windowed::train_fsrs7_windowed;
+ 
+diff --git a/src/training_card_prefixes_v6.rs b/src/training_card_prefixes_v6.rs
+new file mode 100644
+index 0000000..380c78a
+--- /dev/null
++++ b/src/training_card_prefixes_v6.rs
+@@ -0,0 +1,295 @@
++// Experimental FSRS-6 compact preprocessing and batching for the benchmark.
++// This is intentionally isolated from the published branch.
++use super::{
++    ComputeParametersInput, ComputeParametersVersion, MIN_ITEMS_TO_TRAIN, PrefixHostBatch,
++    ProgressCollector, TrainingObjective, apply_training_config, new_internal_training_config,
++    reset_training_progress, train_on_batches, validate_training_config,
++};
++use crate::dataset::{
++    CardPrefix, CardPrefixes, FSRSItem, WeightedCardPrefixes, WindowedItems,
++    filter_outlier_card_prefix_indices, long_term_review_cnt, recency_weight,
++};
++use crate::error::Result;
++use crate::parameter_initialization::{initialize_stability_parameters, smooth_and_fill};
++use crate::{FSRS6_DEFAULT_PARAMETERS, FSRSError};
++use std::collections::{BTreeMap, HashMap};
++
++pub fn compute_parameters_from_card_prefixes_fsrs6(
++    source: &CardPrefixes,
++    input: ComputeParametersInput,
++) -> Result<Vec<f32>> {
++    let ComputeParametersInput {
++        train_set,
++        card_ids,
++        progress,
++        enable_short_term,
++        enable_sched_penalties,
++        model_version,
++        num_relearning_steps,
++        training_config,
++    } = input;
++    let finish = || {
++        if let Some(progress) = &progress {
++            progress.lock().unwrap().mark_finished();
++        }
++    };
++    if !train_set.is_empty()
++        || card_ids.is_some()
++        || model_version != ComputeParametersVersion::Fsrs6
++    {
++        finish();
++        return Err(FSRSError::InvalidInput);
++    }
++    source.validate().inspect_err(|_| finish())?;
++    if let Some(config) = &training_config {
++        validate_training_config(config).inspect_err(|_| finish())?;
++    }
++    let mut normalized = source.clone();
++    for card in &mut normalized.cards {
++        for review in &mut card.reviews {
++            review.delta_t = review.delta_t.max(0.0).round();
++        }
++    }
++    let first_indices: Vec<_> = normalized
++        .prefixes
++        .iter()
++        .enumerate()
++        .filter_map(|(index, &prefix)| {
++            (long_term_review_cnt(normalized.reviews(prefix)) == 1).then_some(index)
++        })
++        .collect();
++    let all_initialization: Vec<_> = first_indices
++        .iter()
++        .map(|&index| FSRSItem {
++            reviews: normalized.reviews(normalized.prefixes[index]).to_vec(),
++        })
++        .collect();
++    let (initialization, train_indices) = if std::env::var("FSRS_NO_OUTLIER").is_ok() {
++        let train_indices = normalized
++            .prefixes
++            .iter()
++            .enumerate()
++            .filter_map(|(index, &prefix)| {
++                (long_term_review_cnt(normalized.reviews(prefix)) != 1).then_some(index)
++            })
++            .collect();
++        (all_initialization, train_indices)
++    } else {
++        let (initialization_indices, train_indices) =
++            filter_outlier_card_prefix_indices(&all_initialization, &normalized);
++        let initialization = initialization_indices
++            .into_iter()
++            .map(|index| all_initialization[index].clone())
++            .collect();
++        (initialization, train_indices)
++    };
++    if train_indices.len() < 8 {
++        finish();
++        return Ok(FSRS6_DEFAULT_PARAMETERS.to_vec());
++    }
++    let recalled = train_indices
++        .iter()
++        .filter(|&&index| {
++            normalized
++                .reviews(normalized.prefixes[index])
++                .last()
++                .unwrap()
++                .rating
++                > 1
++        })
++        .count();
++    let average_recall = recalled as f32 / train_indices.len() as f32;
++    let (initial_stability, initial_rating_count) =
++        initialize_stability_parameters(initialization.clone(), average_recall)
++            .inspect_err(|_| finish())?;
++    let initialized: Vec<_> = initial_stability
++        .into_iter()
++        .chain(FSRS6_DEFAULT_PARAMETERS[4..].iter().copied())
++        .collect();
++    if train_indices.len() == initialization.len() || train_indices.len() < MIN_ITEMS_TO_TRAIN {
++        finish();
++        return Ok(initialized);
++    }
++    let mut config = new_internal_training_config(
++        enable_short_term,
++        enable_sched_penalties,
++        num_relearning_steps,
++    );
++    apply_training_config(&mut config, training_config, model_version);
++    let count = train_indices.len();
++    let prefixes: Vec<(CardPrefix, f32)> = train_indices
++        .into_iter()
++        .enumerate()
++        .filter_map(|(position, index)| {
++            let prefix = normalized.prefixes[index];
++            (prefix.len as usize <= config.max_seq_len)
++                .then_some((prefix, recency_weight(position, count)))
++        })
++        .collect();
++    let weighted = WeightedCardPrefixes {
++        card_prefixes: &normalized,
++        prefixes,
++    };
++    reset_training_progress(&progress, config.num_epochs, weighted.count());
++    let batches = batches_from_prefixes(&weighted, config.batch_size);
++    let optimized = train_on_batches(
++        None,
++        Some(batches),
++        weighted.count(),
++        &initialized,
++        &config,
++        TrainingObjective::ProbabilityLogLoss,
++        progress.clone().map(|p| ProgressCollector::new(p, 0)),
++    )
++    .inspect_err(|_| finish())?;
++    finish();
++    if optimized.iter().any(|value| value.is_infinite()) {
++        return Err(FSRSError::InvalidInput);
++    }
++    let mut initial: HashMap<_, _> = optimized[0..4]
++        .iter()
++        .enumerate()
++        .map(|(index, &value)| (index as u32 + 1, value))
++        .collect();
++    let smoothed = smooth_and_fill(&mut initial, &initial_rating_count)?;
++    Ok(smoothed
++        .into_iter()
++        .chain(optimized[4..].iter().copied())
++        .collect())
++}
++
++fn batches_from_prefixes(
++    items: &WeightedCardPrefixes<'_>,
++    batch_size: usize,
++) -> Vec<PrefixHostBatch> {
++    let mut grouped = BTreeMap::<i64, Vec<usize>>::new();
++    for index in 0..items.count() {
++        grouped.entry(items.card_id(index)).or_default().push(index);
++    }
++    let mut cards = grouped
++        .into_values()
++        .map(|mut card| {
++            card.sort_by_cached_key(|&index| items.reviews(index).len());
++            card
++        })
++        .collect::<Vec<_>>();
++    cards.sort_by_cached_key(|card| items.reviews(*card.last().unwrap()).len());
++    let mut batches = Vec::new();
++    let mut current = Vec::new();
++    let mut predictions = 0;
++    for card in cards {
++        if !current.is_empty() && predictions + card.len() > batch_size {
++            batches.push(batch_from_prefixes(items, &current));
++            current.clear();
++            predictions = 0;
++        }
++        predictions += card.len();
++        current.push(card);
++    }
++    if !current.is_empty() {
++        batches.push(batch_from_prefixes(items, &current));
++    }
++    batches
++}
++
++fn batch_from_prefixes(items: &WeightedCardPrefixes<'_>, cards: &[Vec<usize>]) -> PrefixHostBatch {
++    let batch_size = cards.len();
++    let seq_len = cards
++        .iter()
++        .map(|card| items.reviews(*card.last().unwrap()).len())
++        .max()
++        .unwrap_or(0);
++    let real_batch_size = cards.iter().map(Vec::len).sum();
++    let mut t_historys = vec![0.0; seq_len * batch_size];
++    let mut r_historys = vec![0.0; seq_len * batch_size];
++    let mut labels = vec![0.0; seq_len * batch_size];
++    let mut weights = vec![0.0; seq_len * batch_size];
++    let mut column_lengths = Vec::with_capacity(batch_size);
++    for (column, card) in cards.iter().enumerate() {
++        let reviews = items.reviews(*card.last().unwrap());
++        column_lengths.push(reviews.len());
++        for (row, review) in reviews.iter().enumerate() {
++            let index = row * batch_size + column;
++            t_historys[index] = review.delta_t;
++            r_historys[index] = review.rating as f32;
++        }
++        for &item in card {
++            let reviews = items.reviews(item);
++            let row = reviews.len() - 1;
++            let index = row * batch_size + column;
++            labels[index] = f32::from(reviews[row].rating > 1);
++            weights[index] = items.weight(item);
++        }
++    }
++    PrefixHostBatch {
++        seq_len,
++        batch_size,
++        real_batch_size,
++        column_lengths,
++        t_historys,
++        r_historys,
++        delta_ts: Vec::new(),
++        labels,
++        weights,
++        windowed: true,
++    }
++}
++
++#[cfg(test)]
++mod tests {
++    use super::*;
++    use crate::test_helpers::{items_of_card_prefixes, varied_card_prefixes};
++    use crate::{TrainingConfig, compute_parameters};
++
++    #[test]
++    fn compact_fsrs6_training_matches_expanded() {
++        for fractional in [false, true] {
++            let mut prefixes = varied_card_prefixes();
++            if fractional {
++                for card in &mut prefixes.cards {
++                    for (index, review) in card.reviews.iter_mut().enumerate().skip(1) {
++                        review.delta_t += if index % 2 == 0 { 0.49 } else { 0.51 };
++                    }
++                }
++            }
++            let (items, ids) = items_of_card_prefixes(&prefixes);
++            for short_term in [true, false] {
++                for max_seq_len in [64, 128] {
++                    let input = ComputeParametersInput {
++                        model_version: ComputeParametersVersion::Fsrs6,
++                        enable_short_term: short_term,
++                        training_config: Some(TrainingConfig {
++                            max_seq_len,
++                            ..TrainingConfig::default()
++                        }),
++                        ..Default::default()
++                    };
++                    let expanded = compute_parameters(ComputeParametersInput {
++                        train_set: items.clone(),
++                        card_ids: Some(ids.clone()),
++                        ..input.clone()
++                    })
++                    .unwrap();
++                    let compact =
++                        compute_parameters_from_card_prefixes_fsrs6(&prefixes, input).unwrap();
++                    assert_eq!(
++                        expanded.iter().map(|v| v.to_bits()).collect::<Vec<_>>(),
++                        compact.iter().map(|v| v.to_bits()).collect::<Vec<_>>()
++                    );
++                }
++            }
++        }
++    }
++
++    #[test]
++    fn compact_fsrs6_empty_input_matches_expanded() {
++        let input = ComputeParametersInput {
++            model_version: ComputeParametersVersion::Fsrs6,
++            ..Default::default()
++        };
++        assert_eq!(
++            compute_parameters(input.clone()).unwrap(),
++            compute_parameters_from_card_prefixes_fsrs6(&CardPrefixes::default(), input).unwrap()
++        );
++    }
++}

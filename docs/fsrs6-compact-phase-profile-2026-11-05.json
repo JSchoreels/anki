@@ -1,0 +1,236 @@
+{
+    "expanded": [
+        {
+            "stored": 147269,
+            "rows": 147269,
+            "scenario": "predict",
+            "elapsed_ms": 636.8474999908358,
+            "peak_rss_mib": 140.796875,
+            "digest": "7fb272d45072e2b35a50cd7d7162abfb657b07dc4cc76f34f9c030ccbe33cf26",
+            "fsrs6_prediction": {
+                "targets": 147269.0,
+                "ms": 35.987333
+            },
+            "fsrs6_calibration": {
+                "rows_ms": 37.160917,
+                "join_ms": 73.241208
+            },
+            "fsrs6_stages": {
+                "fetch_ms": 101.7665,
+                "prepare_ms": 8.215958,
+                "rows_ms": 110.417875,
+                "sort_ms": 0.17125,
+                "save_ms": 415.876
+            }
+        },
+        {
+            "stored": 147269,
+            "rows": 147269,
+            "scenario": "predict",
+            "elapsed_ms": 649.6471249993192,
+            "peak_rss_mib": 140.84375,
+            "digest": "7fb272d45072e2b35a50cd7d7162abfb657b07dc4cc76f34f9c030ccbe33cf26",
+            "fsrs6_prediction": {
+                "targets": 147269.0,
+                "ms": 35.543541
+            },
+            "fsrs6_calibration": {
+                "rows_ms": 36.692167,
+                "join_ms": 71.314083
+            },
+            "fsrs6_stages": {
+                "fetch_ms": 104.119958,
+                "prepare_ms": 8.279458,
+                "rows_ms": 108.023791,
+                "sort_ms": 0.175917,
+                "save_ms": 428.647041
+            }
+        },
+        {
+            "stored": 147269,
+            "rows": 147269,
+            "scenario": "predict",
+            "elapsed_ms": 621.8051250034478,
+            "peak_rss_mib": 140.28125,
+            "digest": "7fb272d45072e2b35a50cd7d7162abfb657b07dc4cc76f34f9c030ccbe33cf26",
+            "fsrs6_prediction": {
+                "targets": 147269.0,
+                "ms": 35.8665
+            },
+            "fsrs6_calibration": {
+                "rows_ms": 37.028667,
+                "join_ms": 73.35575
+            },
+            "fsrs6_stages": {
+                "fetch_ms": 106.038917,
+                "prepare_ms": 8.186042,
+                "rows_ms": 110.401542,
+                "sort_ms": 0.165875,
+                "save_ms": 396.608209
+            }
+        },
+        {
+            "stored": 147269,
+            "rows": 147269,
+            "scenario": "predict",
+            "elapsed_ms": 630.8609169936972,
+            "peak_rss_mib": 140.71875,
+            "digest": "7fb272d45072e2b35a50cd7d7162abfb657b07dc4cc76f34f9c030ccbe33cf26",
+            "fsrs6_prediction": {
+                "targets": 147269.0,
+                "ms": 35.154125
+            },
+            "fsrs6_calibration": {
+                "rows_ms": 36.326,
+                "join_ms": 74.100084
+            },
+            "fsrs6_stages": {
+                "fetch_ms": 103.836167,
+                "prepare_ms": 8.279125,
+                "rows_ms": 110.440167,
+                "sort_ms": 0.1695,
+                "save_ms": 407.734583
+            }
+        },
+        {
+            "stored": 147269,
+            "rows": 147269,
+            "scenario": "predict",
+            "elapsed_ms": 634.2639590002364,
+            "peak_rss_mib": 141.265625,
+            "digest": "7fb272d45072e2b35a50cd7d7162abfb657b07dc4cc76f34f9c030ccbe33cf26",
+            "fsrs6_prediction": {
+                "targets": 147269.0,
+                "ms": 36.925667
+            },
+            "fsrs6_calibration": {
+                "rows_ms": 38.136292,
+                "join_ms": 72.287708
+            },
+            "fsrs6_stages": {
+                "fetch_ms": 103.571333,
+                "prepare_ms": 8.290291,
+                "rows_ms": 110.437542,
+                "sort_ms": 0.152042,
+                "save_ms": 411.447208
+            }
+        }
+    ],
+    "compact": [
+        {
+            "stored": 147269,
+            "rows": 147269,
+            "scenario": "predict",
+            "elapsed_ms": 654.6497079980327,
+            "peak_rss_mib": 118.21875,
+            "digest": "7fb272d45072e2b35a50cd7d7162abfb657b07dc4cc76f34f9c030ccbe33cf26",
+            "fsrs6_prediction": {
+                "targets": 147269.0,
+                "ms": 11.62425
+            },
+            "fsrs6_calibration": {
+                "rows_ms": 12.645208,
+                "join_ms": 97.773375
+            },
+            "fsrs6_stages": {
+                "fetch_ms": 106.864833,
+                "prepare_ms": 8.2665,
+                "rows_ms": 110.436125,
+                "sort_ms": 0.188042,
+                "save_ms": 428.458834
+            }
+        },
+        {
+            "stored": 147269,
+            "rows": 147269,
+            "scenario": "predict",
+            "elapsed_ms": 633.9163750089938,
+            "peak_rss_mib": 118.671875,
+            "digest": "7fb272d45072e2b35a50cd7d7162abfb657b07dc4cc76f34f9c030ccbe33cf26",
+            "fsrs6_prediction": {
+                "targets": 147269.0,
+                "ms": 11.575875
+            },
+            "fsrs6_calibration": {
+                "rows_ms": 12.525167,
+                "join_ms": 97.897584
+            },
+            "fsrs6_stages": {
+                "fetch_ms": 102.885958,
+                "prepare_ms": 8.279708,
+                "rows_ms": 110.437125,
+                "sort_ms": 0.153041,
+                "save_ms": 411.798708
+            }
+        },
+        {
+            "stored": 147269,
+            "rows": 147269,
+            "scenario": "predict",
+            "elapsed_ms": 630.5393750080839,
+            "peak_rss_mib": 118.078125,
+            "digest": "7fb272d45072e2b35a50cd7d7162abfb657b07dc4cc76f34f9c030ccbe33cf26",
+            "fsrs6_prediction": {
+                "targets": 147269.0,
+                "ms": 11.767542
+            },
+            "fsrs6_calibration": {
+                "rows_ms": 12.791875,
+                "join_ms": 97.609583
+            },
+            "fsrs6_stages": {
+                "fetch_ms": 103.773458,
+                "prepare_ms": 8.342125,
+                "rows_ms": 110.416542,
+                "sort_ms": 0.187583,
+                "save_ms": 407.383167
+            }
+        },
+        {
+            "stored": 147269,
+            "rows": 147269,
+            "scenario": "predict",
+            "elapsed_ms": 630.2374160004547,
+            "peak_rss_mib": 118.015625,
+            "digest": "7fb272d45072e2b35a50cd7d7162abfb657b07dc4cc76f34f9c030ccbe33cf26",
+            "fsrs6_prediction": {
+                "targets": 147269.0,
+                "ms": 11.984042
+            },
+            "fsrs6_calibration": {
+                "rows_ms": 13.277333,
+                "join_ms": 97.294166
+            },
+            "fsrs6_stages": {
+                "fetch_ms": 104.102,
+                "prepare_ms": 8.6375,
+                "rows_ms": 110.591166,
+                "sort_ms": 0.18375,
+                "save_ms": 406.291667
+            }
+        },
+        {
+            "stored": 147269,
+            "rows": 147269,
+            "scenario": "predict",
+            "elapsed_ms": 672.1789170114789,
+            "peak_rss_mib": 118.21875,
+            "digest": "7fb272d45072e2b35a50cd7d7162abfb657b07dc4cc76f34f9c030ccbe33cf26",
+            "fsrs6_prediction": {
+                "targets": 147269.0,
+                "ms": 11.935583
+            },
+            "fsrs6_calibration": {
+                "rows_ms": 12.971708,
+                "join_ms": 97.425417
+            },
+            "fsrs6_stages": {
+                "fetch_ms": 103.859334,
+                "prepare_ms": 8.336833,
+                "rows_ms": 110.413083,
+                "sort_ms": 0.194834,
+                "save_ms": 448.932542
+            }
+        }
+    ]
+}

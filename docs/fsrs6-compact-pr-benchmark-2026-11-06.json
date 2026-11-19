@@ -1,0 +1,587 @@
+{
+    "date": "2026-11-06",
+    "fsrs_base": "a46653745ed2899113799cff4fa720d193875202",
+    "model": "FSRS-6",
+    "samples_per_variant": 7,
+    "yomitan": {
+        "optimize": {
+            "expanded_train": [
+                {
+                    "targets": 147269,
+                    "scenario": "optimize",
+                    "elapsed_ms": 221.94512501300778,
+                    "peak_rss_mib": 136.15625,
+                    "digest": "1bd3a9cb27a2fb45ef94b80cda001accbad2b9a4b1b94ff17c4515e5ec17dd83",
+                    "prediction_steps_ms": []
+                },
+                {
+                    "targets": 147269,
+                    "scenario": "optimize",
+                    "elapsed_ms": 218.6129999900004,
+                    "peak_rss_mib": 136.34375,
+                    "digest": "1bd3a9cb27a2fb45ef94b80cda001accbad2b9a4b1b94ff17c4515e5ec17dd83",
+                    "prediction_steps_ms": []
+                },
+                {
+                    "targets": 147269,
+                    "scenario": "optimize",
+                    "elapsed_ms": 215.3250410046894,
+                    "peak_rss_mib": 136.78125,
+                    "digest": "1bd3a9cb27a2fb45ef94b80cda001accbad2b9a4b1b94ff17c4515e5ec17dd83",
+                    "prediction_steps_ms": []
+                },
+                {
+                    "targets": 147269,
+                    "scenario": "optimize",
+                    "elapsed_ms": 220.23445900413208,
+                    "peak_rss_mib": 136.515625,
+                    "digest": "1bd3a9cb27a2fb45ef94b80cda001accbad2b9a4b1b94ff17c4515e5ec17dd83",
+                    "prediction_steps_ms": []
+                },
+                {
+                    "targets": 147269,
+                    "scenario": "optimize",
+                    "elapsed_ms": 219.04891599842813,
+                    "peak_rss_mib": 136.0625,
+                    "digest": "1bd3a9cb27a2fb45ef94b80cda001accbad2b9a4b1b94ff17c4515e5ec17dd83",
+                    "prediction_steps_ms": []
+                },
+                {
+                    "targets": 147269,
+                    "scenario": "optimize",
+                    "elapsed_ms": 219.91133299889043,
+                    "peak_rss_mib": 136.28125,
+                    "digest": "1bd3a9cb27a2fb45ef94b80cda001accbad2b9a4b1b94ff17c4515e5ec17dd83",
+                    "prediction_steps_ms": []
+                },
+                {
+                    "targets": 147269,
+                    "scenario": "optimize",
+                    "elapsed_ms": 213.50541700667236,
+                    "peak_rss_mib": 136.046875,
+                    "digest": "1bd3a9cb27a2fb45ef94b80cda001accbad2b9a4b1b94ff17c4515e5ec17dd83",
+                    "prediction_steps_ms": []
+                }
+            ],
+            "compact_train": [
+                {
+                    "targets": 147269,
+                    "scenario": "optimize",
+                    "elapsed_ms": 221.8729160085786,
+                    "peak_rss_mib": 104.46875,
+                    "digest": "1bd3a9cb27a2fb45ef94b80cda001accbad2b9a4b1b94ff17c4515e5ec17dd83",
+                    "prediction_steps_ms": []
+                },
+                {
+                    "targets": 147269,
+                    "scenario": "optimize",
+                    "elapsed_ms": 218.96825000294484,
+                    "peak_rss_mib": 103.890625,
+                    "digest": "1bd3a9cb27a2fb45ef94b80cda001accbad2b9a4b1b94ff17c4515e5ec17dd83",
+                    "prediction_steps_ms": []
+                },
+                {
+                    "targets": 147269,
+                    "scenario": "optimize",
+                    "elapsed_ms": 221.79329200298525,
+                    "peak_rss_mib": 103.90625,
+                    "digest": "1bd3a9cb27a2fb45ef94b80cda001accbad2b9a4b1b94ff17c4515e5ec17dd83",
+                    "prediction_steps_ms": []
+                },
+                {
+                    "targets": 147269,
+                    "scenario": "optimize",
+                    "elapsed_ms": 217.1047090087086,
+                    "peak_rss_mib": 103.953125,
+                    "digest": "1bd3a9cb27a2fb45ef94b80cda001accbad2b9a4b1b94ff17c4515e5ec17dd83",
+                    "prediction_steps_ms": []
+                },
+                {
+                    "targets": 147269,
+                    "scenario": "optimize",
+                    "elapsed_ms": 219.36837500834372,
+                    "peak_rss_mib": 104.4375,
+                    "digest": "1bd3a9cb27a2fb45ef94b80cda001accbad2b9a4b1b94ff17c4515e5ec17dd83",
+                    "prediction_steps_ms": []
+                },
+                {
+                    "targets": 147269,
+                    "scenario": "optimize",
+                    "elapsed_ms": 218.46679100417532,
+                    "peak_rss_mib": 103.875,
+                    "digest": "1bd3a9cb27a2fb45ef94b80cda001accbad2b9a4b1b94ff17c4515e5ec17dd83",
+                    "prediction_steps_ms": []
+                },
+                {
+                    "targets": 147269,
+                    "scenario": "optimize",
+                    "elapsed_ms": 216.8729999975767,
+                    "peak_rss_mib": 103.875,
+                    "digest": "1bd3a9cb27a2fb45ef94b80cda001accbad2b9a4b1b94ff17c4515e5ec17dd83",
+                    "prediction_steps_ms": []
+                }
+            ]
+        },
+        "folds": {
+            "compact": [
+                {
+                    "stored": 269994,
+                    "rows": 269994,
+                    "scenario": "folds",
+                    "elapsed_ms": 1184.55845900462,
+                    "peak_rss_mib": 146.5625,
+                    "digest": "7aba1ad712da7476c3313c67a229fcc7d6910ed431534f2987b6f802a7d77a27",
+                    "prediction_steps_ms": [
+                        11.594667,
+                        3.783083,
+                        5.251334,
+                        6.5045,
+                        5.955417,
+                        8.405958
+                    ]
+                },
+                {
+                    "stored": 269994,
+                    "rows": 269994,
+                    "scenario": "folds",
+                    "elapsed_ms": 1102.8868749999674,
+                    "peak_rss_mib": 146.203125,
+                    "digest": "7aba1ad712da7476c3313c67a229fcc7d6910ed431534f2987b6f802a7d77a27",
+                    "prediction_steps_ms": [
+                        11.573958,
+                        3.7875,
+                        5.265875,
+                        6.523875,
+                        6.145958,
+                        8.385
+                    ]
+                },
+                {
+                    "stored": 269994,
+                    "rows": 269994,
+                    "scenario": "folds",
+                    "elapsed_ms": 1112.0383340021363,
+                    "peak_rss_mib": 146.1875,
+                    "digest": "7aba1ad712da7476c3313c67a229fcc7d6910ed431534f2987b6f802a7d77a27",
+                    "prediction_steps_ms": [
+                        13.027958,
+                        3.990709,
+                        5.507708,
+                        6.755458,
+                        6.187917,
+                        8.56275
+                    ]
+                },
+                {
+                    "stored": 269994,
+                    "rows": 269994,
+                    "scenario": "folds",
+                    "elapsed_ms": 1098.0405000009341,
+                    "peak_rss_mib": 146.59375,
+                    "digest": "7aba1ad712da7476c3313c67a229fcc7d6910ed431534f2987b6f802a7d77a27",
+                    "prediction_steps_ms": [
+                        11.523084,
+                        3.907084,
+                        5.490416,
+                        6.723208,
+                        5.943166,
+                        8.330292
+                    ]
+                },
+                {
+                    "stored": 269994,
+                    "rows": 269994,
+                    "scenario": "folds",
+                    "elapsed_ms": 1101.3138330017682,
+                    "peak_rss_mib": 146.875,
+                    "digest": "7aba1ad712da7476c3313c67a229fcc7d6910ed431534f2987b6f802a7d77a27",
+                    "prediction_steps_ms": [
+                        11.593084,
+                        3.903875,
+                        5.501542,
+                        6.750709,
+                        5.950792,
+                        8.404542
+                    ]
+                },
+                {
+                    "stored": 269994,
+                    "rows": 269994,
+                    "scenario": "folds",
+                    "elapsed_ms": 1086.5116249915445,
+                    "peak_rss_mib": 145.78125,
+                    "digest": "7aba1ad712da7476c3313c67a229fcc7d6910ed431534f2987b6f802a7d77a27",
+                    "prediction_steps_ms": [
+                        11.531541,
+                        3.798166,
+                        5.349708,
+                        6.54675,
+                        5.949209,
+                        8.5955
+                    ]
+                },
+                {
+                    "stored": 269994,
+                    "rows": 269994,
+                    "scenario": "folds",
+                    "elapsed_ms": 1074.6433330059517,
+                    "peak_rss_mib": 146.953125,
+                    "digest": "7aba1ad712da7476c3313c67a229fcc7d6910ed431534f2987b6f802a7d77a27",
+                    "prediction_steps_ms": [
+                        11.510417,
+                        3.78325,
+                        5.252333,
+                        6.513375,
+                        5.983333,
+                        8.487
+                    ]
+                }
+            ],
+            "compact_train": [
+                {
+                    "stored": 269994,
+                    "rows": 269994,
+                    "scenario": "folds",
+                    "elapsed_ms": 1078.2920000056038,
+                    "peak_rss_mib": 119.3125,
+                    "digest": "7aba1ad712da7476c3313c67a229fcc7d6910ed431534f2987b6f802a7d77a27",
+                    "prediction_steps_ms": [
+                        11.5345,
+                        3.777708,
+                        5.540125,
+                        6.517291,
+                        5.8155,
+                        8.262458
+                    ]
+                },
+                {
+                    "stored": 269994,
+                    "rows": 269994,
+                    "scenario": "folds",
+                    "elapsed_ms": 1584.3935829907423,
+                    "peak_rss_mib": 119.203125,
+                    "digest": "7aba1ad712da7476c3313c67a229fcc7d6910ed431534f2987b6f802a7d77a27",
+                    "prediction_steps_ms": [
+                        12.058792,
+                        3.905958,
+                        5.3975,
+                        6.656875,
+                        6.028667,
+                        8.398292
+                    ]
+                },
+                {
+                    "stored": 269994,
+                    "rows": 269994,
+                    "scenario": "folds",
+                    "elapsed_ms": 1109.4626249978319,
+                    "peak_rss_mib": 121.78125,
+                    "digest": "7aba1ad712da7476c3313c67a229fcc7d6910ed431534f2987b6f802a7d77a27",
+                    "prediction_steps_ms": [
+                        11.669083,
+                        3.778333,
+                        5.239583,
+                        6.616,
+                        6.04525,
+                        8.4365
+                    ]
+                },
+                {
+                    "stored": 269994,
+                    "rows": 269994,
+                    "scenario": "folds",
+                    "elapsed_ms": 1105.8686249889433,
+                    "peak_rss_mib": 121.84375,
+                    "digest": "7aba1ad712da7476c3313c67a229fcc7d6910ed431534f2987b6f802a7d77a27",
+                    "prediction_steps_ms": [
+                        11.689208,
+                        3.787709,
+                        5.319792,
+                        6.903083,
+                        6.142958,
+                        8.248083
+                    ]
+                },
+                {
+                    "stored": 269994,
+                    "rows": 269994,
+                    "scenario": "folds",
+                    "elapsed_ms": 1103.1126669986406,
+                    "peak_rss_mib": 119.984375,
+                    "digest": "7aba1ad712da7476c3313c67a229fcc7d6910ed431534f2987b6f802a7d77a27",
+                    "prediction_steps_ms": [
+                        11.608042,
+                        3.876708,
+                        5.674667,
+                        6.541166,
+                        5.825375,
+                        8.8105
+                    ]
+                },
+                {
+                    "stored": 269994,
+                    "rows": 269994,
+                    "scenario": "folds",
+                    "elapsed_ms": 1082.7709589939332,
+                    "peak_rss_mib": 117.796875,
+                    "digest": "7aba1ad712da7476c3313c67a229fcc7d6910ed431534f2987b6f802a7d77a27",
+                    "prediction_steps_ms": [
+                        12.64425,
+                        3.822083,
+                        5.252125,
+                        6.443542,
+                        6.356334,
+                        8.649667
+                    ]
+                },
+                {
+                    "stored": 269994,
+                    "rows": 269994,
+                    "scenario": "folds",
+                    "elapsed_ms": 1115.7626659987727,
+                    "peak_rss_mib": 118.796875,
+                    "digest": "7aba1ad712da7476c3313c67a229fcc7d6910ed431534f2987b6f802a7d77a27",
+                    "prediction_steps_ms": [
+                        11.498416,
+                        3.812834,
+                        5.230125,
+                        6.41525,
+                        5.898292,
+                        8.628667
+                    ]
+                }
+            ]
+        },
+        "optimize-health": {
+            "expanded_train": [
+                {
+                    "targets": 147269,
+                    "scenario": "optimize-health",
+                    "elapsed_ms": 305.76116699376144,
+                    "peak_rss_mib": 283.203125,
+                    "digest": "7d7fe6cde599a234856eb909efd58db460dc1bd4cd174f9cd3f1eebdf2a673ee",
+                    "prediction_steps_ms": []
+                },
+                {
+                    "targets": 147269,
+                    "scenario": "optimize-health",
+                    "elapsed_ms": 305.18620798829943,
+                    "peak_rss_mib": 284.09375,
+                    "digest": "7d7fe6cde599a234856eb909efd58db460dc1bd4cd174f9cd3f1eebdf2a673ee",
+                    "prediction_steps_ms": []
+                },
+                {
+                    "targets": 147269,
+                    "scenario": "optimize-health",
+                    "elapsed_ms": 299.6805410075467,
+                    "peak_rss_mib": 287.046875,
+                    "digest": "7d7fe6cde599a234856eb909efd58db460dc1bd4cd174f9cd3f1eebdf2a673ee",
+                    "prediction_steps_ms": []
+                },
+                {
+                    "targets": 147269,
+                    "scenario": "optimize-health",
+                    "elapsed_ms": 301.355165996938,
+                    "peak_rss_mib": 285.4375,
+                    "digest": "7d7fe6cde599a234856eb909efd58db460dc1bd4cd174f9cd3f1eebdf2a673ee",
+                    "prediction_steps_ms": []
+                },
+                {
+                    "targets": 147269,
+                    "scenario": "optimize-health",
+                    "elapsed_ms": 302.8001250058878,
+                    "peak_rss_mib": 283.125,
+                    "digest": "7d7fe6cde599a234856eb909efd58db460dc1bd4cd174f9cd3f1eebdf2a673ee",
+                    "prediction_steps_ms": []
+                },
+                {
+                    "targets": 147269,
+                    "scenario": "optimize-health",
+                    "elapsed_ms": 303.88929101172835,
+                    "peak_rss_mib": 286.09375,
+                    "digest": "7d7fe6cde599a234856eb909efd58db460dc1bd4cd174f9cd3f1eebdf2a673ee",
+                    "prediction_steps_ms": []
+                },
+                {
+                    "targets": 147269,
+                    "scenario": "optimize-health",
+                    "elapsed_ms": 301.37679098697845,
+                    "peak_rss_mib": 284.734375,
+                    "digest": "7d7fe6cde599a234856eb909efd58db460dc1bd4cd174f9cd3f1eebdf2a673ee",
+                    "prediction_steps_ms": []
+                }
+            ],
+            "compact_train": [
+                {
+                    "targets": 147269,
+                    "scenario": "optimize-health",
+                    "elapsed_ms": 298.9293329883367,
+                    "peak_rss_mib": 264.421875,
+                    "digest": "7d7fe6cde599a234856eb909efd58db460dc1bd4cd174f9cd3f1eebdf2a673ee",
+                    "prediction_steps_ms": []
+                },
+                {
+                    "targets": 147269,
+                    "scenario": "optimize-health",
+                    "elapsed_ms": 296.22616700362414,
+                    "peak_rss_mib": 259.296875,
+                    "digest": "7d7fe6cde599a234856eb909efd58db460dc1bd4cd174f9cd3f1eebdf2a673ee",
+                    "prediction_steps_ms": []
+                },
+                {
+                    "targets": 147269,
+                    "scenario": "optimize-health",
+                    "elapsed_ms": 305.0227079947945,
+                    "peak_rss_mib": 260.984375,
+                    "digest": "7d7fe6cde599a234856eb909efd58db460dc1bd4cd174f9cd3f1eebdf2a673ee",
+                    "prediction_steps_ms": []
+                },
+                {
+                    "targets": 147269,
+                    "scenario": "optimize-health",
+                    "elapsed_ms": 292.64991599484347,
+                    "peak_rss_mib": 261.734375,
+                    "digest": "7d7fe6cde599a234856eb909efd58db460dc1bd4cd174f9cd3f1eebdf2a673ee",
+                    "prediction_steps_ms": []
+                },
+                {
+                    "targets": 147269,
+                    "scenario": "optimize-health",
+                    "elapsed_ms": 294.5955420000246,
+                    "peak_rss_mib": 260.84375,
+                    "digest": "7d7fe6cde599a234856eb909efd58db460dc1bd4cd174f9cd3f1eebdf2a673ee",
+                    "prediction_steps_ms": []
+                },
+                {
+                    "targets": 147269,
+                    "scenario": "optimize-health",
+                    "elapsed_ms": 297.24187499959953,
+                    "peak_rss_mib": 268.046875,
+                    "digest": "7d7fe6cde599a234856eb909efd58db460dc1bd4cd174f9cd3f1eebdf2a673ee",
+                    "prediction_steps_ms": []
+                },
+                {
+                    "targets": 147269,
+                    "scenario": "optimize-health",
+                    "elapsed_ms": 295.03045899036806,
+                    "peak_rss_mib": 262.109375,
+                    "digest": "7d7fe6cde599a234856eb909efd58db460dc1bd4cd174f9cd3f1eebdf2a673ee",
+                    "prediction_steps_ms": []
+                }
+            ]
+        }
+    },
+    "synthetic": {
+        "upstream_expanded": [
+            {
+                "elapsed_ms": 288.5226660000626,
+                "peak_rss_mib": 331.796875,
+                "digest": "5e51ba420651c31ceba4a3f6e699363bb3f3cb299026b5b4bc00a159d5e6b163"
+            },
+            {
+                "elapsed_ms": 276.6455420060083,
+                "peak_rss_mib": 333.828125,
+                "digest": "5e51ba420651c31ceba4a3f6e699363bb3f3cb299026b5b4bc00a159d5e6b163"
+            },
+            {
+                "elapsed_ms": 288.31274999538437,
+                "peak_rss_mib": 331.75,
+                "digest": "5e51ba420651c31ceba4a3f6e699363bb3f3cb299026b5b4bc00a159d5e6b163"
+            },
+            {
+                "elapsed_ms": 275.4992499976652,
+                "peak_rss_mib": 331.8125,
+                "digest": "5e51ba420651c31ceba4a3f6e699363bb3f3cb299026b5b4bc00a159d5e6b163"
+            },
+            {
+                "elapsed_ms": 287.6451660122257,
+                "peak_rss_mib": 331.78125,
+                "digest": "5e51ba420651c31ceba4a3f6e699363bb3f3cb299026b5b4bc00a159d5e6b163"
+            },
+            {
+                "elapsed_ms": 290.5088340048678,
+                "peak_rss_mib": 331.828125,
+                "digest": "5e51ba420651c31ceba4a3f6e699363bb3f3cb299026b5b4bc00a159d5e6b163"
+            },
+            {
+                "elapsed_ms": 304.31779200444,
+                "peak_rss_mib": 331.8125,
+                "digest": "5e51ba420651c31ceba4a3f6e699363bb3f3cb299026b5b4bc00a159d5e6b163"
+            }
+        ],
+        "pr_expanded": [
+            {
+                "elapsed_ms": 278.93479200429283,
+                "peak_rss_mib": 333.859375,
+                "digest": "5e51ba420651c31ceba4a3f6e699363bb3f3cb299026b5b4bc00a159d5e6b163"
+            },
+            {
+                "elapsed_ms": 280.05779199884273,
+                "peak_rss_mib": 335.84375,
+                "digest": "5e51ba420651c31ceba4a3f6e699363bb3f3cb299026b5b4bc00a159d5e6b163"
+            },
+            {
+                "elapsed_ms": 290.6977920065401,
+                "peak_rss_mib": 333.859375,
+                "digest": "5e51ba420651c31ceba4a3f6e699363bb3f3cb299026b5b4bc00a159d5e6b163"
+            },
+            {
+                "elapsed_ms": 291.1997909977799,
+                "peak_rss_mib": 331.84375,
+                "digest": "5e51ba420651c31ceba4a3f6e699363bb3f3cb299026b5b4bc00a159d5e6b163"
+            },
+            {
+                "elapsed_ms": 288.4256249963073,
+                "peak_rss_mib": 333.828125,
+                "digest": "5e51ba420651c31ceba4a3f6e699363bb3f3cb299026b5b4bc00a159d5e6b163"
+            },
+            {
+                "elapsed_ms": 277.6979579939507,
+                "peak_rss_mib": 335.859375,
+                "digest": "5e51ba420651c31ceba4a3f6e699363bb3f3cb299026b5b4bc00a159d5e6b163"
+            },
+            {
+                "elapsed_ms": 287.4837080016732,
+                "peak_rss_mib": 333.828125,
+                "digest": "5e51ba420651c31ceba4a3f6e699363bb3f3cb299026b5b4bc00a159d5e6b163"
+            }
+        ],
+        "pr_compact": [
+            {
+                "elapsed_ms": 228.47550000005867,
+                "peak_rss_mib": 30.265625,
+                "digest": "5e51ba420651c31ceba4a3f6e699363bb3f3cb299026b5b4bc00a159d5e6b163"
+            },
+            {
+                "elapsed_ms": 232.76762499881443,
+                "peak_rss_mib": 32.1875,
+                "digest": "5e51ba420651c31ceba4a3f6e699363bb3f3cb299026b5b4bc00a159d5e6b163"
+            },
+            {
+                "elapsed_ms": 231.89808300230652,
+                "peak_rss_mib": 32.21875,
+                "digest": "5e51ba420651c31ceba4a3f6e699363bb3f3cb299026b5b4bc00a159d5e6b163"
+            },
+            {
+                "elapsed_ms": 229.4190419925144,
+                "peak_rss_mib": 32.234375,
+                "digest": "5e51ba420651c31ceba4a3f6e699363bb3f3cb299026b5b4bc00a159d5e6b163"
+            },
+            {
+                "elapsed_ms": 231.900915998267,
+                "peak_rss_mib": 32.203125,
+                "digest": "5e51ba420651c31ceba4a3f6e699363bb3f3cb299026b5b4bc00a159d5e6b163"
+            },
+            {
+                "elapsed_ms": 230.9569999924861,
+                "peak_rss_mib": 32.203125,
+                "digest": "5e51ba420651c31ceba4a3f6e699363bb3f3cb299026b5b4bc00a159d5e6b163"
+            },
+            {
+                "elapsed_ms": 228.32691599614918,
+                "peak_rss_mib": 32.171875,
+                "digest": "5e51ba420651c31ceba4a3f6e699363bb3f3cb299026b5b4bc00a159d5e6b163"
+            }
+        ]
+    }
+}
