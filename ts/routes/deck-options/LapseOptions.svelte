@@ -268,9 +268,7 @@ License: GNU AGPL, version 3 or later; http://www.gnu.org/licenses/agpl.html
                         defaultValue={false}
                     >
                         <SettingTitle>
-                            <GlobalLabel
-                                title={"Skip learning/relearning queues with FSRS/RWKV"}
-                            />
+                            <GlobalLabel title={tr.deckConfigStudySkipSteps()} />
                         </SettingTitle>
                     </SwitchRow>
                 </Item>

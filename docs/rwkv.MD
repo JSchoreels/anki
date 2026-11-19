@@ -46,21 +46,19 @@ than treated as straight lines between search points. Interval extraction starts
 at one second, the earliest supported model evaluation. If recall is already at
 or below the target there, Curve returns a one-second candidate for answer
 intervals and S90 instead of the former one-minute fallback. Live answer
-scheduling then applies the same queue rule as FSRS-7: intervals below 12 hours use exact
-intraday seconds without fuzz only when **Allow same day review for
-(re)learning steps** is enabled and learning queues are enabled. Otherwise,
-generated intervals use day-based review states with a minimum of one day.
-Configured learning/relearning steps still take precedence while learning queues
-are enabled. Intervals at or above 12 hours use normal whole-day fuzz and
-answer-button ordering. Preview-only filtered answers do not apply Curve's
-predicted S90 to the card's stored memory state.
+scheduling uses the same rule as FSRS-7. Generated intervals below 12 hours
+use seconds-based learning or relearning states when **Allow same day review
+for (re)learning steps** is enabled. Generated intervals use day-based review
+states with a minimum of one day when that setting is off. Intervals at or
+above 12 hours use normal whole-day fuzz and answer-button ordering.
+Preview-only filtered answers do not apply Curve's predicted S90 to the card's
+stored memory state.
 
 **Allow same day review for (re)learning steps** defaults to on; explicitly saved
-off choices are preserved. **Skip learning/relearning queues with FSRS/RWKV**
-defaults to off. Leave queue skipping off to use manual learning/relearning
-delays. Turning it on bypasses the delays without deleting the saved step lists;
-cards already graduated to Review do not automatically return to learning when
-it is turned off again.
+off choices are preserved. **Skip configured learning and relearning steps
+with FSRS/RWKV** defaults to off. Configured steps take precedence when step
+skipping is off. Turning it on bypasses the preset delays and keeps the saved
+step lists. The same-day setting still controls model-generated short intervals.
 
 ## Bundled RWKV Models
 
@@ -1123,8 +1121,7 @@ target retention; cards above that threshold are not admitted through either the
 RWKV ordering path or the normal due fallback until a later prediction puts them
 back below target. Turning off **Allow same day review for (re)learning steps**
 withholds scored review cards already answered during the current scheduler day
-until the next day. This applies with or without FSRS and even when **Skip
-learning/relearning queues with FSRS/RWKV** is enabled. Queue selection, deck
+until the next day with or without FSRS. Queue selection, deck
 counts, daily minimums, and `is:rwkv:due` searches use this same rule; the legacy
 `rwkv_review_allow_same_day_review` value is ignored.
 When the shared same-day switch permits RWKV re-review,
@@ -1153,7 +1150,7 @@ restored by Undo, remains answerable.
 
 Answering Again on a card already answered during the current scheduler day
 does not increase its lapse count or trigger leech tagging or suspension.
-This applies regardless of queue skipping or scheduler, including rescheduling
+This applies regardless of step skipping or scheduler, including rescheduling
 filtered decks and **Grade Now**. A review card's first answer of a scheduler day
 still adds a lapse when answered Again; subsequent answers that day do not, even
 if the first answer was successful. Learning and relearning answers continue to

@@ -8,9 +8,8 @@ use super::fsrs_interval_as_secs;
 use super::fuzz::minimum_review_fuzz_interval;
 use super::StateContext;
 
-/// When same-day reviews and learning queues are enabled, intervals below
-/// 12 hours use the intraday queue. Intervals at or above this boundary are
-/// stored in whole days.
+/// Same-day scheduling uses seconds-based learning states for intervals below
+/// 12 hours. Intervals at or above this boundary use whole days.
 pub(crate) const SUB_DAY_LIMIT_DAYS: f32 = 0.5;
 
 pub(crate) type ButtonInterval = super::interval_kind::IntervalKind<FuzzedDays>;
@@ -34,7 +33,7 @@ pub(crate) fn button_intervals(
     unrounded: [Option<f32>; 4],
     rule: DayRule,
 ) -> [Option<ButtonInterval>; 4] {
-    let sub_day_allowed = ctx.fsrs_uses_short_term_learning_queue();
+    let sub_day_allowed = ctx.allows_short_term_model_intervals();
     let mut previous_secs = 0;
     let mut previous_days: Option<u32> = None;
     let mut out = [None; 4];
@@ -180,7 +179,7 @@ mod test {
     }
 
     #[test]
-    fn disabled_learning_queues_round_sub_day_intervals_up() {
+    fn skipping_configured_steps_keeps_short_model_intervals() {
         let mut ctx = ctx();
         ctx.fsrs_learning_queues_disabled = true;
         let item = ItemState {
@@ -198,8 +197,8 @@ mod test {
             easy: item,
         });
         assert_eq!(
-            button_intervals(&ctx, all(0.2, 0.3, 0.4, 0.6), DayRule::Graduating),
-            [days(1), days(2), days(3), days(4)]
+            button_intervals(&ctx, all(0.125, 0.25, 0.375, 0.625), DayRule::Graduating),
+            [secs(10_800), secs(21_600), secs(32_400), days(1)]
         );
     }
 

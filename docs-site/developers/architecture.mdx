@@ -221,27 +221,19 @@ Deck options also expose the global FSRS short-term toggle backed by
 `BoolKey::FsrsShortTermWithStepsEnabled`, which defaults to enabled. A stored
 disabled choice is preserved; the default applies when the key is absent. It
 controls generated short-term intervals for all FSRS versions and RWKV-Curve.
-FSRS-7 and RWKV-Curve keep an unrounded interval below 12 hours in the intraday
-learning/relearning queue only when this toggle is enabled and learning queues
-are enabled. Otherwise, generated intervals use day-based review states with a
-minimum of one day, including when configured steps are empty or exhausted.
+FSRS-7 and RWKV-Curve use seconds-based learning and relearning states for
+generated intervals below 12 hours when this toggle is enabled. When it is off,
+generated intervals use day-based review states with a minimum of one day.
 Intervals of 12 hours or more are fuzzed into whole days, with day-based answer
 buttons kept in strict order where the maximum interval permits it. Configured
-learning and relearning steps still take precedence while learning queues are
-enabled, regardless of the short-term toggle. Fractional elapsed-time and memory
-state calculations remain independent of the toggle.
+steps take precedence when step skipping is off. Fractional elapsed-time and
+memory state calculations remain independent of the same-day toggle.
 
-Deck options also expose a global FSRS learning-queue bypass backed by
-`BoolKey::FsrsLearningQueuesDisabled`. It defaults to disabled. When enabled
-with FSRS active, answering cards schedules review states directly instead of
-writing learning/relearning queue states, including configured steps and FSRS
-short-term intervals below half a day.
-
-Keep the learning-queue bypass disabled when configured learning/relearning step
-delays should run. Enabling it skips those delays without deleting the preset's
-step lists. Turning it off makes the saved steps available again; cards already
-graduated to Review are not moved back into learning automatically. The bypass
-has no effect on SM2 when FSRS is disabled.
+**Skip configured learning and relearning steps with FSRS/RWKV** is backed by
+`BoolKey::FsrsLearningQueuesDisabled` and defaults to off. Turning it on bypasses
+the preset's step delays for FSRS and RWKV-Curve and preserves the saved step
+lists. The same-day toggle still controls generated short intervals. SM2 always
+uses its configured steps.
 
 When FSRS computes a failing review interval for `Again`, the scheduler clamps
 that interval to the deck preset's minimum lapse interval and maximum review
@@ -255,17 +247,13 @@ wall-clock time since the previous review, expressed in fractional days, for
 review and interday-learning cards as well as intraday cards. Older FSRS model
 families retain scheduler-day elapsed time for those non-intraday states.
 
-When FSRS same-day scheduling keeps a card in a learning or relearning queue,
-the computed day interval is stored on the card as seconds. Sub-second FSRS
-intervals are clamped to the deck preset's FSRS minimum interval so real review
-scheduling and Deck Options' "New Card Intervals" preview do not represent them
-as a zero-second `(end)` interval.
+Short learning and relearning intervals that fit before the day rollover use a
+timestamp due date. Intervals that cross rollover use the interday learning
+queue. FSRS applies the preset's minimum interval to the generated seconds in
+live scheduling and in the New Card Intervals preview.
 
-Configured learning/relearning steps still take precedence while any remain.
-After the final configured step, FSRS same-day scheduling may keep the card in
-the learning or relearning queue with `remaining_steps = 0`, so later `Hard` and
-`Good` answers use FSRS short-term intervals instead of replaying the last
-configured step.
+Generated short intervals set `remaining_steps = 0`. This lets later `Hard`
+and `Good` answers use the model after the preset steps are skipped or exhausted.
 
 When FSRS review order is ascending or descending retrievability, due review,
 interday-learning, and due-now intraday learning/relearning cards are gathered
