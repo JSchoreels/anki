@@ -603,11 +603,12 @@ impl crate::services::SchedulerService for Collection {
             memory_state: None,
         }
         .next_states(&ctx);
-        let base = self.describe_next_states(&states)?;
-        let again_followup_labels =
-            self.describe_next_states(&next_followup_states(&states.again)?)?;
-        let good_followup_labels =
-            self.describe_next_states(&next_followup_states(&states.good)?)?;
+        let describe = |col: &mut Collection, states: &SchedulingStates| {
+            col.describe_next_states_with_timing(states, fsrs_learning_queues_disabled)
+        };
+        let base = describe(self, &states)?;
+        let again_followup_labels = describe(self, &next_followup_states(&states.again)?)?;
+        let good_followup_labels = describe(self, &next_followup_states(&states.good)?)?;
         Ok(generic::StringList {
             vals: vec![
                 base[0].clone(),

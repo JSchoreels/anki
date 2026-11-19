@@ -141,8 +141,8 @@ impl StateContext<'_> {
         (minimum, maximum)
     }
 
-    pub(crate) fn uses_configured_learning_steps(&self) -> bool {
-        self.fsrs_next_states.is_none() || !self.fsrs_learning_queues_disabled
+    pub(crate) fn uses_review_queue_for_steps(&self) -> bool {
+        self.fsrs_learning_queues_disabled && self.fsrs_next_states.is_some()
     }
 
     pub(crate) fn allows_short_term_model_intervals(&self) -> bool {

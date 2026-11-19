@@ -113,7 +113,9 @@ impl Card {
 
     /// Returns the card's due date as a timestamp if it has one.
     fn due_time(&self, timing: &SchedTimingToday) -> Option<TimestampSecs> {
-        if self.queue == CardQueue::Learn {
+        if let Some(due) = self.review_step_due_at() {
+            Some(due)
+        } else if self.queue == CardQueue::Learn {
             Some(TimestampSecs(self.original_or_current_due() as i64))
         } else if self.is_due_in_days() {
             Some(

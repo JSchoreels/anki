@@ -304,9 +304,10 @@ The interval rules have a few exceptions:
 
 - Disabling review fuzz leaves the load balancer without a range of days to
   choose from, so it cannot spread reviews across days even if its switch is on.
-- Curve's generated intervals below 12 hours use seconds when same-day reviews
-  are enabled. Review fuzz and load balancing apply to whole-day review
-  intervals.
+- Curve uses seconds for generated intervals below 12 hours in the learning
+  queues or below one day in the Review queue. Same-day reviews must be enabled
+  for generated short intervals. Review fuzz and load balancing apply to
+  whole-day review intervals.
 - Day-based intervals below 2.5 days receive no fuzz. Curve's Again interval
   when answering a review card is also clamped without fuzz or load balancing.
 
@@ -332,28 +333,19 @@ make the final count differ from a simple cap.
 
 ### Can RWKV-Instant repeat a card when same-day reviews are disabled?
 
-Turning off **Allow same day review for (re)learning steps** prevents
-RWKV-Instant from showing a card already answered that scheduler day, with or
-without FSRS. With the switch on, both repeat-spacing minimums must
-still be met. The former RWKV-specific same-day switch has been removed; its
-saved value no longer blocks repeats.
+Turning off **Allow same day review for (re)learning steps** blocks ordinary
+same-day repeats selected by RWKV-Instant. It also makes FSRS and RWKV-Curve
+schedule generated intervals in whole days. Configured learning and
+relearning steps still apply.
 
-**Allow same day review for (re)learning steps** defaults to on. An explicitly
-saved off choice is preserved. It also controls generated short-term
-learning/relearning intervals for FSRS-7 and RWKV-Curve.
-With empty steps, or after the final configured step, turning it off schedules
-generated intervals as review states of at least one day. With same-day reviews
-enabled, generated intervals under 12 hours use learning or relearning states
-even when the preset steps are skipped.
-
-If you want manual steps such as `1m 10m` for learning or `10m` for relearning to
-run, leave **Skip configured learning and relearning steps with FSRS/RWKV** off
-(its default). Turning it on bypasses preset delays for new, learning, review,
-and relearning cards and keeps the configured step lists. Turning it off makes
-the steps available for future answers. SM2 always follows its configured steps.
+**Skip learning and relearning queues with FSRS/RWKV** determines where the
+steps go. Turn it on to schedule a preset `10m` step as a review due in ten
+minutes. Generated intervals under one day also use Review when same-day
+reviews are enabled. In Review, these cards follow the selected review order,
+daily review limits, and applicable Instant spacing rules.
 
 Same-day Again answers do not add another lapse or trigger leech handling,
-regardless of step skipping or scheduler. This also covers rescheduling filtered
+across queue settings and schedulers. This also covers rescheduling filtered
 decks and **Grade Now**. A review card's first answer of a scheduler day still
 adds a lapse when answered Again; later answers that day do not, even after an
 earlier successful answer. All answers remain in review history and update the
@@ -371,18 +363,20 @@ minimums also apply to learning/relearning selection, including Learn ahead:
 flowchart TD
     A{"Scheduling path"}
 
-    A -->|FSRS-7 / RWKV-Curve| B{"Skip configured learning<br/>and relearning steps?"}
-    B -->|Yes| F
-    B -->|No| D{"Does a configured learning/relearning<br/>step apply to this answer?"}
+    A -->|FSRS-7 / RWKV-Curve| D{"Does a preset step<br/>apply to this answer?"}
     D -->|Yes| E["Use the configured step delay"]
     D -->|No| F{"Allow same day review for<br/>(re)learning steps On?"}
     F -->|No| C["Schedule as Review<br/>Minimum interval: 1 day"]
-    F -->|Yes| G{"Generated interval below 12 hours?"}
-    G -->|Yes| H["Use learning/relearning queue<br/>with the generated delay"]
+    F -->|Yes| G{"Under the queue's short-interval cutoff?<br/>12 hours in learning, one day in Review"}
+    G -->|Yes| H["Use the generated delay"]
     G -->|No| C
 
-    E --> Q{"RWKV-Instant enabled?"}
-    H --> Q
+    E --> B{"Skip learning and<br/>relearning queues?"}
+    H --> B
+    B -->|Yes| R["Schedule a timed review"]
+    B -->|No| S["Use a learning or relearning queue"]
+    R --> Q{"RWKV-Instant enabled?"}
+    S --> Q
     Q -->|No| P
     Q -->|Yes| L
 
@@ -405,13 +399,10 @@ Learn ahead would offer it early. Waiting preserves the card's saved interval
 and learning steps. Learning cards continue to follow those intervals; Instant's
 recall threshold is not added to their selection rules.
 
-**Allow same day review for (re)learning steps** defaults to on and is the sole
-same-day repeat switch for Instant. Its saved off choice is preserved; the
-former per-preset RWKV switch is ignored. The spacing guards and other queue
-conditions must still be satisfied.
-Configured learning and relearning steps can repeat when step skipping is off.
-RWKV-Instant can also admit an eligible same-day review even when the card's
-stored review due day is in the future.
+**Allow same day review for (re)learning steps** defaults to on. RWKV-Instant
+can select ordinary same-day reviews through its recall and spacing rules,
+including cards with a future stored review day. For cards with a timed step
+in Review, the due time and spacing rules determine eligibility.
 
 ### Does RWKV override standard sibling burying?
 

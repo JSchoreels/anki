@@ -12,6 +12,6 @@ WHERE did IN (
     FROM active_decks
   )
   AND (
-    queue = ?
-    AND due <= ?
+    queue = ?1
+    AND DUE_PREDICATE
   )

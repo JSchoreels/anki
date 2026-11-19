@@ -822,7 +822,13 @@ fn card_order_from_sort_column(column: Column, timing: SchedTimingToday) -> Cow<
         )
         .into(),
         Column::Deck => "(select pos from sort_order where did = c.did) asc".into(),
-        Column::Due => format!("(case when c.due > 1000000000 or c.type = {} then due else (due - {}) * 86400 + {} end) asc", CardType::New as i8, timing.days_elapsed, TimestampSecs::now().0).into(),
+        Column::Due => format!(
+            "coalesce(({}), case when c.due > 1000000000 or c.type = {} then due else (due - {}) * 86400 + {} end) asc",
+            crate::storage::card::review_step_due_at_sql("c."),
+            CardType::New as i8,
+            timing.days_elapsed,
+            TimestampSecs::now().0
+        ).into(),
         Column::Ease => format!("c.type = {} asc, c.factor asc", CardType::New as i8).into(),
         Column::Interval => "c.ivl asc".into(),
         Column::Lapses => "c.lapses asc".into(),

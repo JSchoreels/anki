@@ -464,6 +464,7 @@ class RwkvReviewInput:
     fsrs_historical_retention: float | None = None
     remaining_steps: int | None = None
     in_filtered_deck: bool = False
+    review_step_due_secs: int | None = None
 
 
 @dataclass(frozen=True)
@@ -27795,6 +27796,7 @@ def _rwkv_review_input_from_backend_row(row: object) -> RwkvReviewInput | None:
         reps=_rwkv_backend_int(row, "reps"),
         lapses=_rwkv_backend_int(row, "lapses"),
         remaining_steps=_rwkv_backend_optional_int(row, "remaining_steps"),
+        review_step_due_secs=_rwkv_backend_optional_int(row, "review_step_due_secs"),
         in_filtered_deck=_rwkv_backend_bool(row, "in_filtered_deck", False),
         day_offset=_rwkv_backend_int(row, "day_offset"),
         current_state_kind=state_kind,
@@ -27905,6 +27907,9 @@ def _rwkv_review_input_from_backend_proto_row(
         lapses=row.lapses,
         remaining_steps=row.remaining_steps
         if row.HasField("remaining_steps")
+        else None,
+        review_step_due_secs=row.review_step_due_secs
+        if row.HasField("review_step_due_secs")
         else None,
         in_filtered_deck=row.in_filtered_deck,
         day_offset=row.day_offset,

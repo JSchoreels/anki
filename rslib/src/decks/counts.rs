@@ -59,6 +59,7 @@ impl Collection {
         self.storage.due_counts(
             timing.days_elapsed,
             learn_cutoff,
+            timing.now,
             timing.next_day_at.adding_secs(-86_400),
             timing.next_day_at,
         )

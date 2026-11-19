@@ -1,5 +1,3 @@
--- Each value is an index seek in (did, queue, due) per active deck, so the
--- query does not visit every card of the deck.
 SELECT EXISTS (
     SELECT 1
     FROM cards
@@ -8,7 +6,7 @@ SELECT EXISTS (
         FROM active_decks
       )
       AND queue IN (:review_queue, :day_learn_queue)
-      AND due <= :today
+      AND DUE_PREDICATE
   ) AS review_remaining,
   EXISTS (
     SELECT 1

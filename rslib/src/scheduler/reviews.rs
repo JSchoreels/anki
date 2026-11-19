@@ -73,6 +73,7 @@ impl Card {
         self.due = due;
         self.ctype = CardType::Review;
         self.queue = CardQueue::Review;
+        self.review_step_secs = None;
         if self.ease_factor == 0 {
             // unlike the old Python code, we leave the ease factor alone
             // if it's already set

@@ -117,6 +117,9 @@ impl Collection {
     }
 
     fn due_date(&mut self, card: &Card) -> Result<Option<i64>> {
+        if let Some(due) = card.review_step_due_at() {
+            return Ok(Some(due.0));
+        }
         Ok(match card.ctype {
             CardType::New => None,
             CardType::Review | CardType::Learn | CardType::Relearn => {

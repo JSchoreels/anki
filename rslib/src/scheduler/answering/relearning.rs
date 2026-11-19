@@ -3,11 +3,9 @@
 
 use super::CardStateUpdater;
 use super::RevlogEntryPartial;
-use crate::card::CardQueue;
 use crate::card::CardType;
 use crate::prelude::*;
 use crate::scheduler::states::CardState;
-use crate::scheduler::states::IntervalKind;
 use crate::scheduler::states::RelearnState;
 
 impl CardStateUpdater {
@@ -26,19 +24,7 @@ impl CardStateUpdater {
         }
         self.card.memory_state = self.memory_state_for_storage(next.learning.memory_state)?;
 
-        let interval = next
-            .interval_kind()
-            .maybe_as_days(self.secs_until_rollover());
-        match interval {
-            IntervalKind::InSecs(secs) => {
-                self.card.queue = CardQueue::Learn;
-                self.card.due = self.fuzzed_next_learning_timestamp(secs);
-            }
-            IntervalKind::InDays(days) => {
-                self.card.queue = CardQueue::DayLearn;
-                self.card.due = (self.timing.days_elapsed + days) as i32;
-            }
-        }
+        self.schedule_step(next.learning.scheduled_secs);
 
         Ok(RevlogEntryPartial::new(
             current,

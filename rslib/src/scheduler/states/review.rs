@@ -67,8 +67,7 @@ impl ReviewState {
 
     pub(crate) fn next_states(self, ctx: &StateContext) -> SchedulingStates {
         if let Some(states) = &ctx.fsrs_next_states {
-            let again_step = ctx.uses_configured_learning_steps()
-                && ctx.relearn_steps.again_delay_secs_learn().is_some();
+            let again_step = ctx.relearn_steps.again_delay_secs_learn().is_some();
             let intervals = button_intervals(
                 ctx,
                 [
@@ -175,12 +174,7 @@ impl ReviewState {
             leeched,
             memory_state,
         };
-        let again_delay = if ctx.uses_configured_learning_steps() {
-            ctx.relearn_steps.again_delay_secs_learn()
-        } else {
-            None
-        };
-        if let Some(again_delay) = again_delay {
+        if let Some(again_delay) = ctx.relearn_steps.again_delay_secs_learn() {
             RelearnState {
                 learning: LearnState {
                     remaining_steps: ctx.relearn_steps.remaining_for_failed(),

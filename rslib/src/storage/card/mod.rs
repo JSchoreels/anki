@@ -101,6 +101,7 @@ fn row_to_card(row: &Row) -> result::Result<Card, rusqlite::Error> {
         desired_retention: data.fsrs_desired_retention,
         decay: data.decay,
         last_review_time: data.last_review_time,
+        review_step_secs: data.review_step_secs,
         rwkv_history_reset_after: data.rwkv_history_reset_after,
         custom_data: data.custom_data,
     })
@@ -416,16 +417,24 @@ impl super::SqliteStorage {
         F: FnMut(DueCard) -> Result<bool>,
     {
         let order_clause = review_order_sql(order, timing, fsrs);
+        let (queue, predicate) = match kind {
+            DueCardKind::Review => (
+                CardQueue::Review,
+                due_day_or_review_step_sql("", "?2", "?3"),
+            ),
+            DueCardKind::Learning => (CardQueue::DayLearn, "due <= ?2".into()),
+        };
         let mut stmt = self.db.prepare_cached(&format!(
             "{} order by {}",
-            include_str!("due_cards.sql"),
+            include_str!("due_cards.sql").replace("DUE_PREDICATE", &predicate),
             order_clause
         ))?;
-        let queue = match kind {
-            DueCardKind::Review => CardQueue::Review,
-            DueCardKind::Learning => CardQueue::DayLearn,
+        let mut rows = match kind {
+            DueCardKind::Review => {
+                stmt.query(params![queue as i8, timing.days_elapsed, timing.now])?
+            }
+            DueCardKind::Learning => stmt.query(params![queue as i8, timing.days_elapsed])?,
         };
-        let mut rows = stmt.query(params![queue as i8, timing.days_elapsed])?;
         while let Some(row) = rows.next()? {
             if !func(due_card_from_review_row(row, kind)?)? {
                 break;
@@ -433,6 +442,23 @@ impl super::SqliteStorage {
         }
 
         Ok(())
+    }
+
+    /// The earliest scheduled review-queue step that is still waiting.
+    pub(crate) fn next_review_step_in_active_decks(
+        &self,
+        now: TimestampSecs,
+    ) -> Result<Option<TimestampSecs>> {
+        Ok(self
+            .db
+            .prepare_cached(
+                "select min(due_at) from (
+                   select review_step_due_at(data) as due_at from cards
+                   where did in (select id from active_decks)
+                     and queue = 2 and type in (1, 3) and odid = 0
+                 ) where due_at > ?1",
+            )?
+            .query_row([now], |row| row.get(0))?)
     }
 
     /// Find one representative card outside the preview, preferring due work.
@@ -468,23 +494,23 @@ impl super::SqliteStorage {
     }
 
     /// Scheduling state for exact queue scoring, without an intermediate SQL
-    /// sort or one additional card lookup per candidate. The two ranges let
-    /// SQLite use the scheduling index with the appropriate day/second
-    /// cutoff.
+    /// sort or one additional card lookup per candidate.
     pub(crate) fn due_cards_with_state_in_active_decks(
         &self,
         timing: SchedTimingToday,
     ) -> Result<Vec<DueCardWithState>> {
         self.db
-            .prepare_cached(concat!(
-                include_str!("get_due_card_state.sql"),
-                " where did in (select id from active_decks) and queue in (2, 3) and due <= ?1 union all ",
-                include_str!("get_due_card_state.sql"),
-                " where did in (select id from active_decks) and queue in (1, 4) and due <= ?2"
-            ))?
-            .query_and_then(params![timing.days_elapsed, timing.now.min(timing.next_day_at)], |row| {
-                row_to_due_card_with_state(row).map_err(Into::into)
-            })?
+            .prepare_cached(&due_cards_with_state_sql(include_str!(
+                "get_due_card_state.sql"
+            )))?
+            .query_and_then(
+                params![
+                    timing.days_elapsed,
+                    timing.now.min(timing.next_day_at),
+                    timing.now
+                ],
+                |row| row_to_due_card_with_state(row).map_err(Into::into),
+            )?
             .collect()
     }
 
@@ -494,15 +520,15 @@ impl super::SqliteStorage {
         timing: SchedTimingToday,
     ) -> Result<Vec<Card>> {
         self.db
-            .prepare_cached(concat!(
-                include_str!("get_card.sql"),
-                " where did in (select id from active_decks) and queue in (2, 3) and due <= ?1 union all ",
-                include_str!("get_card.sql"),
-                " where did in (select id from active_decks) and queue in (1, 4) and due <= ?2"
-            ))?
-            .query_and_then(params![timing.days_elapsed, timing.now.min(timing.next_day_at)], |row| {
-                row_to_card(row).map_err(Into::into)
-            })?
+            .prepare_cached(&due_cards_with_state_sql(include_str!("get_card.sql")))?
+            .query_and_then(
+                params![
+                    timing.days_elapsed,
+                    timing.now.min(timing.next_day_at),
+                    timing.now
+                ],
+                |row| row_to_card(row).map_err(Into::into),
+            )?
             .collect()
     }
 
@@ -545,17 +571,25 @@ impl super::SqliteStorage {
         mut func: F,
     ) -> Result<()>
     where
-        F: FnMut(DueCard) -> Result<bool>,
+        F: FnMut(DueCard, bool) -> Result<bool>,
     {
         let order_clause = review_order_sql(order, timing, fsrs);
         let mut stmt = self.db.prepare_cached(&format!(
             "{} order by {}",
-            include_str!("review_cards_in_active_decks.sql"),
+            include_str!("review_cards_in_active_decks.sql")
+                .replace("DUE_PREDICATE", &due_day_or_review_step_sql("", "?2", "?3")),
             order_clause
         ))?;
-        let mut rows = stmt.query(params![CardQueue::Review as i8])?;
+        let mut rows = stmt.query(params![
+            CardQueue::Review as i8,
+            timing.days_elapsed,
+            timing.now
+        ])?;
         while let Some(row) = rows.next()? {
-            if !func(due_card_from_review_row(row, DueCardKind::Review)?)? {
+            if !func(
+                due_card_from_review_row(row, DueCardKind::Review)?,
+                row.get(8)?,
+            )? {
                 break;
             }
         }
@@ -903,24 +937,15 @@ impl super::SqliteStorage {
             return Ok((searched_cards, Vec::new()));
         }
 
-        let queue_filter = if include_new_cards {
-            format!(
-                "((type = {} and queue = {}) or (type = {} and queue = {}))",
-                CardType::Review as i8,
-                CardQueue::Review as i8,
-                CardType::New as i8,
-                CardQueue::New as i8,
-            )
+        let new_cards = if include_new_cards {
+            " or (type = 0 and queue = 0)"
         } else {
-            format!(
-                "type = {} and queue = {}",
-                CardType::Review as i8,
-                CardQueue::Review as i8,
-            )
+            ""
         };
 
         let mut sql = format!(
-            "{} where did in {deck_ids_sql} and ({queue_filter}{suspended_clause})",
+            "{} where did in {deck_ids_sql}
+             and ((queue = 2 and type in (1, 2, 3)){new_cards}{suspended_clause})",
             include_str!("get_card.sql"),
         );
 
@@ -967,8 +992,7 @@ impl super::SqliteStorage {
             " where id in (select cid from search_cids)\n",
             " and (\n",
             "   (type = 2 and queue in REVIEW_QUEUES)\n",
-            "   or (type = 1 and queue in (1, 3))\n",
-            "   or (type = 3 and queue in (1, 3))\n",
+            "   or (type in (1, 3) and queue in (1, 2, 3))\n",
             "NEW_CARD_FILTER",
             " )\n",
         )
@@ -1084,12 +1108,20 @@ impl super::SqliteStorage {
             .collect()
     }
 
-    pub(crate) fn congrats_info(&self, current: &Deck, today: u32) -> Result<CongratsInfo> {
+    pub(crate) fn congrats_info(
+        &self,
+        current: &Deck,
+        today: u32,
+        now: TimestampSecs,
+    ) -> Result<CongratsInfo> {
         // NOTE: this line is obsolete in v3 as it's run on queue build, but kept to
         // prevent errors for v1/v2 users before they upgrade
         self.update_active_decks(current)?;
         self.db
-            .prepare(include_str!("congrats.sql"))?
+            .prepare_cached(&include_str!("congrats.sql").replace(
+                "DUE_PREDICATE",
+                &due_day_or_review_step_sql("", ":today", ":now"),
+            ))?
             .query_and_then(
                 named_params! {
                     ":review_queue": CardQueue::Review as i8,
@@ -1099,6 +1131,7 @@ impl super::SqliteStorage {
                     ":sched_buried_queue": CardQueue::SchedBuried as i8,
                     ":learn_queue": CardQueue::Learn as i8,
                     ":today": today,
+                    ":now": now,
                 },
                 |row| {
                     Ok(CongratsInfo {
@@ -1276,6 +1309,27 @@ WHERE ease IS NOT NULL;",
             .collect::<rusqlite::Result<_>>()
             .unwrap()
     }
+}
+
+pub(crate) fn due_day_or_review_step_sql(prefix: &str, day: &str, now: &str) -> String {
+    let step_due = review_step_due_at_sql(prefix);
+    format!("coalesce(({step_due}) <= {now}, {prefix}due <= {day})")
+}
+
+pub(crate) fn review_step_due_at_sql(prefix: &str) -> String {
+    format!(
+        "case when {prefix}queue = 2 and {prefix}type in (1, 3) and {prefix}odid = 0
+               then review_step_due_at({prefix}data) end"
+    )
+}
+
+fn due_cards_with_state_sql(select: &str) -> String {
+    let day_or_step = due_day_or_review_step_sql("", "?1", "?3");
+    format!(
+        "{select} where did in (select id from active_decks) and queue in (2, 3)
+         and {day_or_step} union all
+         {select} where did in (select id from active_decks) and queue in (1, 4) and due <= ?2"
+    )
 }
 
 fn due_card_from_review_row(row: &Row<'_>, kind: DueCardKind) -> Result<DueCard> {
@@ -1798,7 +1852,10 @@ mod test {
         for (seed, count) in [(0, 0), (1, 6), (2, 30), (3, 3000)] {
             add_cards_around_cutoffs(&mut col, &with_cards, TODAY, LEARN_CUTOFF, seed, count);
             for deck in &decks {
-                let info = col.storage.congrats_info(deck, TODAY).unwrap();
+                let info = col
+                    .storage
+                    .congrats_info(deck, TODAY, TimestampSecs(i64::from(LEARN_CUTOFF)))
+                    .unwrap();
                 let got = (
                     info.review_remaining,
                     info.new_remaining,

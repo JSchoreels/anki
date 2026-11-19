@@ -249,13 +249,13 @@ impl QueueBuilder {
             self.context.timing,
             self.context.sort_options.review_order,
             self.context.fsrs,
-            |card| {
-                cards.push(card);
+            |card, is_due| {
+                cards.push((card, is_due));
                 Ok(true)
             },
         )?;
 
-        for card in cards.iter().copied() {
+        for (card, is_due) in cards.iter().copied() {
             if self.review_limit_stops_gathering() {
                 break;
             }
@@ -265,7 +265,7 @@ impl QueueBuilder {
                     Some(RwkvReviewScoreEligibility::Eligible)
                 )
             } else {
-                card.due <= self.context.timing.days_elapsed as i32
+                is_due
             };
             if eligible {
                 if metadata.contains_key(&card.id) {
@@ -277,7 +277,7 @@ impl QueueBuilder {
         }
 
         if self.limits.any_rwkv_review_minimum_remaining() {
-            let mut pull_candidates = cards.clone();
+            let mut pull_candidates = cards.iter().map(|(card, _)| *card).collect::<Vec<_>>();
             pull_candidates.sort_by(|card_a, card_b| {
                 let score_a = scores
                     .get(&card_a.id)
@@ -351,7 +351,7 @@ impl QueueBuilder {
         let configured_position: HashMap<_, _> = cards
             .iter()
             .enumerate()
-            .map(|(position, card)| (card.id, position))
+            .map(|(position, (card, _))| (card.id, position))
             .collect();
         self.review.sort_by_key(|card| {
             configured_position

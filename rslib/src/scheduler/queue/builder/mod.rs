@@ -564,6 +564,7 @@ impl QueueBuilder {
                     | NewCardGatherPriority::NoteFieldDescending
             ),
             deferred_rwkv_reviews: self.deferred_rwkv_reviews,
+            next_review_step_due: None,
             rwkv_learning_repeat_guards,
             blocked_rwkv_learning_cards: HashSet::new(),
             new_review_mix_progress: self.new_review_mix_progress,
@@ -723,7 +724,11 @@ impl Collection {
         queues.gather_cards(self)?;
         let gathered = std::time::Instant::now();
 
+        let next_review_step_due = self
+            .storage
+            .next_review_step_in_active_decks(queues.context.timing.now)?;
         let mut queues = queues.build(self.learn_ahead_secs() as i64);
+        queues.next_review_step_due = next_review_step_due;
         if let Some(card) = current_card {
             queues.preserve_current_card(card.id)?;
         }

@@ -33,6 +33,7 @@ pub(super) struct InstantCandidate {
     pub reviewed_today: bool,
     pub elapsed_seconds: Option<u32>,
     pub intervening_reviews: Option<u32>,
+    pub review_step_due: Option<bool>,
 }
 
 #[derive(Clone, Copy)]
@@ -55,7 +56,7 @@ pub(super) struct InstantStudyCandidates {
 
 pub(super) fn instant_due(card: &InstantCandidate, policy: InstantReviewPolicy) -> bool {
     if !card.instant_enabled {
-        return card.due_day <= policy.day;
+        return card.review_step_due.unwrap_or(card.due_day <= policy.day);
     }
     let metadata = RwkvReviewCandidateMetadata {
         target_retention: card.target,
@@ -65,6 +66,7 @@ pub(super) fn instant_due(card: &InstantCandidate, policy: InstantReviewPolicy) 
         current_deck_id: DeckId(card.deck_id),
         source_deck_id: DeckId(card.deck_id),
         fsrs_due_today: false,
+        review_step_due: card.review_step_due,
     };
     rwkv_review_score_eligibility(
         card.score,
@@ -194,7 +196,7 @@ fn select_reviews(
     let mut above_target = Vec::new();
     for (index, card) in cards.iter().enumerate() {
         if !card.instant_enabled {
-            if card.due_day <= policy.day {
+            if card.review_step_due.unwrap_or(card.due_day <= policy.day) {
                 eligible.push(index);
             }
             continue;
@@ -207,6 +209,7 @@ fn select_reviews(
             current_deck_id: DeckId(card.deck_id),
             source_deck_id: DeckId(card.deck_id),
             fsrs_due_today: false,
+            review_step_due: card.review_step_due,
         };
         let allowed = rwkv_review_score_eligibility(
             card.score,
@@ -378,6 +381,7 @@ mod tests {
             reviewed_today: false,
             elapsed_seconds: Some(86_400),
             intervening_reviews: Some(10),
+            review_step_due: None,
         }
     }
 

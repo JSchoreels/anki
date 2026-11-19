@@ -607,12 +607,16 @@ impl SqlWriter<'_> {
             StateKind::Due => write!(
                 self.sql,
                 "(\
-                (c.queue in ({rev},{daylrn}) and c.due <= {today}) or \
+                (c.queue in ({rev},{daylrn}) and {due_by_day_or_step}) or \
                 (c.queue in ({lrn},{previewrepeat}) and c.due <= {learncutoff})\
                 )",
                 rev = CardQueue::Review as i8,
                 daylrn = CardQueue::DayLearn as i8,
-                today = timing.days_elapsed,
+                due_by_day_or_step = crate::storage::card::due_day_or_review_step_sql(
+                    "c.",
+                    &timing.days_elapsed.to_string(),
+                    &timing.now.0.to_string(),
+                ),
                 lrn = CardQueue::Learn as i8,
                 previewrepeat = CardQueue::PreviewRepeat as i8,
                 learncutoff = TimestampSecs::now().0 + (self.col.learn_ahead_secs() as i64),

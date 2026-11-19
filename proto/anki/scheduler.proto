@@ -1181,6 +1181,7 @@ message RwkvReviewInputRowsForCardsResponse {
     // The card is currently in a filtered deck, even though deck_id is its
     // home.
     bool in_filtered_deck = 25;
+    optional int64 review_step_due_secs = 26;
   }
 
   repeated Row rows = 1;

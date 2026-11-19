@@ -8,9 +8,9 @@ use super::fsrs_interval_as_secs;
 use super::fuzz::minimum_review_fuzz_interval;
 use super::StateContext;
 
-/// Same-day scheduling uses seconds-based learning states for intervals below
-/// 12 hours. Intervals at or above this boundary use whole days.
-pub(crate) const SUB_DAY_LIMIT_DAYS: f32 = 0.5;
+/// The learning queues switch to whole days at the rounding boundary. Timed
+/// reviews can keep the full interval up to one day, including across rollover.
+const LEARNING_SUB_DAY_LIMIT: f32 = 0.5;
 
 pub(crate) type ButtonInterval = super::interval_kind::IntervalKind<FuzzedDays>;
 
@@ -34,6 +34,11 @@ pub(crate) fn button_intervals(
     rule: DayRule,
 ) -> [Option<ButtonInterval>; 4] {
     let sub_day_allowed = ctx.allows_short_term_model_intervals();
+    let sub_day_limit = if ctx.uses_review_queue_for_steps() {
+        1.0
+    } else {
+        LEARNING_SUB_DAY_LIMIT
+    };
     let mut previous_secs = 0;
     let mut previous_days: Option<u32> = None;
     let mut out = [None; 4];
@@ -42,7 +47,7 @@ pub(crate) fn button_intervals(
         let Some(interval) = interval else {
             continue;
         };
-        if sub_day_allowed && interval < SUB_DAY_LIMIT_DAYS {
+        if sub_day_allowed && interval < sub_day_limit {
             let secs =
                 fsrs_interval_as_secs(interval, ctx.fsrs_minimum_interval_secs).max(previous_secs);
             previous_secs = secs;
@@ -179,7 +184,7 @@ mod test {
     }
 
     #[test]
-    fn skipping_configured_steps_keeps_short_model_intervals() {
+    fn review_queue_keeps_model_intervals_below_one_day() {
         let mut ctx = ctx();
         ctx.fsrs_learning_queues_disabled = true;
         let item = ItemState {
@@ -197,8 +202,8 @@ mod test {
             easy: item,
         });
         assert_eq!(
-            button_intervals(&ctx, all(0.125, 0.25, 0.375, 0.625), DayRule::Graduating),
-            [secs(10_800), secs(21_600), secs(32_400), days(1)]
+            button_intervals(&ctx, all(0.125, 0.5, 0.75, 1.0), DayRule::Graduating),
+            [secs(10_800), secs(43_200), secs(64_800), days(1)]
         );
     }
 

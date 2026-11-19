@@ -450,6 +450,7 @@ impl From<CardEntry> for Card {
             desired_retention: data.fsrs_desired_retention,
             decay: data.decay,
             last_review_time: data.last_review_time,
+            review_step_secs: data.review_step_secs,
             rwkv_history_reset_after: data.rwkv_history_reset_after,
             custom_data: data.custom_data,
         }

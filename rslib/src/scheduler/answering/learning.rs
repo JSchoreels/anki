@@ -22,6 +22,7 @@ impl CardStateUpdater {
     ) -> RevlogEntryPartial {
         self.card.ctype = CardType::New;
         self.card.queue = CardQueue::New;
+        self.card.review_step_secs = None;
         self.card.due = next.position as i32;
         self.card.original_position = None;
         self.card.memory_state = None;
@@ -49,19 +50,7 @@ impl CardStateUpdater {
         }
         self.card.memory_state = self.memory_state_for_storage(next.memory_state)?;
 
-        let interval = next
-            .interval_kind()
-            .maybe_as_days(self.secs_until_rollover());
-        match interval {
-            IntervalKind::InSecs(secs) => {
-                self.card.queue = CardQueue::Learn;
-                self.card.due = self.fuzzed_next_learning_timestamp(secs);
-            }
-            IntervalKind::InDays(days) => {
-                self.card.queue = CardQueue::DayLearn;
-                self.card.due = (self.timing.days_elapsed + days) as i32;
-            }
-        }
+        self.schedule_step(next.scheduled_secs);
 
         Ok(RevlogEntryPartial::new(
             current,
@@ -72,6 +61,33 @@ impl CardStateUpdater {
                 .unwrap_or_default(),
             self.secs_until_rollover(),
         ))
+    }
+
+    pub(super) fn schedule_step(&mut self, secs: u32) {
+        let interval = IntervalKind::InSecs(secs).maybe_as_days(self.secs_until_rollover());
+        if self.fsrs_learning_queues_disabled {
+            self.card.queue = CardQueue::Review;
+            self.card.review_step_secs = Some(secs);
+            // Keep a day-based fallback for clients that only read cards.due.
+            let days = match interval {
+                IntervalKind::InSecs(_) => 1,
+                IntervalKind::InDays(days) => days,
+            };
+            self.card.due = (self.timing.days_elapsed + days) as i32;
+            return;
+        }
+
+        self.card.review_step_secs = None;
+        match interval {
+            IntervalKind::InSecs(secs) => {
+                self.card.queue = CardQueue::Learn;
+                self.card.due = self.fuzzed_next_learning_timestamp(secs);
+            }
+            IntervalKind::InDays(days) => {
+                self.card.queue = CardQueue::DayLearn;
+                self.card.due = (self.timing.days_elapsed + days) as i32;
+            }
+        }
     }
 
     /// Adds secs + fuzz to current time

@@ -47,10 +47,9 @@ impl LearnState {
         let Some(states) = &ctx.fsrs_next_states else {
             return [None; 4];
         };
-        let steps = ctx.uses_configured_learning_steps();
-        let again_step = steps && ctx.steps.again_delay_secs_learn().is_some();
-        let hard_step = steps && ctx.steps.hard_delay_secs(self.remaining_steps).is_some();
-        let good_step = steps && ctx.steps.good_delay_secs(self.remaining_steps).is_some();
+        let again_step = ctx.steps.again_delay_secs_learn().is_some();
+        let hard_step = ctx.steps.hard_delay_secs(self.remaining_steps).is_some();
+        let good_step = ctx.steps.good_delay_secs(self.remaining_steps).is_some();
         button_intervals(
             ctx,
             [
@@ -105,16 +104,14 @@ impl LearnState {
 
     fn answer_again(self, ctx: &StateContext, interval: Option<ButtonInterval>) -> CardState {
         let memory_state = ctx.fsrs_next_states.as_ref().map(|s| s.again.memory.into());
-        if ctx.uses_configured_learning_steps() {
-            if let Some(again_delay) = ctx.steps.again_delay_secs_learn() {
-                return LearnState {
-                    remaining_steps: ctx.steps.remaining_for_failed(),
-                    scheduled_secs: again_delay,
-                    elapsed_secs: 0,
-                    memory_state,
-                }
-                .into();
+        if let Some(again_delay) = ctx.steps.again_delay_secs_learn() {
+            return LearnState {
+                remaining_steps: ctx.steps.remaining_for_failed(),
+                scheduled_secs: again_delay,
+                elapsed_secs: 0,
+                memory_state,
             }
+            .into();
         }
         match interval {
             Some(interval) => Self::graduate(interval, memory_state, ctx),
@@ -124,16 +121,14 @@ impl LearnState {
 
     fn answer_hard(self, ctx: &StateContext, interval: Option<ButtonInterval>) -> CardState {
         let memory_state = ctx.fsrs_next_states.as_ref().map(|s| s.hard.memory.into());
-        if ctx.uses_configured_learning_steps() {
-            if let Some(hard_delay) = ctx.steps.hard_delay_secs(self.remaining_steps) {
-                return LearnState {
-                    scheduled_secs: hard_delay,
-                    elapsed_secs: 0,
-                    memory_state,
-                    ..self
-                }
-                .into();
+        if let Some(hard_delay) = ctx.steps.hard_delay_secs(self.remaining_steps) {
+            return LearnState {
+                scheduled_secs: hard_delay,
+                elapsed_secs: 0,
+                memory_state,
+                ..self
             }
+            .into();
         }
         match interval {
             Some(interval) => Self::graduate(interval, memory_state, ctx),
@@ -143,16 +138,14 @@ impl LearnState {
 
     fn answer_good(self, ctx: &StateContext, interval: Option<ButtonInterval>) -> CardState {
         let memory_state = ctx.fsrs_next_states.as_ref().map(|s| s.good.memory.into());
-        if ctx.uses_configured_learning_steps() {
-            if let Some(good_delay) = ctx.steps.good_delay_secs(self.remaining_steps) {
-                return LearnState {
-                    remaining_steps: ctx.steps.remaining_for_good(self.remaining_steps),
-                    scheduled_secs: good_delay,
-                    elapsed_secs: 0,
-                    memory_state,
-                }
-                .into();
+        if let Some(good_delay) = ctx.steps.good_delay_secs(self.remaining_steps) {
+            return LearnState {
+                remaining_steps: ctx.steps.remaining_for_good(self.remaining_steps),
+                scheduled_secs: good_delay,
+                elapsed_secs: 0,
+                memory_state,
             }
+            .into();
         }
         match interval {
             Some(interval) => Self::graduate(interval, memory_state, ctx),

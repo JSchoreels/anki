@@ -15,6 +15,6 @@ SELECT cards.did,
 FROM reviewed_today
   JOIN cards ON cards.id = reviewed_today.cid
 WHERE cards.queue IN (2, 3)
-  AND cards.due <= ?3
+  AND DUE_PREDICATE
 GROUP BY cards.did,
   cards.queue

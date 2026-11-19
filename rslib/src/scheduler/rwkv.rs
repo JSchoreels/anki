@@ -531,6 +531,7 @@ impl Collection {
                     current_elapsed_since_secs: partial.state.elapsed_since.map(|time| time.0),
                     remaining_steps: Some(partial.card.remaining_steps()),
                     in_filtered_deck: partial.card.original_deck_id.0 != 0,
+                    review_step_due_secs: partial.card.review_step_due_at().map(|due| due.0),
                     target_retention: valid_rwkv_target_retention(partial.target_retention),
                     batch_size: partial.batch_size,
                     enforce_grade_order: Some(partial.enforce_grade_order),
@@ -567,7 +568,13 @@ impl Collection {
         include_suspended_review: bool,
         first_review_elapsed_from_card_creation: bool,
     ) -> Result<Option<RwkvReviewInputState>> {
-        match (card.ctype, card.queue) {
+        let phase_queue = if card.queue == CardQueue::Review && card.review_step_due_at().is_some()
+        {
+            CardQueue::Learn
+        } else {
+            card.queue
+        };
+        match (card.ctype, phase_queue) {
             (CardType::New, CardQueue::New) => {
                 let elapsed_since =
                     first_review_elapsed_from_card_creation.then(|| card.id.as_secs());
@@ -811,6 +818,7 @@ pub(crate) struct RwkvReviewCandidateMetadata {
     pub(crate) current_deck_id: DeckId,
     pub(crate) source_deck_id: DeckId,
     pub(crate) fsrs_due_today: bool,
+    pub(crate) review_step_due: Option<bool>,
 }
 
 pub(crate) fn rwkv_review_candidate_metadata(
@@ -830,6 +838,11 @@ pub(crate) fn rwkv_review_candidate_metadata(
             continue;
         }
 
+        let review_step_due = if card.is_filtered() {
+            None
+        } else {
+            card.review_step_due_at().map(|due| due <= timing.now)
+        };
         let partial = RwkvReviewCandidatePartial {
             reviewed_today: card_reviewed_today(&card, timing),
             elapsed_secs_since_last_review: card
@@ -837,7 +850,8 @@ pub(crate) fn rwkv_review_candidate_metadata(
                 .map(|last_review_time| timing.now.elapsed_secs_since_clamped(last_review_time)),
             current_deck_id: card.deck_id,
             source_deck_id: card.original_deck_id.or(card.deck_id),
-            fsrs_due_today: card.due <= timing.days_elapsed as i32,
+            fsrs_due_today: review_step_due.unwrap_or(card.due <= timing.days_elapsed as i32),
+            review_step_due,
         };
         if let Some(desired_retention) = card_desired_retention(&card) {
             metadata.insert(
@@ -952,11 +966,17 @@ fn rwkv_review_score_eligibility_inner(
         RwkvReviewTarget::Ignore => false,
     };
 
-    if !score.is_finite()
-        || score_above_target
-        || (metadata.reviewed_today && !metadata.same_day_review_allowed)
-    {
-        return RwkvReviewScoreEligibility::Blocked;
+    match metadata.review_step_due {
+        Some(false) => return RwkvReviewScoreEligibility::Blocked,
+        Some(true) => {}
+        None => {
+            if !score.is_finite()
+                || score_above_target
+                || (metadata.reviewed_today && !metadata.same_day_review_allowed)
+            {
+                return RwkvReviewScoreEligibility::Blocked;
+            }
+        }
     }
 
     rwkv_repeat_spacing_eligibility(
@@ -1005,6 +1025,7 @@ struct RwkvReviewCandidatePartial {
     current_deck_id: DeckId,
     source_deck_id: DeckId,
     fsrs_due_today: bool,
+    review_step_due: Option<bool>,
 }
 
 impl RwkvReviewCandidatePartial {
@@ -1021,6 +1042,7 @@ impl RwkvReviewCandidatePartial {
             current_deck_id: self.current_deck_id,
             source_deck_id: self.source_deck_id,
             fsrs_due_today: self.fsrs_due_today,
+            review_step_due: self.review_step_due,
         }
     }
 }

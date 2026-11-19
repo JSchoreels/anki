@@ -259,6 +259,9 @@ impl InstantCard {
             interval_days: self.input.input.interval_days.unwrap_or(1),
             ease_factor: self.input.input.ease_factor.unwrap_or(0),
             reviewed_today,
+            review_step_due: self
+                .has_timed_review_step()
+                .then_some(self.learning_due_millis <= millis),
             elapsed_seconds: self
                 .last_millis
                 .map(|last| ((millis - last).max(0) / 1000).min(i64::from(u32::MAX)) as u32),
@@ -271,6 +274,14 @@ impl InstantCard {
                 |sequence| Some(answers.saturating_sub(sequence)),
             ),
         }
+    }
+
+    fn has_timed_review_step(&self) -> bool {
+        self.input.queue == 2
+            && matches!(
+                self.state,
+                CardState::Normal(NormalState::Learning(_) | NormalState::Relearning(_))
+            )
     }
 
     #[allow(clippy::too_many_arguments)]
@@ -316,7 +327,11 @@ impl InstantCard {
         };
         let params = &self.input.fsrs_parameters;
         let fractional = crate::scheduler::fsrs::uses_fractional_intervals(params);
-        let elapsed = if fractional || intraday_learning {
+        let short_review_step = self.has_timed_review_step()
+            && self
+                .last_millis
+                .is_some_and(|last| self.learning_due_millis - last < DAY_MILLIS);
+        let elapsed = if fractional || intraday_learning || short_review_step {
             elapsed_secs as f32 / 86_400.0
         } else {
             elapsed_days as f32
@@ -403,9 +418,23 @@ impl InstantCard {
             }
         };
         let secs_to_rollover = ((DAY_MILLIS - millis.rem_euclid(DAY_MILLIS)) / 1000) as u32;
-        let interval = next.interval_kind().maybe_as_days(secs_to_rollover);
+        let timed_review_step = context.uses_review_queue_for_steps()
+            && matches!(
+                next,
+                CardState::Normal(NormalState::Learning(_) | NormalState::Relearning(_))
+            );
+        let interval = if timed_review_step {
+            next.interval_kind()
+        } else {
+            next.interval_kind().maybe_as_days(secs_to_rollover)
+        };
         self.input.queue = match next {
             CardState::Normal(NormalState::Review(_)) => 2,
+            CardState::Normal(NormalState::Learning(_) | NormalState::Relearning(_))
+                if timed_review_step =>
+            {
+                2
+            }
             CardState::Normal(NormalState::Learning(_) | NormalState::Relearning(_)) => {
                 match interval {
                     IntervalKind::InSecs(_) => 1,
@@ -424,7 +453,11 @@ impl InstantCard {
         }
         match interval {
             IntervalKind::InSecs(seconds) => {
-                self.learning_due_millis = millis + i64::from(seconds) * 1000
+                self.learning_due_millis = millis + i64::from(seconds) * 1000;
+                if timed_review_step {
+                    self.input.due_day =
+                        self.learning_due_millis.div_euclid(DAY_MILLIS).max(day + 1);
+                }
             }
             IntervalKind::InDays(days) => {
                 self.learning_due_millis = (day + i64::from(days)) * DAY_MILLIS;
@@ -1528,6 +1561,18 @@ mod tests {
         card.answer(0, 600_000, 3, &preset, false, true, 0).unwrap();
         assert_eq!(card.input.queue, 2);
         assert!(card.input.due_day >= 1);
+    }
+
+    #[test]
+    fn forecast_keeps_preset_steps_in_review_until_their_due_time() {
+        let mut preset = DeckConfig::default();
+        preset.inner.learn_steps = vec![1.0, 10.0];
+        let (mut card, _) = InstantCard::new(input(0, 0, true), 0, &mut HashMap::new()).unwrap();
+        card.answer(0, 0, 3, &preset, true, false, 0).unwrap();
+        assert_eq!(card.input.queue, 2);
+        assert_eq!(card.learning_due_millis, 600_000);
+        assert_eq!(card.candidate(0, 599_999, 0).review_step_due, Some(false));
+        assert_eq!(card.candidate(0, 600_000, 0).review_step_due, Some(true));
     }
 
     #[test]

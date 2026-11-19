@@ -224,22 +224,22 @@ retrievability properties (`prop:r`, `prop:rwkv:r`, or
 selected FSRS preset.
 
 Deck options also expose the global FSRS short-term toggle backed by
-`BoolKey::FsrsShortTermWithStepsEnabled`, which defaults to enabled. A stored
-disabled choice is preserved; the default applies when the key is absent. It
-controls generated short-term intervals for all FSRS versions and RWKV-Curve.
-FSRS-7 and RWKV-Curve use seconds-based learning and relearning states for
-generated intervals below 12 hours when this toggle is enabled. When it is off,
-generated intervals use day-based review states with a minimum of one day.
-Intervals of 12 hours or more are fuzzed into whole days, with day-based answer
-buttons kept in strict order where the maximum interval permits it. Configured
-steps take precedence when step skipping is off. Fractional elapsed-time and
-memory state calculations remain independent of the same-day toggle.
+`BoolKey::FsrsShortTermWithStepsEnabled`, which defaults to enabled. It
+controls generated short intervals for supported FSRS models and RWKV-Curve.
+The learning queues accept generated intervals below 12 hours. With **Skip
+learning and relearning queues with FSRS/RWKV** enabled, Review accepts
+generated intervals shorter than one day. Disabling same-day reviews makes
+generated intervals use whole days. Preset steps take precedence in either
+queue. The skip-queues setting is backed by `BoolKey::FsrsLearningQueuesDisabled`
+and applies to FSRS and RWKV-Curve answers.
 
-**Skip configured learning and relearning steps with FSRS/RWKV** is backed by
-`BoolKey::FsrsLearningQueuesDisabled` and defaults to off. Turning it on bypasses
-the preset's step delays for FSRS and RWKV-Curve and preserves the saved step
-lists. The same-day toggle still controls generated short intervals. SM2 always
-uses its configured steps.
+Timed review steps retain their learning or relearning card type and their
+remaining preset steps. Their queue is Review, so they use review ordering and
+limits. The optional `review_step_secs` card-data field and the last-answer
+timestamp determine when the review becomes due, including across rollover.
+The stored day in `cards.due` gives clients without timed review support a
+whole-day fallback. The queue, Deck Browser counts, and `is:due` use the exact
+timestamp on clients that support it.
 
 When FSRS computes a failing review interval for `Again`, the scheduler clamps
 that interval to the deck preset's minimum lapse interval and maximum review
@@ -253,13 +253,13 @@ wall-clock time since the previous review, expressed in fractional days, for
 review and interday-learning cards as well as intraday cards. Older FSRS model
 families retain scheduler-day elapsed time for those non-intraday states.
 
-Short learning and relearning intervals that fit before the day rollover use a
-timestamp due date. Intervals that cross rollover use the interday learning
-queue. FSRS applies the preset's minimum interval to the generated seconds in
-live scheduling and in the New Card Intervals preview.
+When using the learning queues, short intervals that fit before the day
+rollover use a timestamp due date. Delays crossing rollover use the interday
+learning queue. FSRS applies the preset's minimum interval to generated seconds
+in live scheduling and in the New Card Intervals preview.
 
 Generated short intervals set `remaining_steps = 0`. This lets later `Hard`
-and `Good` answers use the model after the preset steps are skipped or exhausted.
+and `Good` answers use the model after the preset steps are exhausted.
 
 When FSRS review order is ascending or descending retrievability, due review,
 interday-learning, and due-now intraday learning/relearning cards are gathered

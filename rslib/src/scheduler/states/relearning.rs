@@ -45,11 +45,10 @@ impl RelearnState {
         let Some(states) = &ctx.fsrs_next_states else {
             return [None; 4];
         };
-        let steps = ctx.uses_configured_learning_steps();
         let remaining = self.learning.remaining_steps;
-        let again_step = steps && ctx.relearn_steps.again_delay_secs_learn().is_some();
-        let hard_step = steps && ctx.relearn_steps.hard_delay_secs(remaining).is_some();
-        let good_step = steps && ctx.relearn_steps.good_delay_secs(remaining).is_some();
+        let again_step = ctx.relearn_steps.again_delay_secs_learn().is_some();
+        let hard_step = ctx.relearn_steps.hard_delay_secs(remaining).is_some();
+        let good_step = ctx.relearn_steps.good_delay_secs(remaining).is_some();
         button_intervals(
             ctx,
             [
@@ -98,12 +97,7 @@ impl RelearnState {
     fn answer_again(self, ctx: &StateContext, interval: Option<ButtonInterval>) -> CardState {
         let (scheduled_days, fuzz_delta_days, memory_state) =
             self.review.failing_review_interval(ctx);
-        let again_delay = if ctx.uses_configured_learning_steps() {
-            ctx.relearn_steps.again_delay_secs_learn()
-        } else {
-            None
-        };
-        if let Some(again_delay) = again_delay {
+        if let Some(again_delay) = ctx.relearn_steps.again_delay_secs_learn() {
             RelearnState {
                 learning: LearnState {
                     remaining_steps: ctx.relearn_steps.remaining_for_failed(),
@@ -136,13 +130,10 @@ impl RelearnState {
 
     fn answer_hard(self, ctx: &StateContext, interval: Option<ButtonInterval>) -> CardState {
         let memory_state = ctx.fsrs_next_states.as_ref().map(|s| s.hard.memory.into());
-        let hard_delay = if ctx.uses_configured_learning_steps() {
-            ctx.relearn_steps
-                .hard_delay_secs(self.learning.remaining_steps)
-        } else {
-            None
-        };
-        if let Some(hard_delay) = hard_delay {
+        if let Some(hard_delay) = ctx
+            .relearn_steps
+            .hard_delay_secs(self.learning.remaining_steps)
+        {
             RelearnState {
                 learning: LearnState {
                     scheduled_secs: hard_delay,
@@ -172,13 +163,10 @@ impl RelearnState {
 
     fn answer_good(self, ctx: &StateContext, interval: Option<ButtonInterval>) -> CardState {
         let memory_state = ctx.fsrs_next_states.as_ref().map(|s| s.good.memory.into());
-        let good_delay = if ctx.uses_configured_learning_steps() {
-            ctx.relearn_steps
-                .good_delay_secs(self.learning.remaining_steps)
-        } else {
-            None
-        };
-        if let Some(good_delay) = good_delay {
+        if let Some(good_delay) = ctx
+            .relearn_steps
+            .good_delay_secs(self.learning.remaining_steps)
+        {
             RelearnState {
                 learning: LearnState {
                     scheduled_secs: good_delay,

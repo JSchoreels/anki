@@ -11,7 +11,9 @@ impl Card {
     pub(crate) fn restore_queue_from_type(&mut self) {
         self.queue = match self.ctype {
             CardType::Learn | CardType::Relearn => {
-                if is_unix_epoch_timestamp(self.due) {
+                if self.review_step_due_at().is_some() {
+                    CardQueue::Review
+                } else if is_unix_epoch_timestamp(self.due) {
                     // unix timestamp
                     CardQueue::Learn
                 } else {

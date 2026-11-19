@@ -101,6 +101,8 @@ pub struct Card {
     pub(crate) desired_retention: Option<f32>,
     pub(crate) decay: Option<f32>,
     pub(crate) last_review_time: Option<TimestampSecs>,
+    /// A learning or relearning delay scheduled in the review queue.
+    pub(crate) review_step_secs: Option<u32>,
     /// Reviews at or before this ID belong to a previous RWKV learning history.
     pub(crate) rwkv_history_reset_after: Option<i64>,
     /// JSON object or empty; exposed through the reviewer for persisting custom
@@ -159,6 +161,7 @@ impl Default for Card {
             desired_retention: None,
             decay: None,
             last_review_time: None,
+            review_step_secs: None,
             rwkv_history_reset_after: None,
             custom_data: String::new(),
         }
@@ -230,6 +233,14 @@ impl Card {
         self.remaining_steps % 1000
     }
 
+    pub(crate) fn review_step_due_at(&self) -> Option<TimestampSecs> {
+        if matches!(self.ctype, CardType::Learn | CardType::Relearn) {
+            review_step_due_at(self.last_review_time, self.review_step_secs)
+        } else {
+            None
+        }
+    }
+
     /// Return ease factor as a multiplier (eg 2.5)
     pub fn ease_factor(&self) -> f32 {
         (self.ease_factor as f32) / 1000.0
@@ -286,6 +297,17 @@ impl Card {
             .rotate_left(8)
             .wrapping_add(self.reps as u64)
     }
+}
+
+pub(crate) fn review_step_due_at(
+    last_review_time: Option<TimestampSecs>,
+    review_step_secs: Option<u32>,
+) -> Option<TimestampSecs> {
+    Some(TimestampSecs(
+        last_review_time?
+            .0
+            .saturating_add(i64::from(review_step_secs?)),
+    ))
 }
 
 impl Collection {

@@ -50,6 +50,7 @@ impl Card {
         self.due = last_position.unwrap_or(position) as i32;
         self.ctype = CardType::New;
         self.queue = CardQueue::New;
+        self.review_step_secs = None;
         self.interval = 0;
         self.ease_factor = 0;
         self.original_position = None;

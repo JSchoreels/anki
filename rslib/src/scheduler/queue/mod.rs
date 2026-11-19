@@ -28,6 +28,7 @@ use self::rwkv::RwkvLearningRepeatGuards;
 use self::undo::QueueUpdate;
 use super::states::SchedulingStates;
 use super::timing::SchedTimingToday;
+use crate::card::CardQueue;
 use crate::prelude::*;
 use crate::scheduler::rwkv::RwkvReviewScoreEligibility;
 use crate::scheduler::states::load_balancer::LoadBalancer;
@@ -49,6 +50,7 @@ pub(crate) struct CardQueues {
     non_news_sorted_by_retrievability: bool,
     new_cards_gathered_by_field: bool,
     deferred_rwkv_reviews: HashMap<CardId, DeferredRwkvReview>,
+    next_review_step_due: Option<TimestampSecs>,
     rwkv_learning_repeat_guards: Option<RwkvLearningRepeatGuards>,
     blocked_rwkv_learning_cards: HashSet<CardId>,
     new_review_mix_progress: NewReviewMixProgress,
@@ -226,6 +228,15 @@ fn new_scheduling_context(col: &mut Collection, card: &Card) -> Result<Schedulin
 }
 
 impl CardQueues {
+    fn track_review_step_due(&mut self, due: Option<TimestampSecs>) {
+        if let Some(due) = due {
+            self.next_review_step_due = Some(
+                self.next_review_step_due
+                    .map_or(due, |current| current.min(due)),
+            );
+        }
+    }
+
     pub(crate) fn main_contains(&self, card_id: CardId) -> bool {
         self.main.iter().any(|entry| entry.id == card_id)
     }
@@ -434,9 +445,16 @@ impl Collection {
             };
             let cutoff_snapshot = queues.update_learning_cutoff_and_count();
             let queue_build_time = queues.build_time;
+            let review_step_due = if card.queue == CardQueue::Review && !card.is_filtered() {
+                card.review_step_due_at()
+            } else {
+                None
+            };
+            queues.track_review_step_due(review_step_due);
             self.save_queue_update_undo(Box::new(QueueUpdate {
                 entry,
                 learning_requeue: requeued_learning,
+                review_step_due,
                 queue_build_time,
                 cutoff_snapshot,
             }));
@@ -459,6 +477,9 @@ impl Collection {
                 .map(|queues| {
                     queues.due_intraday_needs_retrievability_resort()
                         || queues.deferred_rwkv_review_is_ready()
+                        || queues
+                            .next_review_step_due
+                            .is_some_and(|due| due <= TimestampSecs::now())
                 })
                 .unwrap_or(false)
         {

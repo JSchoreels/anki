@@ -90,6 +90,18 @@ fn open_or_create_collection_db(
     add_process_text_function(&db)?;
     add_fnvhash_function(&db)?;
     add_extract_original_position_function(&db)?;
+    db.create_scalar_function(
+        "review_step_due_at",
+        1,
+        FunctionFlags::SQLITE_DETERMINISTIC,
+        |ctx| {
+            let data: CardData = ctx.get(0)?;
+            Ok(
+                crate::card::review_step_due_at(data.last_review_time, data.review_step_secs)
+                    .map(|due| due.0),
+            )
+        },
+    )?;
     add_extract_custom_data_function(&db)?;
     add_extract_fsrs_variable(&db)?;
     add_extract_fsrs_retrievability(&db)?;

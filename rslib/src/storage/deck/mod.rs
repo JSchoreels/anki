@@ -279,6 +279,7 @@ impl SqliteStorage {
         &self,
         day_cutoff: u32,
         learn_cutoff: u32,
+        now: TimestampSecs,
         review_day_start: TimestampSecs,
         review_day_end: TimestampSecs,
     ) -> Result<HashMap<DeckId, DueCounts>> {
@@ -288,6 +289,10 @@ impl SqliteStorage {
         let mut due_before = self.db.prepare_cached(
             "select count() from cards where did = ?1 and queue = ?2 and due < ?3",
         )?;
+        let mut due_reviews = self.db.prepare_cached(&format!(
+            "select count() from cards where did = ?1 and queue = ?2 and {}",
+            crate::storage::card::due_day_or_review_step_sql("", "?3", "?4")
+        ))?;
         let mut groups = self
             .db
             .prepare_cached("select did, queue, count() from cards group by did, queue")?;
@@ -301,8 +306,10 @@ impl SqliteStorage {
             match row.get_ref(1)?.as_i64().ok() {
                 Some(queue) if queue == CardQueue::New as i64 => deck.new = cards,
                 Some(queue) if queue == CardQueue::Review as i64 => {
-                    deck.review =
-                        due_cards(&mut due_on_or_before, did, CardQueue::Review, day_cutoff)?;
+                    deck.review = due_reviews.query_row(
+                        params![did, CardQueue::Review as i8, day_cutoff, now],
+                        |row| row.get(0),
+                    )?;
                 }
                 Some(queue) if queue == CardQueue::DayLearn as i64 => {
                     deck.interday_learning =
@@ -328,14 +335,18 @@ impl SqliteStorage {
         }
         // Keep same-day limit exemptions. Read today's distinct reviewed cards
         // once, rather than joining them to every card in the collection.
-        let mut reviewed = self
-            .db
-            .prepare_cached(include_str!("reviewed_today_counts.sql"))?;
+        let mut reviewed =
+            self.db
+                .prepare_cached(&include_str!("reviewed_today_counts.sql").replace(
+                    "DUE_PREDICATE",
+                    &crate::storage::card::due_day_or_review_step_sql("cards.", "?3", "?4"),
+                ))?;
         for row in reviewed.query_and_then(
             params![
                 review_day_start.as_millis().0,
                 review_day_end.as_millis().0,
-                day_cutoff
+                day_cutoff,
+                now,
             ],
             |row| -> Result<(DeckId, i64, u32)> { Ok((row.get(0)?, row.get(1)?, row.get(2)?)) },
         )? {
@@ -584,7 +595,13 @@ pub(crate) mod test {
             add_cards_around_cutoffs(&mut col, &decks, DAY_CUTOFF, LEARN_CUTOFF, seed, count);
             let counts: HashMap<DeckId, Counts> = col
                 .storage
-                .due_counts(DAY_CUTOFF, LEARN_CUTOFF, TimestampSecs(0), TimestampSecs(1))
+                .due_counts(
+                    DAY_CUTOFF,
+                    LEARN_CUTOFF,
+                    TimestampSecs(i64::from(LEARN_CUTOFF)),
+                    TimestampSecs(0),
+                    TimestampSecs(1),
+                )
                 .unwrap()
                 .into_iter()
                 .map(|(did, c)| {
@@ -605,7 +622,13 @@ pub(crate) mod test {
         }
         assert_eq!(
             col.storage
-                .due_counts(DAY_CUTOFF, LEARN_CUTOFF, TimestampSecs(0), TimestampSecs(1))
+                .due_counts(
+                    DAY_CUTOFF,
+                    LEARN_CUTOFF,
+                    TimestampSecs(i64::from(LEARN_CUTOFF)),
+                    TimestampSecs(0),
+                    TimestampSecs(1),
+                )
                 .unwrap()
                 .len(),
             decks.len()
@@ -661,7 +684,7 @@ pub(crate) mod test {
         }
         let counts = col
             .storage
-            .due_counts(DAY_CUTOFF, LEARN_CUTOFF, start, end)?;
+            .due_counts(DAY_CUTOFF, LEARN_CUTOFF, start, start, end)?;
         let deck = &counts[&DeckId(1)];
         assert_eq!(deck.review_limit_exempt, 2);
         assert_eq!(deck.interday_learning_limit_exempt, 2);

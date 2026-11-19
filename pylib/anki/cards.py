@@ -50,6 +50,7 @@ class Card(DeprecatedNamesMixin):
     desired_retention: float | None
     decay: float | None
     last_review_time: int | None
+    review_step_secs: int | None
     rwkv_history_reset_after: int | None
 
     def __init__(
@@ -110,6 +111,9 @@ class Card(DeprecatedNamesMixin):
             if card.HasField("last_review_time_secs")
             else None
         )
+        self.review_step_secs = (
+            card.review_step_secs if card.HasField("review_step_secs") else None
+        )
         self.rwkv_history_reset_after = (
             card.rwkv_history_reset_after
             if card.HasField("rwkv_history_reset_after")
@@ -140,6 +144,7 @@ class Card(DeprecatedNamesMixin):
             desired_retention=self.desired_retention,
             decay=self.decay,
             last_review_time_secs=self.last_review_time,
+            review_step_secs=self.review_step_secs,
             rwkv_history_reset_after=self.rwkv_history_reset_after,
         )
 

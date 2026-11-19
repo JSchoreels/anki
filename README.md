@@ -40,9 +40,9 @@ of FSRS7 settings before committing to them:
   you want to compare against long-term review behavior only.
 - The "Allow same day review for (re)learning steps" option lets FSRS schedule
   short-term learning/relearning reviews on the same day.
-- **Skip configured learning and relearning steps with FSRS/RWKV** bypasses
-  preset steps. FSRS and RWKV-Curve can still schedule short intervals when
-  same-day reviews are enabled.
+- **Skip learning and relearning queues with FSRS/RWKV** schedules preset steps
+  and short model intervals as timed reviews. FSRS and RWKV-Curve can schedule
+  intervals under one day when same-day reviews are enabled.
 
 ## Before You Use It
 

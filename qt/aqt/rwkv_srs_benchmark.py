@@ -1356,6 +1356,15 @@ class _RustRwkvRuntime:
         )
         if not callable(forecast):
             raise ValueError("RWKV Rust runtime does not support Instant forecasts")
+
+        def step_due_millis(card: RwkvForecastCardInput) -> int:
+            review_input = card.review_input
+            if review_input.review_step_due_secs is not None:
+                return (review_input.review_step_due_secs - day_start_secs) * 1000
+            if review_input.card_queue == 1:
+                return (int(review_input.card_due or 0) - day_start_secs) * 1000
+            return int(card.due_day or 0) * 86_400_000
+
         rows = [
             (
                 _workload_input_row(card.review_input),
@@ -1364,11 +1373,7 @@ class _RustRwkvRuntime:
                 float(card.desired_retention),
                 intervening_reviews.get(card.review_input.identity.card_id),
                 int(card.review_input.card_queue or 0),
-                (
-                    (int(card.review_input.card_due or 0) - day_start_secs) * 1000
-                    if card.review_input.card_queue == 1
-                    else int(card.due_day or 0) * 86_400_000
-                ),
+                step_due_millis(card),
                 int(card.review_input.remaining_steps or 0),
                 max(0, int(card.review_input.card_due or 0)),
                 card.review_input.fsrs_memory_state,

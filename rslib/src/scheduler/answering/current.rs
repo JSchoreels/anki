@@ -65,6 +65,10 @@ impl CardStateUpdater {
         let ease_factor = self.card.ease_factor();
         let remaining_steps = self.card.remaining_steps();
         let memory_state = self.card.memory_state;
+        let review_step = self
+            .card
+            .review_step_due_at()
+            .and(self.card.review_step_secs);
         let elapsed_secs = |last_ivl: u32| {
             match self.card.queue {
                 CardQueue::Learn => {
@@ -85,6 +89,11 @@ impl CardStateUpdater {
                     let elapsed_days = days_since_col_creation - due + last_ivl_as_days;
                     (elapsed_days * 86_400) as u32
                 }
+                CardQueue::Review if review_step.is_some() => self
+                    .card
+                    .last_review_time
+                    .map(|last| self.now.elapsed_secs_since_clamped(last))
+                    .unwrap_or_default(),
                 _ => 0, // Not used for other card queues.
             }
         };
@@ -94,7 +103,8 @@ impl CardStateUpdater {
                 position: due.max(0) as u32,
             }),
             CardType::Learn => {
-                let last_ivl = self.learn_steps().current_delay_secs(remaining_steps);
+                let last_ivl = review_step
+                    .unwrap_or_else(|| self.learn_steps().current_delay_secs(remaining_steps));
                 LearnState {
                     scheduled_secs: last_ivl,
                     remaining_steps,
@@ -115,7 +125,8 @@ impl CardStateUpdater {
             }
             .into(),
             CardType::Relearn => {
-                let last_ivl = self.relearn_steps().current_delay_secs(remaining_steps);
+                let last_ivl = review_step
+                    .unwrap_or_else(|| self.relearn_steps().current_delay_secs(remaining_steps));
                 RelearnState {
                     learning: LearnState {
                         scheduled_secs: last_ivl,

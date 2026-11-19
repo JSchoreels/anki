@@ -15,6 +15,7 @@ pub(crate) enum UndoableQueueChange {
 pub(crate) struct QueueUpdate {
     pub entry: QueueEntry,
     pub learning_requeue: Option<LearningQueueEntry>,
+    pub review_step_due: Option<TimestampSecs>,
     pub queue_build_time: TimestampMillis,
     pub cutoff_snapshot: CutoffSnapshot,
 }
@@ -62,6 +63,7 @@ impl Collection {
                     if let Some(learning) = update.learning_requeue {
                         queues.insert_intraday_learning_card(learning);
                     }
+                    queues.track_review_step_due(update.review_step_due);
                     queues.restore_cutoff(&update.cutoff_snapshot);
                 }
                 self.save_undo(UndoableQueueChange::CardAnswered(update));

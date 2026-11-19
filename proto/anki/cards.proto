@@ -53,6 +53,7 @@ message Card {
   optional float decay = 22;
   optional int64 last_review_time_secs = 23;
   optional int64 rwkv_history_reset_after = 24;
+  optional uint32 review_step_secs = 25;
   string custom_data = 19;
 }
 

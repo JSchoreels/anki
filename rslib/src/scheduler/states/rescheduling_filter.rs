@@ -25,12 +25,13 @@ impl ReschedulingFilterState {
     pub(crate) fn next_states(self, ctx: &StateContext) -> SchedulingStates {
         let normal = self.original_state.next_states(ctx);
         if ctx.in_filtered_deck {
+            let return_steps = ctx.uses_review_queue_for_steps();
             SchedulingStates {
                 current: self.into(),
-                again: maybe_wrap(normal.again),
-                hard: maybe_wrap(normal.hard),
-                good: maybe_wrap(normal.good),
-                easy: maybe_wrap(normal.easy),
+                again: maybe_wrap(normal.again, return_steps),
+                hard: maybe_wrap(normal.hard, return_steps),
+                good: maybe_wrap(normal.good, return_steps),
+                easy: maybe_wrap(normal.easy, return_steps),
                 dynamic_desired_retentions: normal.dynamic_desired_retentions,
                 dynamic_desired_retention_enabled: normal.dynamic_desired_retention_enabled,
             }
@@ -41,13 +42,11 @@ impl ReschedulingFilterState {
     }
 }
 
-/// The review state is returned unchanged because cards are returned to
-/// their original deck in that state; other normal states are wrapped
-/// in the filtered state. Providing a filtered state is an error.
-fn maybe_wrap(state: CardState) -> CardState {
+/// Cards that go into Review return to their original deck.
+fn maybe_wrap(state: CardState, return_steps: bool) -> CardState {
     match state {
         CardState::Normal(normal) => {
-            if matches!(normal, NormalState::Review(_)) {
+            if return_steps || matches!(normal, NormalState::Review(_)) {
                 normal.into()
             } else {
                 ReschedulingFilterState {

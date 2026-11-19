@@ -18,7 +18,9 @@ impl Collection {
     pub fn congrats_info(&mut self) -> Result<anki_proto::scheduler::CongratsInfoResponse> {
         let deck = self.get_current_deck()?;
         let timing = self.timing_today()?;
-        let mut info = self.storage.congrats_info(&deck, timing.days_elapsed)?;
+        let mut info = self
+            .storage
+            .congrats_info(&deck, timing.days_elapsed, timing.now)?;
         if !info.new_remaining {
             let configs = self.storage.get_deck_config_map()?;
             if configs

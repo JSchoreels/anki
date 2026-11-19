@@ -5,10 +5,11 @@ SELECT id,
   cast(mod AS integer),
   did,
   odid,
-  reps
+  reps,
+  DUE_PREDICATE
 FROM cards
 WHERE did IN (
     SELECT id
     FROM active_decks
   )
-  AND queue = ?
+  AND queue = ?1
