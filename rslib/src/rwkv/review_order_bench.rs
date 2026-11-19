@@ -6,7 +6,9 @@
 //! The day loop is a bench-local copy of `simulate_workload_for_target` with a
 //! pluggable ordering and extra instrumentation. Ground truth is RWKV's own
 //! predicted retrievability (the grade is drawn from it), exactly as in the
-//! production simulator. Production behaviour is untouched.
+//! production simulator. The shock experiment replaces the truth of the shocked
+//! cards by an independent hidden FSRS memory that only sees the simulated
+//! answers. Production behaviour is untouched.
 
 use std::collections::BTreeMap;
 use std::collections::VecDeque;
@@ -111,7 +113,7 @@ struct RunResult {
 struct ShockSpec {
     /// Measured card groups (name, membership by input index).
     groups: Vec<(&'static str, Vec<bool>)>,
-    /// Group whose true R is the square of the predicted R.
+    /// Group whose cards follow the hidden memory model.
     applied: Option<usize>,
 }
 
@@ -123,6 +125,73 @@ fn masked_mean(values: &[f32], mask: &[bool], member: bool) -> f64 {
         .map(|(&v, _)| v)
         .collect();
     mean(&selected)
+}
+
+/// FSRS-5 default weights for the hidden-truth memory model of shocked cards.
+const TRUTH_W: [f32; 19] = [
+    0.40255, 1.18385, 3.173, 15.69105, 7.1949, 0.5345, 1.4604, 0.0046, 1.54575, 0.1192, 1.01925,
+    1.9395, 0.11, 0.29605, 2.2698, 0.2315, 2.9898, 0.51655, 0.6621,
+];
+const TRUTH_DECAY: f32 = -0.5;
+const TRUTH_FACTOR: f32 = 19.0 / 81.0; // R(S) = 0.9
+/// Shocked cards start with this share of RWKV's day-0 S90.
+const SHOCK_STABILITY_SCALE: f32 = 0.5;
+
+#[derive(Clone, Copy, Debug)]
+struct HiddenMemory {
+    stability: f32,
+    difficulty: f32,
+}
+
+fn truth_retrievability(elapsed_days: f32, stability: f32) -> f32 {
+    (1.0 + TRUTH_FACTOR * elapsed_days.max(0.0) / stability).powf(TRUTH_DECAY)
+}
+
+/// Stability at which `r` holds after `elapsed_days`.
+fn stability_for(r: f32, elapsed_days: f32) -> Option<f32> {
+    (r > 0.0 && r < 1.0 && elapsed_days > 0.0)
+        .then(|| TRUTH_FACTOR * elapsed_days / (r.powf(1.0 / TRUTH_DECAY) - 1.0))
+}
+
+fn initial_difficulty(grade: u8) -> f32 {
+    TRUTH_W[4] - (TRUTH_W[5] * (f32::from(grade) - 1.0)).exp() + 1.0
+}
+
+impl HiddenMemory {
+    fn new(stability: f32) -> Self {
+        Self {
+            stability: stability.clamp(0.01, MAX_INTERVAL as f32),
+            difficulty: initial_difficulty(3).clamp(1.0, 10.0),
+        }
+    }
+
+    /// FSRS-5 update; a card is reviewed at most once per day, so no
+    /// short-term stability.
+    fn after_answer(self, r: f32, ease: u8) -> Self {
+        let w = &TRUTH_W;
+        let (s, d) = (self.stability, self.difficulty);
+        let stability = if ease >= 2 {
+            let hard = if ease == 2 { w[15] } else { 1.0 };
+            let easy = if ease == 4 { w[16] } else { 1.0 };
+            s * (1.0
+                + w[8].exp()
+                    * (11.0 - d)
+                    * s.powf(-w[9])
+                    * ((w[10] * (1.0 - r)).exp() - 1.0)
+                    * hard
+                    * easy)
+        } else {
+            s.min(
+                w[11] * d.powf(-w[12]) * ((s + 1.0).powf(w[13]) - 1.0) * (w[14] * (1.0 - r)).exp(),
+            )
+        };
+        let difficulty = d - w[6] * (f32::from(ease) - 3.0);
+        let difficulty = w[7] * initial_difficulty(4) + (1.0 - w[7]) * difficulty;
+        Self {
+            stability: stability.clamp(0.01, MAX_INTERVAL as f32),
+            difficulty: difficulty.clamp(1.0, 10.0),
+        }
+    }
 }
 
 // ---------------------------------------------------------------------------
@@ -279,18 +348,45 @@ fn run_strategy(
     let card_id =
         |cards: &[RwkvSimulationCard], index: usize| cards[index].review_input.review_input.card_id;
 
-    let applied_mask: Vec<bool> = match shock {
-        Some(spec) => spec
-            .applied
-            .map_or(vec![false; n], |group| spec.groups[group].1.clone()),
-        None => vec![false; n],
-    };
-    let true_of = |index: usize, r: f32| {
-        if applied_mask[index] {
-            r * r
-        } else {
-            r
+    // Hidden memory of the shocked cards, started from RWKV's day-0 S90.
+    let mut hidden: Vec<Option<HiddenMemory>> = vec![None; n];
+    let (mut fallback_inverse, mut fallback_default) = (0u32, 0u32);
+    if let Some(group) = shock.and_then(|spec| spec.applied.map(|g| &spec.groups[g].1)) {
+        for index in (0..n).filter(|&index| group[index]) {
+            let prediction = &predictions[index];
+            let s90 = prediction
+                .current_s90
+                .filter(|s| s.is_finite() && *s > 0.0)
+                .or_else(|| {
+                    fallback_inverse += 1;
+                    stability_for(
+                        sanitize(prediction.retrievability),
+                        (0 - cards[index].last_review_day) as f32,
+                    )
+                })
+                .unwrap_or_else(|| {
+                    fallback_default += 1;
+                    1.0
+                });
+            hidden[index] = Some(HiddenMemory::new(s90 * SHOCK_STABILITY_SCALE));
         }
+    }
+    let hidden_s0_mean = mean(
+        &hidden
+            .iter()
+            .flatten()
+            .map(|m| m.stability)
+            .collect::<Vec<_>>(),
+    );
+    let hidden_cards = hidden.iter().flatten().count();
+    let true_of = |cards: &[RwkvSimulationCard],
+                   hidden: &[Option<HiddenMemory>],
+                   index: usize,
+                   day: i64,
+                   r: f32| {
+        hidden[index].map_or(r, |m| {
+            truth_retrievability((day - cards[index].last_review_day) as f32, m.stability)
+        })
     };
     let deck_of =
         |cards: &[RwkvSimulationCard], index: usize| cards[index].review_input.review_input.deck_id;
@@ -372,7 +468,9 @@ fn run_strategy(
                 }
             }
         }
-        let r_true: Vec<f32> = (0..n).map(|index| true_of(index, r[index])).collect();
+        let r_true: Vec<f32> = (0..n)
+            .map(|index| true_of(&cards, &hidden, index, day, r[index]))
+            .collect();
         if day >= 1 {
             for index in 0..n {
                 min_true_after_start[index] = min_true_after_start[index].min(r_true[index]);
@@ -505,7 +603,7 @@ fn run_strategy(
                 .pop()
                 .unwrap();
             let r_at_review = sanitize(prediction.retrievability);
-            let true_r = true_of(index, r_at_review);
+            let true_r = true_of(&cards, &hidden, index, day, r_at_review);
             let probabilities = review_model.probabilities_for(true_r);
             let ease = simulation_grade(
                 probabilities,
@@ -522,6 +620,9 @@ fn run_strategy(
             .clamp(1, MAX_INTERVAL);
             let seconds = review_model.grade_seconds[(ease - 1) as usize];
             total_cost += f64::from(seconds);
+            if let Some(memory) = hidden[index] {
+                hidden[index] = Some(memory.after_answer(true_r, ease));
+            }
             review_log.push((index, r_at_review, true_r, ease == 1));
             first_review_day[index].get_or_insert(day);
             review_rs.push(r_at_review);
@@ -776,6 +877,36 @@ fn run_strategy(
                         };
                         values.push((label, group_pred_series[group][day]));
                     }
+                    let pred = &group_pred_series[group];
+                    let truth = &group_true_series[group];
+                    let gap = |day: usize| pred[day] - truth[day];
+                    for (label, day) in [
+                        ("gap_d0", 0usize),
+                        ("gap_d7", 7),
+                        ("gap_d14", 14),
+                        ("gap_d30", 30),
+                        ("gap_d60", 60),
+                        ("gap_d90", 90),
+                    ] {
+                        if day < pred.len() {
+                            values.push((label, gap(day)));
+                        }
+                    }
+                    values.push(("true_d0", truth[0]));
+                    values.push(("pred_d0", pred[0]));
+                    values.push((
+                        "gap_mean",
+                        mean_f64(&(1..pred.len()).map(gap).collect::<Vec<_>>()),
+                    ));
+                    // Censored at days + 1 when the gap never halves.
+                    let half = if gap(0) <= 0.01 {
+                        f64::NAN
+                    } else {
+                        (1..pred.len())
+                            .find(|&day| gap(day) <= gap(0) / 2.0)
+                            .map_or(days as f64 + 1.0, |day| day as f64)
+                    };
+                    values.push(("gap_half_day", half));
                 }
                 let mut side_json = serde_json::Map::new();
                 for (key, value) in values {
@@ -786,6 +917,12 @@ fn run_strategy(
             }
             sides.insert("pred_r_series".into(), json!(group_pred_series[group]));
             sides.insert("true_r_series".into(), json!(group_true_series[group]));
+            let gap_series: Vec<f64> = group_pred_series[group]
+                .iter()
+                .zip(&group_true_series[group])
+                .map(|(p, t)| p - t)
+                .collect();
+            sides.insert("gap_series".into(), json!(gap_series));
             groups_json.insert((*name).into(), Value::Object(sides));
         }
         // Deck concentration.
@@ -816,7 +953,17 @@ fn run_strategy(
         }
         concentration_json.insert("decks_total".into(), json!(deck_cards.len()));
         concentration_json.insert("decks_with_10_cards".into(), json!(gaps.len()));
-        shock_json = json!({"groups": groups_json, "deck_concentration": concentration_json});
+        let hidden_json = json!({
+            "cards": hidden_cards,
+            "s90_fallback_inverse": fallback_inverse,
+            "s90_fallback_default": fallback_default,
+            "s0_mean": hidden_s0_mean,
+        });
+        shock_json = json!({
+            "groups": groups_json,
+            "deck_concentration": concentration_json,
+            "hidden_truth": hidden_json,
+        });
     }
     metrics["shock"] = shock_json;
     Ok(RunResult {
@@ -1108,6 +1255,25 @@ fn review_order_selection_mix_and_round_robin() {
     assert_eq!(selected, vec![0, 1, 2, 3, 4]);
     let selected = round_robin_select(&asc, |i| Some(i64::from(i >= 4)), 5);
     assert_eq!(selected, vec![0, 4, 1, 5, 2]);
+}
+
+#[test]
+fn review_order_hidden_memory_model() {
+    assert!((truth_retrievability(12.0, 12.0) - 0.9).abs() < 1e-5);
+    let stability = stability_for(0.7, 5.0).unwrap();
+    assert!((truth_retrievability(5.0, stability) - 0.7).abs() < 1e-5);
+    assert_eq!(stability_for(1.0, 5.0), None);
+    assert_eq!(stability_for(0.7, 0.0), None);
+
+    let memory = HiddenMemory::new(10.0);
+    let [again, hard, good, easy] = [1, 2, 3, 4].map(|ease| memory.after_answer(0.8, ease));
+    assert!(memory.stability < hard.stability);
+    assert!(hard.stability < good.stability);
+    assert!(good.stability < easy.stability);
+    assert!(again.stability < memory.stability);
+    for next in [again, hard, good, easy] {
+        assert!((1.0..=10.0).contains(&next.difficulty));
+    }
 }
 
 #[test]
@@ -1945,6 +2111,11 @@ fn shock_columns(shock: &str) -> Vec<(String, String)> {
         ("min<.7", "m.min_true_lt07"),
         ("endTrue", "m.end_true_mean"),
         ("endTrueP5", "m.end_true_p5"),
+        ("gap_d0", "m.gap_d0"),
+        ("gap_d14", "m.gap_d14"),
+        ("gap_d30", "m.gap_d30"),
+        ("gap_d90", "m.gap_d90"),
+        ("gap_half", "m.gap_half_day"),
     ] {
         columns.push((label.to_string(), format!("{shock}.{key}")));
     }
@@ -2056,7 +2227,8 @@ fn rwkv_review_order_shock() {
             "backup_sha256": source["backup_sha256"],
             "input_blake3": blake3::hash(&input_bytes).to_hex().to_string(),
             "residues": residues, "sample_modulus": sample_modulus,
-            "truth": "shocked cards: true R = predicted R squared; grades drawn from true R",
+            "truth": "shocked cards: hidden FSRS-5 default-weights memory, S0 = shock_stability_scale x RWKV day-0 S90, D0 = D(Good), updated on every simulated answer independently of RWKV; unshocked cards: true R = predicted R; grades drawn from true R",
+            "shock_stability_scale": SHOCK_STABILITY_SCALE,
             "grade_seconds": GRADE_SECONDS, "counterfactual": false,
         }),
     );
