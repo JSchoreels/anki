@@ -238,6 +238,7 @@ class Reviewer:
             tuple[int, tuple[int, int, int] | None] | None
         ) = None
         self._rwkv_deferred_queue_refresh: _RwkvDeferredQueueRefresh | None = None
+        self._deferred_deck_count_refresh: Callable[[], None] | None = None
         self._rwkv_empty_queue_refresh: _RwkvDeferredQueueRefresh | None = None
         self._rwkv_empty_queue_recovery_generation: int | None = None
         self._rwkv_empty_queue_recovery_attempted = False
@@ -1398,6 +1399,13 @@ class Reviewer:
         self._rwkv_queue_refresh_in_flight = True
         self._start_rwkv_queue_order_async(request)
 
+    def run_deck_count_refresh(self, refresh: Callable[[], None]) -> None:
+        # Publishing reviewer scores clears the deck browser's count scores.
+        if getattr(self, "_rwkv_queue_refresh_in_flight", False):
+            self._deferred_deck_count_refresh = refresh
+        else:
+            refresh()
+
     def _start_rwkv_queue_order_async(
         self,
         request: _RwkvQueueRefreshRequest,
@@ -1459,6 +1467,9 @@ class Reviewer:
                 self._start_rwkv_queue_order_async(pending)
             else:
                 self._rwkv_queue_refresh_in_flight = False
+                if refresh := getattr(self, "_deferred_deck_count_refresh", None):
+                    self._deferred_deck_count_refresh = None
+                    refresh()
 
         def build_work() -> aqt.rwkv_scheduler.RwkvReviewQueueOrderAsyncWork | None:
             build_start = time.monotonic()

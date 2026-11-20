@@ -207,16 +207,24 @@ class DeckBrowser:
                     output.rwkv_count_scope_ids,
                 )
                 self.__renderPage(None)
-                aqt.rwkv_scheduler.prepare_deck_browser_rwkv_counts_incrementally(
-                    self.mw,
-                    output.rwkv_count_scope_ids,
-                    should_continue=lambda: self._rwkv_count_refresh_active(generation),
-                    on_update=self._update_rwkv_deck_counts,
-                    on_done=lambda clear_pending: self._finish_rwkv_count_refresh(
-                        generation,
-                        clear_pending=clear_pending,
-                    ),
-                )
+                if not output.rwkv_count_scope_ids:
+                    return
+
+                def prepare_rwkv_counts() -> None:
+                    aqt.rwkv_scheduler.prepare_deck_browser_rwkv_counts_incrementally(
+                        self.mw,
+                        output.rwkv_count_scope_ids,
+                        should_continue=lambda: self._rwkv_count_refresh_active(
+                            generation
+                        ),
+                        on_update=self._update_rwkv_deck_counts,
+                        on_done=lambda clear_pending: self._finish_rwkv_count_refresh(
+                            generation,
+                            clear_pending=clear_pending,
+                        ),
+                    )
+
+                self.mw.reviewer.run_deck_count_refresh(prepare_rwkv_counts)
 
             QueryOp(
                 parent=self.mw,

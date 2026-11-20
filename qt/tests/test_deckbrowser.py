@@ -2,6 +2,7 @@
 # License: GNU AGPL, version 3 or later; http://www.gnu.org/licenses/agpl.html
 
 import json
+from concurrent.futures import Future
 from pathlib import Path
 from types import SimpleNamespace
 
@@ -93,6 +94,109 @@ def test_review_limit_refresh_clears_pending_and_unlimited_labels(browser):
     assert refresh_labels()[0] == " (/10)"
     tree.children[0].review_count = 10
     assert refresh_labels() == ["", ""]
+
+
+def test_deck_browser_scores_due_totals_after_reviewer_refresh(browser, monkeypatch):
+    import aqt
+    from aqt import rwkv_scheduler
+    from aqt.reviewer import Reviewer
+
+    jobs = []
+
+    def enqueue(task, on_done, *, uses_collection=True):
+        jobs.append((task, on_done))
+
+    def complete_job(index=0):
+        task, on_done = jobs.pop(index)
+        future = Future()
+        future.set_result(task())
+        on_done(future)
+
+    deck_id = 10
+    stored_counts = DeckTreeNode(
+        children=[
+            DeckTreeNode(
+                deck_id=deck_id, review_count=1, review_uncapped_including_children=1
+            )
+        ]
+    )
+    rwkv_counts = DeckTreeNode(
+        children=[
+            DeckTreeNode(
+                deck_id=deck_id, review_count=1, review_uncapped_including_children=3
+            )
+        ]
+    )
+    published = []
+
+    def install_reviewer_scores(*args, **kwargs):
+        published.append("reviewer scores")
+        return True
+
+    def prepare_deck_counts(mw, deck_ids, *, should_continue, on_update, on_done):
+        assert should_continue()
+        assert deck_ids == (deck_id,)
+        published.append("deck counts")
+        on_update(deck_id, rwkv_counts)
+        on_done(True)
+
+    monkeypatch.setattr(
+        rwkv_scheduler, "prepare_reviewer_queue_order_async_work", lambda *a, **kw: ()
+    )
+    monkeypatch.setattr(
+        rwkv_scheduler, "score_reviewer_queue_order_async_work", lambda *a, **kw: ()
+    )
+    monkeypatch.setattr(
+        rwkv_scheduler,
+        "install_reviewer_queue_order_async_result",
+        install_reviewer_scores,
+    )
+    monkeypatch.setattr(
+        rwkv_scheduler, "deck_browser_rwkv_count_scope_ids", lambda *args: (deck_id,)
+    )
+    monkeypatch.setattr(
+        rwkv_scheduler,
+        "prepare_deck_browser_rwkv_counts_incrementally",
+        prepare_deck_counts,
+    )
+
+    reviewer = Reviewer.__new__(Reviewer)
+    reviewer.card = None
+    reviewer._answeredIds = [123]
+    mw = SimpleNamespace(
+        state="review",
+        reviewer=reviewer,
+        col=SimpleNamespace(
+            sched=SimpleNamespace(deck_due_tree=lambda: stored_counts),
+            decks=SimpleNamespace(get_current_id=lambda: deck_id),
+            studied_today=lambda: "",
+            v3_scheduler=lambda: True,
+        ),
+        _increase_background_ops=lambda: None,
+        _decrease_background_ops=lambda: None,
+        taskman=SimpleNamespace(run_in_background=enqueue),
+    )
+    reviewer.mw = browser.mw = mw
+    browser._rwkv_count_generation = 0
+    browser._DeckBrowser__renderPage = lambda _: None
+    browser.web = SimpleNamespace(eval=lambda _: None)
+    monkeypatch.setattr(aqt, "mw", mw)
+
+    reviewer._prepare_rwkv_queue_order_on_exit()
+    complete_job()  # Prepare the reviewer work and queue its scoring job.
+    mw.state = "deckBrowser"
+    browser.refresh()
+    complete_job(1)  # Render the deck list while reviewer scoring is in flight.
+
+    assert published == []
+    assert browser._review_limit_labels(browser._render_data.tree)[deck_id][0] == ""
+    while jobs:
+        complete_job()
+
+    assert published == ["reviewer scores", "deck counts"]
+    assert (
+        browser._review_limit_labels(browser._render_data.tree)[deck_id][0] == " (/3)"
+    )
 
 
 @pytest.mark.parametrize(

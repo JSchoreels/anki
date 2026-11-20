@@ -1296,8 +1296,9 @@ replay. If the state is cold or profile startup is still restoring it, counts
 remain responsive, recovery is scheduled separately, and the pending review
 count is shown as an ellipsis when recovery was already requested. The overview
 refreshes after recovery finishes. The deck browser renders its initial tree
-without waiting for model inference, then scores disjoint RWKV-enabled deck
-scopes one at a time. Model scoring runs without collection access, and
+without waiting for model inference. Once any reviewer queue refresh completes,
+the deck browser scores disjoint RWKV-enabled deck scopes one at a time. Model
+scoring runs without collection access, and
 each completed scope supplies transient count-only caches for its deck rows so
 the visible counts can be updated incrementally. Predictions are reused for
 each descendant, but every deck row applies its own study-scope repeat rules
