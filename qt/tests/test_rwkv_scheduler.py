@@ -18148,6 +18148,55 @@ def test_rwkv_candidate_refresh_relative_overdueness_uses_dynamic_dr() -> None:
     ) == [1]
 
 
+@pytest.mark.parametrize("candidate_refresh", [False, True])
+def test_busy_queue_refresh_preserves_installed_scores(candidate_refresh: bool) -> None:
+    backend = SimpleNamespace(predict_review=MagicMock())
+    rpc = _RwkvQueueScoreRpc()
+    reviewer = _rwkv_queue_reviewer(
+        rpc=rpc,
+        review_order=7,
+        batch_size=64,
+        card_count=65,
+        rwkv_candidate_refresh_enabled=candidate_refresh,
+    )
+    scores = [(card_id, 0.7) for card_id in range(1, 66)]
+    targets = {card_id: 0.8 for card_id, _ in scores}
+    previous = set_reviewer_backend(backend)
+    acquired = threading.Event()
+    release = threading.Event()
+
+    def hold_execution_lock() -> None:
+        with rwkv_scheduler._reviewer_backend_execution_lock:
+            acquired.set()
+            release.wait(timeout=5)
+
+    worker = threading.Thread(target=hold_execution_lock)
+    try:
+        assert rwkv_scheduler._set_rwkv_review_queue_scores(
+            reviewer, 100, scores, target_retentions_by_card_id=targets
+        )
+        rpc.calls.clear()
+        worker.start()
+        assert acquired.wait(timeout=5)
+
+        settled = rwkv_scheduler.prepare_current_deck_review_queue_scores(reviewer.mw)
+
+        assert rpc.calls == []
+        assert rwkv_scheduler._rwkv_review_queue_score_map_for_deck(
+            reviewer, 100
+        ) == dict(scores)
+        assert (
+            rwkv_scheduler._rwkv_review_queue_target_map_for_deck(reviewer, 100)
+            == targets
+        )
+        assert settled is False
+    finally:
+        release.set()
+        if worker.ident is not None:
+            worker.join(timeout=5)
+        set_reviewer_backend(previous)
+
+
 def test_prepare_reviewer_queue_order_skips_when_instant_order_disabled() -> None:
     class Backend:
         def predict_review(
@@ -19900,6 +19949,7 @@ def test_overview_renders_before_requesting_rwkv_recovery(
 
     scheduler = SimpleNamespace(counts=lambda: events.append("counts"))
     mw = SimpleNamespace(
+        state="overview",
         col=SimpleNamespace(sched=scheduler),
         web=SimpleNamespace(setFocus=lambda: events.append("focus")),
     )
@@ -19923,7 +19973,7 @@ def test_overview_renders_before_requesting_rwkv_recovery(
     monkeypatch.setattr(
         rwkv_scheduler,
         "prepare_current_deck_review_queue_scores",
-        lambda _mw, **_kwargs: events.append("prepare"),
+        lambda _mw, **_kwargs: events.append("prepare") or True,
     )
     monkeypatch.setattr(
         rwkv_scheduler,
@@ -19972,6 +20022,65 @@ def test_overview_count_scoring_does_not_replay_history(
     rwkv_scheduler.prepare_current_deck_review_queue_scores(object())
 
     assert calls == [False]
+
+
+@pytest.mark.parametrize("navigate_away", [False, True])
+def test_overview_retries_busy_counts_while_current(
+    monkeypatch: pytest.MonkeyPatch, navigate_away: bool
+) -> None:
+    from aqt.overview import Overview
+
+    queries = []
+    timers = []
+    renders = []
+
+    def query(*, parent, op, success):
+        return SimpleNamespace(
+            run_in_background=lambda: queries.append((lambda: op(parent.col), success))
+        )
+
+    def finish_query():
+        collect, success = queries.pop()
+        success(collect())
+
+    ready = iter([False, False, True])
+    monkeypatch.setattr("aqt.overview.QueryOp", query)
+    monkeypatch.setattr(
+        rwkv_scheduler,
+        "prepare_current_deck_review_queue_scores",
+        lambda *a, **kw: next(ready),
+    )
+    monkeypatch.setattr(
+        rwkv_scheduler, "request_rwkv_state_cache_recovery", lambda *a, **kw: False
+    )
+    overview = Overview.__new__(Overview)
+    overview.mw = SimpleNamespace(
+        state="overview",
+        col=SimpleNamespace(sched=SimpleNamespace(counts=lambda: (0, 0, 2))),
+        progress=SimpleNamespace(
+            single_shot=lambda _delay, callback: timers.append(callback)
+        ),
+        web=SimpleNamespace(setFocus=lambda: None),
+    )
+    overview._rwkv_count_generation = 0
+    overview._renderPage = lambda: renders.append(overview._rwkv_counts_pending)
+    overview._renderBottom = lambda: None
+
+    overview.refresh()
+    finish_query()
+    assert renders == [True]
+    timers.pop()()
+    finish_query()
+    assert renders == [True]
+    timers.pop()()
+    collect, success = queries.pop()
+    result = collect()
+    if navigate_away:
+        overview.mw.state = "review"
+    success(result)
+
+    assert renders == ([True] if navigate_away else [True, False])
+    assert not timers
 
 
 @pytest.mark.parametrize("enforce_grade_order", [True, False])

@@ -1279,7 +1279,8 @@ automatically bounds the candidate window.
 This accelerates frequent review-time refreshes while preserving the full
 installed score map for cards outside the refreshed window. It is approximate:
 cards outside the refreshed window keep their previous RWKV score until a later
-candidate refresh or full queue rebuild scores them again.
+candidate refresh or full queue rebuild scores them again. If the scoring
+backend is busy, a synchronous refresh preserves the installed scores and targets.
 
 Deck tree review counts use the same eligibility rules when a current-day RWKV
 queue score map is installed. Scored normal-deck review cards above target
@@ -1291,7 +1292,9 @@ not re-filtered by RWKV eligibility. Before a RWKV queue score map has been
 prepared, deck tree counts continue to show the normal FSRS due counts. The
 selected-deck overview prepares and installs the current deck's RWKV queue score
 map before rendering its counts when resident or locally cached state is
-available. An ordinary overview count query never starts a full historical
+available. While the scoring backend is busy, the overview displays an ellipsis
+in the review count and retries while the overview is open. An ordinary
+overview count query never starts a full historical
 replay. If the state is cold or profile startup is still restoring it, counts
 remain responsive, recovery is scheduled separately, and the pending review
 count is shown as an ellipsis when recovery was already requested. The overview

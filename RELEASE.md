@@ -50,6 +50,7 @@ Changes since [build 115](https://github.com/JSchoreels/anki/releases/tag/26.09.
 
 - **See which daily limit postponed a card.** Session Preview shows how many reviews, learning steps and new-card slots are queued. It identifies the limit that held a card back and keeps three-digit positions on one line.
 - **Keep RWKV due totals consistent when returning to the deck list.** The list waits for the reviewer’s background queue refresh before calculating how many reviews are due before daily limits.
+- **Keep RWKV counts available when scoring overlaps.** A busy scorer preserves installed queue scores. The deck overview shows an ellipsis while it waits for fresh counts, and its callbacks respect navigation into study.
 - **Faster RWKV state builds.** On a collection with 226,546 reviews, the Small model pair rebuilt in 7.1 seconds, down from 8.7 seconds.
 - **Faster full-queue retrievability refreshes.** Refreshing all 7,533 cards in a deck with RWKV-Instant took 153 ms on repeated runs, down from 163 ms.
 

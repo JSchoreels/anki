@@ -69,12 +69,28 @@ class Overview:
     def refresh(self) -> None:
         self._rwkv_count_generation += 1
         generation = self._rwkv_count_generation
+        collection = self.mw.col
+        rendered_pending = False
 
-        def success(rwkv_counts_pending: bool) -> None:
-            if generation != self._rwkv_count_generation:
+        def is_current() -> bool:
+            return (
+                generation == self._rwkv_count_generation
+                and self.mw.state == "overview"
+                and self.mw.col is collection
+            )
+
+        def success(result: tuple[bool, bool]) -> None:
+            nonlocal rendered_pending
+            if not is_current():
                 return
+            scoring_busy, counts_pending = result
+            if scoring_busy:
+                self.mw.progress.single_shot(100, query_counts)
+            if rendered_pending and counts_pending:
+                return
+            rendered_pending = counts_pending
             self._refresh_needed = False
-            self._rwkv_counts_pending = rwkv_counts_pending
+            self._rwkv_counts_pending = counts_pending
             self._renderPage()
             self._renderBottom()
             self.mw.web.setFocus()
@@ -84,18 +100,28 @@ class Overview:
                 reason="overview",
             )
 
-        def get_counts(col: Collection) -> bool:
-            rwkv_counts_pending = aqt.rwkv_scheduler.rwkv_state_cache_loading(self.mw)
-            aqt.rwkv_scheduler.prepare_current_deck_review_queue_scores(
-                self.mw,
-                reason="overview counts",
+        def get_counts(col: Collection) -> tuple[bool, bool]:
+            if not is_current():
+                return False, False
+            cache_loading = aqt.rwkv_scheduler.rwkv_state_cache_loading(self.mw)
+            scoring_busy = (
+                not aqt.rwkv_scheduler.prepare_current_deck_review_queue_scores(
+                    self.mw,
+                    reason="overview counts",
+                )
             )
             col.sched.counts()
-            return rwkv_counts_pending or (
+            return scoring_busy, scoring_busy or cache_loading or (
                 aqt.rwkv_scheduler.rwkv_state_cache_loading(self.mw)
             )
 
-        QueryOp(parent=self.mw, op=get_counts, success=success).run_in_background()
+        def query_counts() -> None:
+            if is_current():
+                QueryOp(
+                    parent=self.mw, op=get_counts, success=success
+                ).run_in_background()
+
+        query_counts()
 
     def refresh_if_needed(self) -> None:
         if self._refresh_needed:
@@ -222,7 +248,7 @@ class Overview:
             shareLink = '<a class=smallLink href="review">Reviews and Updates</a>'
         else:
             shareLink = ""
-        if self.mw.col.sched._is_finished():
+        if not self._rwkv_counts_pending and self.mw.col.sched._is_finished():
             self._show_finished_screen()
             return
         content = OverviewContent(

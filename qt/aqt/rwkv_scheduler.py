@@ -5809,11 +5809,11 @@ def _prepare_current_deck_review_queue_scores(
     *,
     reason: str,
     allow_historical_rebuild: bool = True,
-) -> None:
+) -> bool:
     deck_id = _current_deck_id(reviewer)
     if deck_id is None:
         _clear_rwkv_review_queue_scores(reviewer)
-        return
+        return True
 
     deck_config = _deck_config_for_deck_id(reviewer, deck_id)
     if not (
@@ -5821,9 +5821,9 @@ def _prepare_current_deck_review_queue_scores(
         and _rwkv_review_instant_order_enabled(deck_config)
     ):
         _clear_rwkv_review_queue_scores(reviewer, deck_id)
-        return
+        return True
 
-    _prepare_rwkv_review_scores_for_deck(
+    return _prepare_rwkv_review_scores_for_deck(
         reviewer=reviewer,
         deck_id=deck_id,
         deck_config=deck_config,
@@ -5836,15 +5836,16 @@ def prepare_current_deck_review_queue_scores(
     mw: object,
     *,
     reason: str = "deck counts",
-) -> None:
+) -> bool:
     """Prepare transient RWKV review scores before deck counts are queried.
 
     This path may restore a valid local cache, but historical recovery is
     scheduled separately so an ordinary count query cannot monopolize the
-    collection worker for a full replay.
+    collection worker for a full replay. Return False if scoring is busy and
+    the caller should retry.
     """
 
-    _prepare_current_deck_review_queue_scores(
+    return _prepare_current_deck_review_queue_scores(
         SimpleNamespace(mw=mw),
         reason=reason,
         allow_historical_rebuild=False,
@@ -5855,8 +5856,8 @@ def prepare_reviewer_queue_order(reviewer: object) -> None:
     """Prepare transient RWKV review ordering scores for the current deck."""
 
     required_generation = _reviewer_queue_order_refresh_required_generation(reviewer)
-    _prepare_current_deck_review_queue_scores(reviewer, reason="review queue")
-    if required_generation is not None:
+    settled = _prepare_current_deck_review_queue_scores(reviewer, reason="review queue")
+    if settled and required_generation is not None:
         _clear_reviewer_queue_order_refresh_required(
             reviewer,
             through_generation=required_generation,
@@ -8167,8 +8168,7 @@ def _prepare_rwkv_review_scores_for_deck(
     deck_config: dict[str, object],
     reason: str,
     allow_historical_rebuild: bool,
-) -> None:
-    start = time.monotonic()
+) -> bool:
     if _reviewer_backend is None:
         configure_start = time.monotonic()
         configure_reviewer_backend_from_environment()
@@ -8181,8 +8181,33 @@ def _prepare_rwkv_review_scores_for_deck(
         )
     if _reviewer_backend is None:
         _clear_rwkv_review_queue_scores(reviewer, deck_id)
-        return
+        return True
 
+    # The nested prediction helpers reuse this lock. Without holding it
+    # throughout the refresh, contention can be mistaken for a valid empty
+    # prediction batch and discard installed scores.
+    with _try_reviewer_backend_prediction_access() as backend:
+        if backend is None:
+            return False
+        _refresh_rwkv_review_scores_for_deck(
+            reviewer=reviewer,
+            deck_id=deck_id,
+            deck_config=deck_config,
+            reason=reason,
+            allow_historical_rebuild=allow_historical_rebuild,
+        )
+    return True
+
+
+def _refresh_rwkv_review_scores_for_deck(
+    *,
+    reviewer: object,
+    deck_id: int,
+    deck_config: dict[str, object],
+    reason: str,
+    allow_historical_rebuild: bool,
+) -> None:
+    start = time.monotonic()
     try:
         warmup_start = time.monotonic()
         if allow_historical_rebuild and not rwkv_state_declined(
