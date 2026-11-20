@@ -33,11 +33,15 @@ auto-rebuilds on changes (`just rebuild-web` triggers a one-off rebuild).
 
 ## Building/checking
 
-Use `just check-local` for routine development. It runs the main build,
-formatting, lint, and test checks with two Cargo jobs and two Rust test
-workers, and skips the installer tests.
-
-Use `just check` for full validation, including the installer tests.
+1. **While editing.** Run focused tests for the behavior you changed. Use
+   `just test-py-target` with specific Python test paths or case IDs.
+2. **Before committing.** Run `just check-local`. It runs the main build,
+   formatting, lint, and test checks with two Cargo jobs and two Rust test
+   workers, and skips the installer tests.
+3. **Before pushing or updating the installed app.** Run `just check` on
+   the commit you intend to push or install. It includes the installer tests.
+   When updating the app, build from that commit and verify that the installed
+   build matches it.
 
 Run `just` (or `just --list`) to see all available commands.
 
@@ -60,13 +64,14 @@ dispatch. If CI fails, fix the failure and rerun validation on the new commit.
 
 During development, you can build/check subsections of our code:
 
-- Rust: `cargo check`
-- Python: `just lint` (runs mypy/ruff), and if wheel-related, `just wheels`
-- TypeScript/Svelte: `just lint` (includes check:svelte and check:typescript)
+- Rust: `cargo check -j 2 -p anki` for compiler feedback on the core crate.
+- Python/Qt: `just test-py-target` with the test cases you changed or depend on.
+- TypeScript/Svelte: `just test-ts` for the frontend unit suite.
 
-Language-specific tests are also available: `just test-rust`, `just test-py`,
-`just test-ts`. Use `just fmt` / `just fix-fmt` for formatting and
-`just fix-lint` to auto-fix lint issues.
+Use `just test-rust` and `just test-py` for the full Rust and Python suites.
+Use `just lint` for lint and type checks, and `just wheels` for wheel packaging.
+Use `just fmt` and `just fix-fmt` for formatting and `just fix-lint` to auto-fix
+lint issues.
 
 TypeScript/Svelte browser e2e tests live in `ts/tests/e2e/` and run with
 `just test-e2e`. The harness launches a temporary Anki instance and drives
@@ -127,10 +132,9 @@ communicating with the Rust backend (which happens over POST requests).
 
 ## Fixing errors
 
-When dealing with build errors or failing tests, invoke 'check' or one
-of the quick iteration commands regularly. This helps verify your changes
-are correct. To locate other instances of a problem, run the check again -
-don't attempt to grep the codebase.
+When dealing with build errors or failing tests, rerun the relevant quick
+iteration command after each fix. Use the failing check to locate other
+instances of the problem.
 
 ## Ignores
 

@@ -62,9 +62,10 @@ Use this process whenever this fork is aligned to a new official Anki release:
    fork's GitHub releases.
 5. Update `RELEASE.md`. Link the official upstream release and summarize both
    the upstream alignment and the fork-specific changes retained in the build.
-6. Run targeted tests and `just check`. Commit the merge, push the exact release
-   commit, and wait for its complete CI matrix to succeed. For `main`, dispatch
-   the full matrix with `just ci --branch main`.
+6. Run targeted tests and `just check-local`, then commit the merge. Run
+   `just check` on that commit before pushing it and wait for its complete CI
+   matrix to succeed. For `main`, dispatch the full matrix with
+   `just ci --branch main`.
 7. Dispatch `just release::draft --ref <branch>`. The recipe and release
    workflow both require a successful CI run with all six platform checks
    passing on the release commit. The workflow creates an unsigned draft tag named
