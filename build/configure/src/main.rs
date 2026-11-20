@@ -71,6 +71,15 @@ fn main() -> Result<()> {
     check_sql(build)?;
     check_minilints(build)?;
 
+    let full_qt_tests = build.group_output("check:pytest:aqt");
+    let shared_checks: Vec<_> = build
+        .group_outputs("check")
+        .iter()
+        .filter(|output| *output != &full_qt_tests)
+        .cloned()
+        .collect();
+    build.add_dependency("check-local", shared_checks.into());
+
     build.trailing_text = "default pylib qt\n".into();
 
     build.write_build_file()?;

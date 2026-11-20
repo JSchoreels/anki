@@ -28,7 +28,7 @@ When adding a test:
 5. Give the test a name that explains the behavior being checked.
 6. Avoid dependencies on real time, network access, user data, or test order.
 7. For a bug fix, confirm that the test fails before the fix when practical.
-8. Run the relevant `just test-*` recipe and then `just check`.
+8. Run the relevant `just test-*` recipe and then `just check-local`.
 
 ## Purpose
 
@@ -453,12 +453,14 @@ just test-rust  # Rust
 just test-py    # Python library and Python/Qt
 just test-ts    # TypeScript/JavaScript/Svelte unit tests
 just test       # every stack (Rust, Python, TS)
-just check      # required final formatting, build, lint, and test validation
+just check-local # development checks with two Rust jobs and installer tests excluded
+just check       # full formatting, build, lint, and test validation
 ```
 
-During development, run the relevant stack frequently. Before considering a code
-change complete, run `just check`. See [Testing and Coverage](https://anki.mintlify.app/developers/testing-coverage)
-for coverage commands and [End-to-End Testing](https://anki.mintlify.app/developers/e2e-testing) when the
+During development, run the relevant stack tests frequently and use
+`just check-local` for a broader check. Run `just check` before preparing a
+draft release. Use [Testing and Coverage](https://anki.mintlify.app/developers/testing-coverage) for
+coverage commands and [End-to-End Testing](https://anki.mintlify.app/developers/e2e-testing) when the
 selected boundary requires Playwright.
 
 ## Review checklist
@@ -475,7 +477,7 @@ A test is ready when the answer to each relevant question is yes:
   refactoring?
 - For a bug fix, did the regression test fail before and pass after the fix when
   practical?
-- Do the relevant `just` test recipe and `just check` pass?
+- Do the relevant `just` test recipe and `just check-local` pass?
 
 ## Instructions for coding assistants
 

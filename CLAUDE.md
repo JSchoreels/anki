@@ -33,8 +33,11 @@ auto-rebuilds on changes (`just rebuild-web` triggers a one-off rebuild).
 
 ## Building/checking
 
-`just check` will format the code and run the main build & checks.
-Please do this as a final step before marking a task as completed.
+Use `just check-local` for routine development. It runs the main build,
+formatting, lint, and test checks with two Cargo jobs and two Rust test
+workers, and skips the installer tests.
+
+Use `just check` for full validation, including the installer tests.
 
 Run `just` (or `just --list`) to see all available commands.
 
@@ -46,13 +49,12 @@ unreleased section so the release notes remain current throughout development.
 
 ## Releases
 
-Push the exact release commit and wait for its complete remote CI matrix before
-dispatching a draft or public release. Use the `just release::draft` recipe for
-drafts; its local preflight waits for CI and only dispatches the GitHub release
-workflow after CI succeeds. If CI fails, fix the failure, push the new commit,
-and run the recipe again. Do not invoke `release.yml` directly or pass
-`--skip-ci-check=true` unless the user explicitly requests bypassing the CI
-gate.
+Run `just check` before preparing a draft or public release. Push the exact
+release commit and wait for all six platform checks in its CI matrix to pass.
+On `main`, use `just ci --branch main` to run the full matrix. Draft releases
+require a passing full matrix even when dispatched directly from GitHub. Use
+`just release::draft` for drafts so it can enforce this requirement before
+dispatch. If CI fails, fix the failure and rerun validation on the new commit.
 
 ## Quick iteration
 

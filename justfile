@@ -58,6 +58,10 @@ macos-portable:
 check:
     {{ ninja }} pylib qt check
 
+# Run development checks without installer tests, with two Cargo jobs and Rust test workers
+check-local:
+    {{ if os() == "windows" { "$env:CARGO_BUILD_JOBS='2'; $env:NEXTEST_TEST_THREADS='2'; " } else { "CARGO_BUILD_JOBS=2 NEXTEST_TEST_THREADS=2 " } }}{{ ninja }} pylib qt check-local
+
 # Run all tests (Rust, Python, TypeScript). Pass --coverage to enforce coverage, and --html to include HTML reports.
 [arg("coverage", long="coverage", value="--coverage")]
 [arg("html", long="html", value="--html")]

@@ -69,10 +69,11 @@ Use this process whenever this fork is aligned to a new official Anki release:
 5. Update `RELEASE.md`. Link the official upstream release and summarize both
    the upstream alignment and the fork-specific changes retained in the build.
 6. Run targeted tests and `just check`. Commit the merge, push the exact release
-   commit, and wait for its complete CI matrix to succeed.
-7. Dispatch `just release::draft --ref <branch>`. Its preflight waits for CI;
-   do not use `--skip-ci-check=true` unless a maintainer explicitly accepts the
-   risk. The workflow creates an unsigned draft tag named
+   commit, and wait for its complete CI matrix to succeed. For `main`, dispatch
+   the full matrix with `just ci --branch main`.
+7. Dispatch `just release::draft --ref <branch>`. The recipe and release
+   workflow both require a successful CI run with all six platform checks
+   passing on the release commit. The workflow creates an unsigned draft tag named
    `<version>.build.<run-number>`.
 8. Verify the workflow, installers, draft target commit, and release assets.
    Replace generated notes with notes that link the official release and explain
@@ -260,7 +261,7 @@ operations) and five boolean inputs:
 - `draft-release` creates the draft GitHub release.
 - `publish-testpypi` publishes wheels to TestPyPI.
 - `publish-pypi` publishes wheels to PyPI.
-- `skip-ci-check` skips the CI status check.
+- `skip-ci-check` skips the CI status check for release runs that create no draft.
 
 All booleans default to `false`. Non-release runs use the `.version`
 already in the repo, so builds work without a prepare step.
@@ -289,19 +290,23 @@ secrets.
 The `release.yml` workflow uses independent boolean inputs to control what gets
 signed and published:
 
-| Input              | Effect                                                                                                                                                                                                                                            |
-| ------------------ | ------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
-| `sign`             | Signs macOS and Windows artifacts. Requires the `release` environment. When false, those jobs upload unsigned artifacts and do not access signing secrets.                                                                                        |
-| `draft-release`    | Creates a draft GitHub release with generated release notes and installer artifacts. Requires passing CI (unless skipped), no duplicate tag/release, and `version` matching `.version`. Unsigned fork drafts receive an automatic build suffix.   |
-| `publish-testpypi` | Publishes wheels to TestPyPI. Requires the `release` environment.                                                                                                                                                                                 |
-| `publish-pypi`     | Publishes wheels to PyPI. Requires the `release` environment, passing CI (unless skipped), and `version` matching `.version`. It also runs and waits for the TestPyPI publish job first. It does not require signing unless `draft-release=true`. |
-| `skip-ci-check`    | Skips the CI status check. Useful for hotfix releases.                                                                                                                                                                                            |
-| `version`          | For `draft-release` or `publish-pypi`: must match `.version`. For build-only, signed-only, or TestPyPI-only runs: ignored (`.version` from the branch is used automatically).                                                                     |
+| Input              | Effect                                                                                                                                                                                                                                                                       |
+| ------------------ | ---------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
+| `sign`             | Signs macOS and Windows artifacts. Requires the `release` environment. When false, those jobs upload unsigned artifacts and do not access signing secrets.                                                                                                                   |
+| `draft-release`    | Creates a draft GitHub release with generated release notes and installer artifacts. Requires all six CI platform checks to pass on the release commit, a unique tag and release, and `version` matching `.version`. Unsigned fork drafts receive an automatic build suffix. |
+| `publish-testpypi` | Publishes wheels to TestPyPI. Requires the `release` environment.                                                                                                                                                                                                            |
+| `publish-pypi`     | Publishes wheels to PyPI. Requires the `release` environment, passing CI (unless skipped), and `version` matching `.version`. It also runs and waits for the TestPyPI publish job first. It does not require signing unless `draft-release=true`.                            |
+| `skip-ci-check`    | Skips the CI status check for release runs that create no draft.                                                                                                                                                                                                             |
+| `version`          | For `draft-release` or `publish-pypi`: must match `.version`. For build-only, signed-only, or TestPyPI-only runs: ignored (`.version` from the branch is used automatically).                                                                                                |
 
 ## Running releases with just
 
 The `release` module in `release.just` wraps both workflow dispatches. Release
 recipes take an explicit `--ref` pointing at the commit or branch to build.
+
+Before drafting, run `just check` on the release commit and ensure all six CI
+platform checks have passed on that commit. Use `just ci --branch <branch>` when
+the push-triggered CI run omits some platforms.
 
 Run `just --list --list-submodules` to see all available recipes and their
 arguments.

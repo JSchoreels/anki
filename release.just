@@ -8,8 +8,8 @@ notes version output:
     {{ python }} .github/scripts/release_notes.py --version "{{ version }}" --output "{{ output }}"
 
 [private]
-check-ci ref skip-ci-check:
-    {{ if skip-ci-check == "true" { "echo Skipping local CI preflight" } else { python + " .github/scripts/wait_for_ci.py --repo JSchoreels/anki --commit \"" + ref + "\"" } }}
+check-draft-ci ref:
+    {{ python }} .github/scripts/wait_for_ci.py --repo JSchoreels/anki --commit "{{ ref }}" --full-matrix
 
 # Prepare a release: validate version, check CI, and update .version on the branch
 [arg("version", long)]
@@ -32,11 +32,9 @@ build ref:
 
 # Build all platforms and create an unsigned draft GitHub release
 [arg("ref", long)]
-[arg("skip-ci-check", long)]
-draft ref="main" skip-ci-check="false": (check-ci ref skip-ci-check)
+draft ref="main": (check-draft-ci ref)
     gh workflow run release.yml --repo JSchoreels/anki --ref {{ ref }} \
         -f version="{{ version }}" \
-        -f skip-ci-check={{ skip-ci-check }} \
         -f sign=false \
         -f draft-release=true \
         -f publish-testpypi=false \

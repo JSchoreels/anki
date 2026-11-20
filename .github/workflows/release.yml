@@ -9,7 +9,7 @@ on:
         required: true
         type: string
       skip-ci-check:
-        description: "Skip the CI status check (for hotfix releases from non-main branches)"
+        description: "Skip the CI status check for a release run without a draft"
         default: false
         required: false
         type: boolean
@@ -148,14 +148,19 @@ jobs:
           GH_TOKEN: ${{ github.token }}
 
       - name: Check CI passed
-        if: ${{ steps.validate.outputs.public_release == 'true' && inputs.skip-ci-check != true }}
+        if: ${{ inputs['draft-release'] || (steps.validate.outputs.public_release == 'true' && inputs.skip-ci-check != true) }}
         run: |
+          matrix_args=()
+          if [ "$DRAFT_RELEASE" = "true" ]; then
+            matrix_args+=(--full-matrix)
+          fi
           python3 .github/scripts/wait_for_ci.py \
             --repo "$GITHUB_REPOSITORY" \
-            --commit "$COMMIT_SHA"
+            --commit "$COMMIT_SHA" "${matrix_args[@]}"
         env:
           GH_TOKEN: ${{ github.token }}
           COMMIT_SHA: ${{ github.sha }}
+          DRAFT_RELEASE: ${{ inputs['draft-release'] }}
 
       - name: Check for duplicate tag or release
         if: ${{ inputs['draft-release'] == true }}

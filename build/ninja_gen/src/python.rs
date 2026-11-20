@@ -252,13 +252,14 @@ impl BuildAction for RuffCheck {
 
 pub struct PythonTest {
     pub folder: &'static str,
+    pub ignore: Option<&'static str>,
     pub python_path: &'static [&'static str],
     pub deps: BuildInput,
 }
 
 impl BuildAction for PythonTest {
     fn command(&self) -> &str {
-        "$pytest -p no:cacheprovider $folder"
+        "$pytest -p no:cacheprovider $folder $ignore_arg"
     }
 
     fn files(&mut self, build: &mut impl crate::build::FilesHandle) {
@@ -266,12 +267,21 @@ impl BuildAction for PythonTest {
         build.add_inputs("pytest", inputs![":pyenv:pytest"]);
         build.add_variable("folder", self.folder);
         build.add_variable(
+            "ignore_arg",
+            self.ignore
+                .map(|path| format!("--ignore={path}"))
+                .unwrap_or_default(),
+        );
+        build.add_variable(
             "pythonpath",
             self.python_path.join(if cfg!(windows) { ";" } else { ":" }),
         );
         build.add_env_var("PYTHONPATH", "$pythonpath");
         build.add_env_var("ANKI_TEST_MODE", "1");
-        let hash = simple_hash(self.folder);
+        let hash = match self.ignore {
+            Some(path) => simple_hash((self.folder, path)),
+            None => simple_hash(self.folder),
+        };
         build.add_output_stamp(format!("tests/python_pytest.{hash}"));
     }
 

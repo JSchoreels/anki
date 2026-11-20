@@ -4,8 +4,14 @@
 from subprocess import CompletedProcess
 
 import pytest
-
-from wait_for_ci import resolve_commit, run_has_failed, run_has_passed, select_ci_run
+from wait_for_ci import (
+    PLATFORM_CHECKS,
+    resolve_commit,
+    run_has_failed,
+    run_has_passed,
+    select_ci_run,
+    wait_for_ci,
+)
 
 
 def test_full_commit_sha_does_not_require_resolution() -> None:
@@ -71,6 +77,51 @@ def test_selects_push_or_dispatch_run() -> None:
 
 def test_ignores_missing_ci_run() -> None:
     assert select_ci_run([{"event": "pull_request"}]) is None
+
+
+@pytest.mark.parametrize("full_run_available", [False, True])
+def test_draft_requires_all_platform_checks(
+    monkeypatch: pytest.MonkeyPatch, full_run_available: bool
+) -> None:
+    runs = [
+        {
+            "databaseId": 2,
+            "event": "push",
+            "status": "completed",
+            "conclusion": "success",
+        }
+    ]
+    if full_run_available:
+        runs.append(
+            {
+                "databaseId": 1,
+                "event": "workflow_dispatch",
+                "status": "completed",
+                "conclusion": "success",
+            }
+        )
+
+    def jobs(_repo: str | None, run_id: int) -> list[dict[str, str]]:
+        return [
+            {
+                "name": name,
+                "conclusion": (
+                    "skipped"
+                    if run_id == 2 and name == "check (windows-arm)"
+                    else "success"
+                ),
+            }
+            for name in sorted(PLATFORM_CHECKS)
+        ]
+
+    monkeypatch.setattr("wait_for_ci.fetch_ci_runs", lambda *_: runs)
+    monkeypatch.setattr("wait_for_ci.fetch_ci_jobs", jobs)
+
+    assert wait_for_ci(None, "ci.yml", "a" * 40, 0, 0)
+    assert (
+        wait_for_ci(None, "ci.yml", "a" * 40, 0, 0, full_matrix=True)
+        is full_run_available
+    )
 
 
 def test_success_requires_completed_successful_run() -> None:

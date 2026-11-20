@@ -87,6 +87,7 @@ pub fn check_pylib(build: &mut Build) -> Result<()> {
         "check:pytest:pylib",
         PythonTest {
             folder: "pylib/tests",
+            ignore: None,
             python_path: &["$builddir/pylib"],
             deps: inputs![":pylib:anki", glob!["pylib/{anki,tests}/**"]],
         },
