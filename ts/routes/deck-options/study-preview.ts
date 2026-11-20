@@ -6,7 +6,9 @@ import {
     DeckConfig_Config_NewCardGatherPriority as Gather,
     DeckConfig_Config_NewCardSortOrder as NewOrder,
     DeckConfig_Config_ReviewCardOrder as ReviewOrder,
+    DeckConfig_Config_ReviewMix as ReviewMix,
     type StudySessionPreview_Card as Card,
+    StudySessionPreview_DailyLimit as DailyLimit,
     StudySessionPreview_Kind as Kind,
     StudySessionPreview_Reason as Reason,
 } from "@generated/anki/deck_config_pb";
@@ -28,8 +30,8 @@ export function previewSample(cards: Card[], width: number): Card[] {
     const priority = [
         scheduled[0],
         cards.find((c) => !c.position),
-        last(scheduled.filter((c) => c.kind === Kind.REVIEW)),
         scheduled.find((c) => c.kind === Kind.NEW || c.kind === Kind.SUSPENDED),
+        last(scheduled.filter((c) => c.kind === Kind.REVIEW)),
         last(scheduled),
         last(scheduled.filter((c) => c.kind === Kind.NEW || c.kind === Kind.SUSPENDED)),
         ...scheduled.slice(1, 5),
@@ -74,8 +76,7 @@ export function usesSameDayOrder(config: DeckConfig_Config, fsrs: boolean): bool
         ].includes(config.reviewOrder);
 }
 
-export function selectionSummary(cards: Card[], config: DeckConfig_Config): string {
-    if (!cards.some((card) => card.gatherPosition)) { return ""; }
+export function selectionSummary(config: DeckConfig_Config, newCardsIgnoreReviewLimit: boolean): string {
     const order = config.newCardGatherPriority;
     const selected = choice(newGatherPriorityChoices(), order);
     const parts = [tr.deckConfigStudyWhySelection({ order: selected })];
@@ -87,7 +88,11 @@ export function selectionSummary(cards: Card[], config: DeckConfig_Config): stri
             tr.deckConfigStudyWhyNewOrder({ order: choice(newSortOrderChoices(true), config.newCardSortOrder) }),
         );
     }
-    parts.push(tr.deckConfigStudyWhyMix({ order: choice(reviewMixChoices(), config.newMix) }));
+    parts.push(
+        newCardsIgnoreReviewLimit && config.newMix === ReviewMix.AFTER_REVIEWS
+            ? tr.deckConfigStudyWhyAfterReviews()
+            : tr.deckConfigStudyWhyMix({ order: choice(reviewMixChoices(), config.newMix) }),
+    );
     return parts.join(" ");
 }
 
@@ -114,7 +119,8 @@ export function explainCard(
         return card.due > 0 ? tr.deckConfigStudyDueIn({ days: card.due }) : tr.deckConfigStudyDueToday();
     };
     const details: string[] = [];
-    if (card.kind === Kind.NEW || card.kind === Kind.SUSPENDED) {
+    const usesNewSlot = card.kind === Kind.NEW || card.kind === Kind.SUSPENDED;
+    if (usesNewSlot) {
         const order = config.newCardGatherPriority;
         if (card.gatherPosition) { details.push(tr.deckConfigStudyWhyGather({ rank: String(card.gatherPosition) })); }
         if (order === Gather.NOTE_FIELD_ASCENDING || order === Gather.NOTE_FIELD_DESCENDING) {
@@ -169,7 +175,16 @@ export function explainCard(
         );
     }
     const reasons: Partial<Record<Reason, () => string>> = {
-        [Reason.DAILY_LIMIT]: tr.deckConfigStudyWhyLimit,
+        [Reason.DAILY_LIMIT]: () => {
+            switch (card.dailyLimit) {
+                case DailyLimit.NEW_CARDS:
+                    return tr.deckConfigStudyWhyNewLimit();
+                case DailyLimit.REVIEWS:
+                    return usesNewSlot ? tr.deckConfigStudyWhySharedLimit() : tr.deckConfigStudyWhyReviewLimit();
+                default:
+                    return tr.deckConfigStudyWhyLimit();
+            }
+        },
         [Reason.SIBLING]: tr.deckConfigStudyWhySibling,
         [Reason.SUSPENDED]: tr.deckConfigStudyWhyExcluded,
         [Reason.MINIMUM]: tr.deckConfigStudyWhyMinimum,

@@ -7,6 +7,7 @@ use std::collections::HashSet;
 
 use anki_proto::deck_config::preview_study_session_request::Source;
 use anki_proto::deck_config::study_session_preview::Card as PreviewCard;
+use anki_proto::deck_config::study_session_preview::DailyLimit;
 use anki_proto::deck_config::study_session_preview::Kind;
 use anki_proto::deck_config::study_session_preview::Reason;
 use anki_proto::deck_config::PreviewStudySessionRequest;
@@ -21,6 +22,7 @@ use crate::cloze::strip_clozes;
 use crate::collection::CollectionBuilder;
 use crate::deckconfig::update_deck_limits;
 use crate::deckconfig::UpdateDeckConfigsRequest;
+use crate::decks::limits::LimitKind;
 use crate::notetype::NoteField;
 use crate::prelude::*;
 use crate::scheduler::queue::QueueEntryKind;
@@ -29,7 +31,7 @@ use crate::text::strip_html;
 
 #[derive(Debug, Default)]
 pub(super) struct PreviewTrace {
-    pub(super) limit_card: Option<CardId>,
+    pub(super) new_limit_card: Option<(CardId, LimitKind)>,
     pub(super) review_limit_card: Option<CardId>,
     pub(super) sibling: Option<CardId>,
     pub(super) minimum_reviews: HashSet<CardId>,
@@ -126,6 +128,18 @@ impl Collection {
             .collect();
         let queues = builder.build(self.learn_ahead_secs() as i64);
         let entries: Vec<_> = queues.iter().collect();
+        let mut preview = StudySessionPreview {
+            total: entries.len() as u32,
+            has_rwkv_scores: scores.is_some(),
+            ..Default::default()
+        };
+        for entry in &entries {
+            match entry.kind() {
+                QueueEntryKind::New => preview.new_count += 1,
+                QueueEntryKind::Review => preview.review_count += 1,
+                QueueEntryKind::Learning => preview.learning_count += 1,
+            }
+        }
         // Return a bounded sample, retaining actual positions for gaps.
         let mut indices: BTreeSet<_> = (0..entries.len().min(12)).collect();
         indices.extend(entries.len().checked_sub(1));
@@ -137,7 +151,7 @@ impl Collection {
             indices.extend(entries.iter().position(|entry| entry.kind() == kind));
             indices.extend(entries.iter().rposition(|entry| entry.kind() == kind));
         }
-        let mut cards = Vec::with_capacity(indices.len() + 1);
+        preview.cards.reserve(indices.len() + 1);
         for i in indices {
             let id = entries[i].card_id();
             let reason = if trace.minimum_reviews.contains(&id) {
@@ -152,12 +166,13 @@ impl Collection {
                 .as_ref()
                 .and_then(|scores| scores.get(&id))
                 .map(|score| score.retrievability);
-            cards.push(card);
+            preview.cards.push(card);
         }
-        let held = trace
-            .limit_card
-            .or(trace.review_limit_card)
-            .map(|id| (id, Reason::DailyLimit))
+        let limit_card = trace
+            .new_limit_card
+            .or_else(|| trace.review_limit_card.map(|id| (id, LimitKind::Review)));
+        let held = limit_card
+            .map(|(id, _)| (id, Reason::DailyLimit))
             .or_else(|| trace.sibling.map(|id| (id, Reason::Sibling)));
         let held = match held {
             Some(card) => Some(card),
@@ -182,13 +197,14 @@ impl Collection {
             }
         };
         if let Some((id, reason)) = held {
-            cards.push(self.describe_preview_card(id, timing, &field, reason)?);
+            let mut card = self.describe_preview_card(id, timing, &field, reason)?;
+            card.daily_limit = limit_card.map(|(_, kind)| match kind {
+                LimitKind::New => DailyLimit::NewCards as i32,
+                LimitKind::Review => DailyLimit::Reviews as i32,
+            });
+            preview.cards.push(card);
         }
-        Ok(StudySessionPreview {
-            total: entries.len() as u32,
-            cards,
-            has_rwkv_scores: scores.is_some(),
-        })
+        Ok(preview)
     }
 
     fn describe_preview_card(
@@ -342,7 +358,162 @@ mod tests {
     use anki_proto::deck_config::UpdateDeckConfigsRequest as Options;
 
     use super::*;
+    use crate::config::BoolKey;
+    use crate::deckconfig::NewCardGatherPriority;
+    use crate::deckconfig::ReviewCardOrder;
+    use crate::deckconfig::ReviewMix;
     use crate::deckconfig::SuspendedCardOrder;
+
+    #[test]
+    fn new_slots_follow_the_remaining_reviews_when_the_review_limit_is_ignored() -> Result<()> {
+        let mut col = Collection::new();
+        for _ in 0..101 {
+            CardAdder::new().due_dates(["0"]).add(&mut col);
+        }
+        for (front, frequency) in [("A", "1100"), ("B", "1325"), ("C", "1331")] {
+            let note = NoteAdder::basic(&mut col)
+                .fields(&[front, frequency])
+                .add(&mut col);
+            let mut card = col.storage.all_cards_of_note(note.id)?.remove(0);
+            card.queue = CardQueue::Suspended;
+            col.storage.update_card(&card)?;
+        }
+        let mut preset = col.get_deck_config(DeckConfigId(1), false)?.unwrap();
+        preset.inner.new_per_day = 2;
+        preset.inner.reviews_per_day = 100;
+        preset.inner.rwkv_review_instant_order_enabled = true;
+        preset.inner.rwkv_review_minimum_reviews_per_day = 100;
+        preset.inner.new_mix = ReviewMix::AfterReviews as i32;
+        preset.inner.include_suspended_cards_in_learnable_pool = true;
+        preset.inner.new_card_gather_priority = NewCardGatherPriority::NoteFieldAscending as i32;
+        preset.inner.new_card_gather_field = "Back".into();
+        col.add_or_update_deck_config(&mut preset)?;
+        col.set_config_bool(BoolKey::NewCardsIgnoreReviewLimit, true, false)?;
+        let mut options = Options {
+            target_deck_id: 1,
+            configs: vec![preset.into()],
+            new_cards_ignore_review_limit: true,
+            ..Default::default()
+        };
+        let preview = |col: &mut Collection, options: &Options| {
+            col.study_session_preview(PreviewStudySessionRequest {
+                options: Some(options.clone()),
+                source: Source::Deck as i32,
+            })
+        };
+        for (to_answer, remaining_reviews) in [(0, 100), (100, 0)] {
+            for _ in 0..to_answer {
+                col.answer_easy();
+            }
+            let sample = preview(&mut col, &options)?;
+            let reviewer = col.get_queued_cards(103, false, true)?;
+            assert_eq!(
+                (reviewer.review_count, reviewer.new_count),
+                (remaining_reviews, 2)
+            );
+            assert_eq!(
+                (sample.review_count, sample.new_count, sample.learning_count),
+                (remaining_reviews as u32, 2, 0)
+            );
+            assert_eq!(sample.total as usize, remaining_reviews + 2);
+            for card in sample.cards.iter().filter(|card| card.position > 0) {
+                assert_eq!(
+                    card.id,
+                    reviewer.cards[card.position as usize - 1].card.id.0
+                );
+            }
+            let pool: Vec<_> = sample
+                .cards
+                .iter()
+                .filter(|card| card.kind() == Kind::Suspended)
+                .map(|card| (card.position as usize, card.label.as_str()))
+                .collect();
+            assert_eq!(
+                pool,
+                [
+                    (remaining_reviews + 1, "A"),
+                    (remaining_reviews + 2, "B"),
+                    (0, "C")
+                ]
+            );
+            assert_eq!(
+                sample.cards.last().unwrap().daily_limit,
+                Some(DailyLimit::NewCards as i32)
+            );
+        }
+        options.new_cards_ignore_review_limit = false;
+        let capped = preview(&mut col, &options)?;
+        assert_eq!(capped.total, 0);
+        assert_eq!(capped.cards[0].label, "A");
+        assert_eq!(
+            capped.cards[0].daily_limit,
+            Some(DailyLimit::Reviews as i32)
+        );
+        Ok(())
+    }
+
+    #[test]
+    fn parent_review_limit_can_leave_a_single_new_slot_in_a_subdeck() -> Result<()> {
+        use anki_proto::deck_config::deck_configs_for_update::current_deck::Limits;
+
+        let mut col = Collection::new();
+        let child = DeckAdder::new("Default::Child").add(&mut col);
+        CardAdder::new().due_dates(["0"]).add(&mut col);
+        CardAdder::new().deck(child.id).add(&mut col);
+        let last = CardAdder::new().deck(child.id).add(&mut col)[0].id;
+        let preset = col.get_deck_config(DeckConfigId(1), false)?.unwrap();
+        let preview = col.study_session_preview(PreviewStudySessionRequest {
+            options: Some(Options {
+                target_deck_id: 1,
+                configs: vec![preset.into()],
+                limits: Some(Limits {
+                    review: Some(2),
+                    ..Default::default()
+                }),
+                ..Default::default()
+            }),
+            source: Source::Deck as i32,
+        })?;
+        assert_eq!((preview.review_count, preview.new_count), (1, 1));
+        let held = preview.cards.last().unwrap();
+        assert_eq!(
+            (held.id, held.position, held.daily_limit),
+            (last.0, 0, Some(DailyLimit::Reviews as i32))
+        );
+        Ok(())
+    }
+
+    #[test]
+    fn preview_explains_the_review_cutoff_with_instant_scores() -> Result<()> {
+        let mut col = Collection::new();
+        let first = CardAdder::new().due_dates(["0"]).add(&mut col)[0].id;
+        let next = CardAdder::new().due_dates(["2"]).add(&mut col)[0].id;
+        col.set_rwkv_review_queue_scores(DeckId(1), HashMap::from([(first, 0.1), (next, 0.2)]))?;
+        let mut preset = col.get_deck_config(DeckConfigId(1), false)?.unwrap();
+        preset.inner.reviews_per_day = 1;
+        preset.inner.rwkv_review_instant_order_enabled = true;
+        for order in [
+            ReviewCardOrder::Day,
+            ReviewCardOrder::RetrievabilityAscending,
+        ] {
+            preset.inner.review_order = order as i32;
+            let preview = col.study_session_preview(PreviewStudySessionRequest {
+                options: Some(Options {
+                    target_deck_id: 1,
+                    configs: vec![preset.clone().into()],
+                    ..Default::default()
+                }),
+                source: Source::Deck as i32,
+            })?;
+            assert_eq!(preview.review_count, 1);
+            assert_eq!(preview.cards[0].id, first.0);
+            assert_eq!(
+                (preview.cards[1].id, preview.cards[1].daily_limit),
+                (next.0, Some(DailyLimit::Reviews as i32))
+            );
+        }
+        Ok(())
+    }
 
     #[test]
     fn an_empty_queue_explains_a_buried_card_or_a_future_learning_step() -> Result<()> {

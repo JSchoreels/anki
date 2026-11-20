@@ -39,7 +39,7 @@ test("study options preview the draft, retain it across layouts, and save the we
     await page.getByRole("spinbutton", { name: "New cards/day", exact: true }).fill("5");
     await expect(preview.getByRole("button", { name: /Postponed.*N006/ })).toBeVisible();
     const reasons = preview.getByRole("list", { name: "Why this order?" });
-    await expect(reasons.getByText("Outside the remaining daily allowance.", { exact: false })).toBeVisible();
+    await expect(reasons.getByText("Beyond today’s new-card limit.", { exact: false })).toBeVisible();
     const lines = await reasons.getByRole("listitem").count();
     await preview.getByRole("button", { name: /Postponed.*N006/ }).click();
     await expect(reasons.getByRole("listitem")).toHaveCount(lines);
@@ -71,6 +71,56 @@ test("study options preview the draft, retain it across layouts, and save the we
     await expect(friday).toHaveAttribute("aria-valuetext", "25%");
     await page.getByRole("button", { name: "Save", exact: true }).click();
     await expect.poll(() => saved?.configs.at(-1)?.config?.easyDaysPercentages[4]).toBe(0.25);
+});
+
+test("show after reviews keeps new-card slots when the review limit is reached", async ({ page }) => {
+    await page.setViewportSize({ width: 1400, height: 900 });
+    await page.goto("/deck-options/1");
+    const preview = page.getByRole("region", { name: "Session Preview" });
+    await page.getByRole("combobox", { name: "Preview cards from" }).click();
+    await page.getByRole("option", { name: "Example · 120 new cards" }).click();
+    await page.getByRole("combobox", { name: "Show new cards" }).click();
+    await page.getByRole("option", { name: "Show after reviews" }).click();
+    const ignore = page.getByRole("checkbox", { name: "New cards ignore review limit" });
+    const newLimit = page.getByRole("spinbutton", { name: "New cards/day", exact: true });
+    const reviewLimit = page.getByRole("spinbutton", { name: "Maximum reviews/day" });
+    await ignore.check();
+    await newLimit.fill("100");
+    await reviewLimit.fill("100");
+    const counts = async () =>
+        (await preview.locator("[aria-live=polite]").innerText())
+            .replace(/\p{Cf}/gu, "").replace(/\s+/g, " ").trim();
+    await expect.poll(counts).toBe(
+        "104 cards in the current queue · 2 reviews · 100 new-card slots · 2 learning steps",
+    );
+    await expect(preview.getByText("New cards follow the reviews that fit today’s limit", { exact: false }))
+        .toBeVisible();
+    const lastRank = preview.getByRole("list", { name: "Why this order?" }).getByText("104", { exact: true });
+    await expect(lastRank).toBeVisible();
+    expect(
+        await lastRank.evaluate((node) => {
+            const range = document.createRange();
+            range.selectNodeContents(node);
+            return range.getClientRects().length;
+        }),
+    ).toBe(1);
+    await newLimit.fill("2");
+    await reviewLimit.fill("0");
+    await expect.poll(counts).toBe(
+        "3 cards in the current queue · 0 reviews · 2 new-card slots · 1 learning step",
+    );
+    await expect(preview.getByRole("button", { name: /2 · New.*N001/ })).toBeVisible();
+    await expect(preview.getByRole("button", { name: /3 · New.*N002/ })).toBeVisible();
+    await expect(preview.getByRole("button", { name: /Postponed.*N003/ })).toBeVisible();
+    await ignore.uncheck();
+    await expect.poll(counts).toContain("0 new-card slots");
+    await expect(preview.getByText("Today’s review limit also applies to new cards.", { exact: false })).toBeVisible();
+    await ignore.check();
+    await reviewLimit.fill("100");
+    await page.setViewportSize({ width: 400, height: 900 });
+    await expect.poll(counts).toContain("2 new-card slots");
+    await expect(preview.getByRole("button", { name: /New.*N001/ })).toBeVisible();
+    await expect(preview.getByRole("button", { name: /Postponed.*N003/ })).toBeVisible();
 });
 
 test("a numeric field orders the whole mixed pool or each priority group", async ({ page }) => {

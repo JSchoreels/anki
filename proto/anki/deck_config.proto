@@ -67,6 +67,10 @@ message StudySessionPreview {
     REASON_MINIMUM = 6;
     REASON_BURIED = 7;
   }
+  enum DailyLimit {
+    DAILY_LIMIT_NEW_CARDS = 0;
+    DAILY_LIMIT_REVIEWS = 1;
+  }
   message Card {
     int64 id = 1;
     string label = 2;
@@ -79,11 +83,15 @@ message StudySessionPreview {
     uint32 interval = 9;
     optional float recall = 10;
     uint32 template_number = 11;
+    optional DailyLimit daily_limit = 12;
   }
   uint32 total = 1;
   repeated Card cards = 2;
   // True when the scheduler has Instant scores for the requested deck.
   bool has_rwkv_scores = 3;
+  uint32 new_count = 4;
+  uint32 review_count = 5;
+  uint32 learning_count = 6;
 }
 
 message GetRetentionWorkloadRequest {

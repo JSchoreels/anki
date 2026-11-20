@@ -151,6 +151,14 @@ License: GNU AGPL, version 3 or later; http://www.gnu.org/licenses/agpl.html
         {:else}
             <p class="caption" aria-live="polite">
                 {tr.deckConfigStudyPreviewCount({ count: preview.total })}
+                {#if preview.newCount || preview.reviewCount || preview.learningCount}
+                    · {tr.deckConfigStudyQueuedReviews({ count: preview.reviewCount })}
+                    · {tr.deckConfigStudyQueuedNew({ count: preview.newCount })}
+                    {#if preview.learningCount}
+                        · {tr.deckConfigStudyQueuedLearning({
+                            count: preview.learningCount,
+                        })}{/if}
+                {/if}
             </p>
             {#if !preview.total}<p>{tr.deckConfigStudyPreviewEmpty()}</p>{/if}
             {#if shown.length}
@@ -180,9 +188,16 @@ License: GNU AGPL, version 3 or later; http://www.gnu.org/licenses/agpl.html
                 </ol>
                 <h2>{tr.deckConfigStudyWhyTitle()}</h2>
                 {#if preview.cards.some((c) => c.gatherPosition)}<p class="caption">
-                        {selectionSummary(preview.cards, displayedConfig)}
+                        {selectionSummary(
+                            displayedConfig,
+                            previous?.options?.newCardsIgnoreReviewLimit ?? false,
+                        )}
                     </p>{/if}
-                <ul class="reasons" aria-label={tr.deckConfigStudyWhyTitle()}>
+                <ul
+                    class="reasons"
+                    aria-label={tr.deckConfigStudyWhyTitle()}
+                    style:--position-width={`${Math.max(2, String(preview.total).length)}ch`}
+                >
                     {#each shown as card, index (card.id)}
                         {@const gap = gapBefore(shown, index, preview.total)}
                         {#if gap > 0}<li class="omitted">
@@ -283,11 +298,15 @@ License: GNU AGPL, version 3 or later; http://www.gnu.org/licenses/agpl.html
     }
     .reasons li {
         display: grid;
-        grid-template-columns: 2.5ch minmax(4rem, 16%) 1fr;
+        grid-template-columns: var(--position-width) minmax(4rem, 16%) 1fr;
         gap: 0.55rem;
         align-items: baseline;
         padding: 0.22rem 0.35rem;
         border-radius: 0.25rem;
+    }
+    .reasons li > :first-child {
+        white-space: nowrap;
+        font-variant-numeric: tabular-nums;
     }
     .reasons strong {
         font-weight: 550;
@@ -302,7 +321,7 @@ License: GNU AGPL, version 3 or later; http://www.gnu.org/licenses/agpl.html
         box-shadow: inset 2px 0 var(--border-focus);
     }
     .reasons .omitted {
-        grid-template-columns: 2.5ch 1fr;
+        grid-template-columns: var(--position-width) 1fr;
     }
     h2 {
         font-size: 0.95rem;
@@ -310,7 +329,7 @@ License: GNU AGPL, version 3 or later; http://www.gnu.org/licenses/agpl.html
     }
     @media (max-width: 420px) {
         .reasons li {
-            grid-template-columns: 2ch minmax(3rem, 22%) 1fr;
+            grid-template-columns: var(--position-width) minmax(3rem, 22%) 1fr;
             gap: 0.3rem;
         }
     }

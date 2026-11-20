@@ -977,6 +977,18 @@ deck-config-study-preview-count = { $count ->
     [one] 1 card in the current queue
    *[other] { $count } cards in the current queue
 }
+deck-config-study-queued-reviews = { $count ->
+    [one] 1 review
+   *[other] { $count } reviews
+}
+deck-config-study-queued-new = { $count ->
+    [one] 1 new-card slot
+   *[other] { $count } new-card slots
+}
+deck-config-study-queued-learning = { $count ->
+    [one] 1 learning step
+   *[other] { $count } learning steps
+}
 deck-config-study-preview-empty = No cards are ready to study with these settings.
 deck-config-study-preview-loading = Building the preview…
 deck-config-study-preview-failed = The session preview could not be loaded.
@@ -1000,6 +1012,7 @@ deck-config-study-why-field = { $field } = { $value }.
 deck-config-study-missing-field = empty or missing
 deck-config-study-why-new-order = Selected cards follow “{ $order }”.
 deck-config-study-why-mix = Session placement follows “{ $order }”.
+deck-config-study-why-after-reviews = New cards follow the reviews that fit today’s limit and use their own daily allowance.
 deck-config-study-why-review = Ordered by “{ $order }”.
 deck-config-study-due-today = Due today.
 deck-config-study-overdue = { $days } d overdue.
@@ -1008,6 +1021,9 @@ deck-config-study-why-step-now = Ready for its next learning step.
 deck-config-study-why-step-later = Next step in { $minutes } min.
 deck-config-study-why-suspended = Uses a new-card slot and will be unsuspended when answered.
 deck-config-study-why-limit = Outside the remaining daily allowance.
+deck-config-study-why-new-limit = Beyond today’s new-card limit.
+deck-config-study-why-review-limit = Beyond today’s review limit.
+deck-config-study-why-shared-limit = Today’s review limit also applies to new cards. All review slots are used or already queued.
 deck-config-study-why-sibling = Another card from the same note takes priority today.
 deck-config-study-why-buried = Buried until the next study day.
 deck-config-study-why-excluded = Suspended and outside the current selection.

@@ -83,7 +83,7 @@ impl QueueBuilder {
     }
 
     fn gather_review_cards_by_rwkv_priority(&mut self, col: &mut Collection) -> Result<()> {
-        if self.review_limit_stops_gathering() {
+        if self.review_gather_finished() {
             return Ok(());
         }
 
@@ -133,7 +133,7 @@ impl QueueBuilder {
         let mut chunk_size = (self.limits.remaining_root_limit(LimitKind::Review) as usize)
             .max(RWKV_REVIEW_GATHER_MIN_CHUNK_SIZE)
             .min(remaining_scores.len());
-        while !remaining_scores.is_empty() && !self.review_limit_stops_gathering() {
+        while !remaining_scores.is_empty() && !self.review_gather_finished() {
             if chunk_size < remaining_scores.len() {
                 remaining_scores.select_nth_unstable_by(chunk_size, compare_scores);
             }
@@ -157,7 +157,7 @@ impl QueueBuilder {
             };
 
             for &(card_id, score) in score_chunk.iter() {
-                if self.review_limit_stops_gathering() {
+                if self.review_gather_finished() {
                     break;
                 }
                 let Some(card) = cards_by_id.get(&card_id).copied() else {
@@ -206,7 +206,7 @@ impl QueueBuilder {
     }
 
     fn gather_review_cards_by_configured_order(&mut self, col: &mut Collection) -> Result<()> {
-        if self.review_limit_stops_gathering() {
+        if self.review_gather_finished() {
             return Ok(());
         }
 
@@ -256,7 +256,7 @@ impl QueueBuilder {
         )?;
 
         for (card, is_due) in cards.iter().copied() {
-            if self.review_limit_stops_gathering() {
+            if self.review_gather_finished() {
                 break;
             }
             let eligible = if scored_card_ids.contains(&card.id) {
@@ -464,6 +464,15 @@ impl QueueBuilder {
             && self.limits.root_limit_reached(LimitKind::Review)
     }
 
+    // The preview also needs one eligible review that the limit kept out.
+    fn review_gather_finished(&self) -> bool {
+        self.review_limit_stops_gathering()
+            && self
+                .preview
+                .as_ref()
+                .is_none_or(|trace| trace.review_limit_card.is_some())
+    }
+
     fn add_rwkv_review_card(&mut self, card: DueCard) -> Result<()> {
         self.add_due_card_respecting_review_limit(card)
     }
@@ -526,7 +535,7 @@ impl QueueBuilder {
         col: &mut Collection,
         scored_card_ids: &HashSet<CardId>,
     ) -> Result<()> {
-        if self.review_limit_stops_gathering() {
+        if self.review_gather_finished() {
             return Ok(());
         }
 
@@ -541,7 +550,7 @@ impl QueueBuilder {
                 if scored_card_ids.contains(&card.id) {
                     return Ok(true);
                 }
-                if self.review_limit_stops_gathering() {
+                if self.review_gather_finished() {
                     return Ok(false);
                 }
                 self.add_due_card_respecting_review_limit(card)?;
@@ -675,12 +684,7 @@ impl QueueBuilder {
     }
 
     fn gather_due_cards(&mut self, col: &mut Collection, kind: DueCardKind) -> Result<()> {
-        if self.review_limit_stops_gathering()
-            && self
-                .preview
-                .as_ref()
-                .is_none_or(|trace| trace.review_limit_card.is_some())
-        {
+        if self.review_gather_finished() {
             return Ok(());
         }
         col.storage.for_each_due_card_in_active_decks(
@@ -834,9 +838,9 @@ impl QueueBuilder {
 
     fn gather_new_card_if_eligible(&mut self, card: NewCard) -> Result<bool> {
         let deck = card.current_deck_id;
-        if self.limits.limit_reached(deck, LimitKind::New)? {
+        if let Some(limit) = self.limits.exhausted_new_limit(deck)? {
             if let Some(trace) = &mut self.preview {
-                trace.limit_card.get_or_insert(card.id);
+                trace.new_limit_card.get_or_insert((card.id, limit));
             }
             return Ok(false);
         }
@@ -854,7 +858,7 @@ impl QueueBuilder {
     fn needs_preview_boundary(&self) -> bool {
         self.preview
             .as_ref()
-            .is_some_and(|trace| trace.limit_card.is_none())
+            .is_some_and(|trace| trace.new_limit_card.is_none())
     }
 
     fn new_gather_finished(&self) -> bool {

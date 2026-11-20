@@ -16,7 +16,7 @@ use crate::deckconfig::DeckConfig;
 use crate::deckconfig::DeckConfigId;
 use crate::prelude::*;
 
-#[derive(Debug, Clone, Copy)]
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub(crate) enum LimitKind {
     Review,
     New,
@@ -55,6 +55,8 @@ pub(crate) struct RemainingLimits {
     pub(crate) review: u32,
     pub(crate) new: u32,
     pub(crate) cap_new_to_review: bool,
+    /// Which daily allowance supplied the remaining new-card slots.
+    new_limit_kind: LimitKind,
 }
 
 impl RemainingLimits {
@@ -105,14 +107,18 @@ impl RemainingLimits {
         new_limit -= new_today_count;
         if !new_cards_ignore_review_limit {
             review_limit -= new_today_count;
-            new_limit = new_limit.min(review_limit);
         }
 
-        Self {
+        let mut limits = Self {
             review: review_limit.max(0) as u32,
             new: new_limit.max(0) as u32,
             cap_new_to_review: !new_cards_ignore_review_limit,
+            new_limit_kind: LimitKind::New,
+        };
+        if limits.cap_new_to_review {
+            limits.cap_new(limits.review, LimitKind::Review);
         }
+        limits
     }
 
     pub(crate) fn get(&self, kind: LimitKind) -> u32 {
@@ -124,7 +130,14 @@ impl RemainingLimits {
 
     pub(crate) fn cap_to(&mut self, limits: RemainingLimits) {
         self.review = self.review.min(limits.review);
-        self.new = self.new.min(limits.new);
+        self.cap_new(limits.new, limits.new_limit_kind);
+    }
+
+    fn cap_new(&mut self, available: u32, kind: LimitKind) {
+        if available < self.new {
+            self.new = available;
+            self.new_limit_kind = kind;
+        }
     }
 
     /// True if some limit was decremented to 0.
@@ -134,7 +147,7 @@ impl RemainingLimits {
             LimitKind::Review => {
                 self.review = self.review.saturating_sub(count);
                 if self.cap_new_to_review {
-                    self.new = self.new.min(self.review);
+                    self.cap_new(self.review, LimitKind::Review);
                 }
             }
             LimitKind::New => self.new = self.new.saturating_sub(count),
@@ -162,6 +175,7 @@ impl Default for RemainingLimits {
             review: 9999,
             new: 9999,
             cap_new_to_review: false,
+            new_limit_kind: LimitKind::New,
         }
     }
 }
@@ -375,6 +389,11 @@ impl LimitTreeMap {
 
     pub(crate) fn limit_reached(&self, deck_id: DeckId, kind: LimitKind) -> Result<bool> {
         Ok(self.get_deck_limits(deck_id)?.get(kind) == 0)
+    }
+
+    pub(crate) fn exhausted_new_limit(&self, deck_id: DeckId) -> Result<Option<LimitKind>> {
+        let limits = self.get_deck_limits(deck_id)?;
+        Ok((limits.new == 0).then_some(limits.new_limit_kind))
     }
 
     pub(crate) fn decrement_deck_and_parent_limits(
