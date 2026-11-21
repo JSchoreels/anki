@@ -19,13 +19,18 @@ const TINY_MODEL_PATH: &str = "../qt/aqt/rwkv_inference/sm101/weights.f32.bin";
 /// The Tiny two-head model (SM106): the tiny plan with a trained curve head.
 const TINY_TWO_HEAD_MODEL_PATH: &str = "../qt/aqt/rwkv_inference/sm106/weights.f32.bin";
 
-/// The engine's test model and, in the small engine, the tiny model: every
-/// state precision must run both layer plans.
+/// The six-layer Tiny two-head model (SM130): the six-layer plan (card 1,
+/// deck 2, note 1, preset 1, user 1 layers; two schedule rounds).
+const SIX_LAYER_MODEL_PATH: &str = "../qt/aqt/rwkv_inference/sm130th/weights.f32.bin";
+
+/// The engine's test model and, in the small engine, the tiny model and the
+/// six-layer Tiny (SM130): every state precision must run every layer plan.
 fn models() -> Vec<PathBuf> {
     let root = PathBuf::from(env!("CARGO_MANIFEST_DIR"));
     let mut models = vec![root.join(MODEL_PATH)];
     if SMALL_MODEL {
         models.push(root.join(TINY_MODEL_PATH));
+        models.push(root.join(SIX_LAYER_MODEL_PATH));
     }
     models
 }
@@ -424,6 +429,10 @@ fn stored_layer_bytes(precision: StatePrecision, channel_mixer: bool) -> usize {
 /// (float16 scales, int8 shifts), card / note: int8 cards small 2,545 /
 /// 1,315 B, tiny 1,315 / 1,315 B; int4 cards small 1,521 / 1,315 B, tiny
 /// 803 / 1,315 B (the training repository's `w8+s8hx8` and `w8+s4c8nhx8`).
+/// The six-layer Tiny (SM130) stores exactly the tiny sizes: it keeps the
+/// tiny card and note layers and cuts only the deck, preset and user
+/// streams, whose states are per deck, preset and collection; at the
+/// default compact int8 format 1,315 B per card and per note.
 #[test]
 fn rwkv_state_precision_stored_sizes_of_the_small_and_tiny_models() {
     if !SMALL_MODEL {
@@ -435,6 +444,7 @@ fn rwkv_state_precision_stored_sizes_of_the_small_and_tiny_models() {
         (root.join(MODEL_PATH), 2),
         (root.join(TINY_MODEL_PATH), 1),
         (root.join(TINY_TWO_HEAD_MODEL_PATH), 1),
+        (root.join(SIX_LAYER_MODEL_PATH), 1),
     ] {
         for (precision, card, note) in [
             (
@@ -509,7 +519,9 @@ fn rwkv_state_precision_stored_sizes_of_the_small_and_tiny_models() {
         (1_315, 1_315),
         (803, 1_315),
     ];
-    assert_eq!(per_card_and_note, [small, tiny, tiny].concat());
+    assert_eq!(per_card_and_note, [small, tiny, tiny, tiny].concat());
+    // The default (compact int8 cards and notes) of the six-layer Tiny.
+    assert_eq!(per_card_and_note[18], (1_315, 1_315));
 }
 
 /// Big (the bundled big model): stored card / note bytes per policy. Compact

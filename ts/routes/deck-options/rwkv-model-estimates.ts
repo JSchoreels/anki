@@ -54,20 +54,28 @@ const STATE_SIZES: Record<RwkvModelSize, Record<Precision, StateSizes>> = {
 
 // Relative Factory LogLoss on 722 held-out users, compared to Big's matching
 // Curve and Instant models. The Instant baseline also changes in shared mode.
+// Show-time inputs, w8+s8, the release candidate's models (2026-11): Big
+// curve 0.299415 and instant 0.276183 (SM91s2), Instant-Only 0.275894
+// (SM99); Small curve 0.300016 and instant 0.276599 (SM118), Instant-Only
+// 0.275933 (SM113); Tiny curve 0.301416 and instant 0.278049 (six-layer
+// SM130 two-head), Instant-Only 0.27749 (six-layer SM130 Instant-Only).
 const LOSSES: Record<RwkvModelSize, { curve: number; instant: number; sharedInstant: number }> = {
     [RWKV_MODEL_BIG]: { curve: 0, instant: 0, sharedInstant: 0 },
-    [RWKV_MODEL_SMALL]: { curve: 0.31, instant: 0.11, sharedInstant: 0.25 },
-    [RWKV_MODEL_TINY]: { curve: 0.42, instant: 0.30, sharedInstant: 0.43 },
+    [RWKV_MODEL_SMALL]: { curve: 0.20, instant: 0.01, sharedInstant: 0.15 },
+    [RWKV_MODEL_TINY]: { curve: 0.67, instant: 0.58, sharedInstant: 0.68 },
 };
 
 // Median native replay time, with four threads and the default state
 // precision, on 32,000 synthetic answers. See docs/rwkv.MD for the complete
 // benchmark and its scope; this excludes history loading and cache writes.
+// Tiny: the six-layer Tiny (SM130), rwkv_model_size_benchmark of the 2026-11
+// release candidate (docs/rwkv-rc-2026-11.MD); Small has the same
+// architecture as before.
 const REPLAY_SAVINGS: Record<RwkvModelLayout, Record<RwkvModelSize, number>> = {
-    paired: { [RWKV_MODEL_BIG]: 0, [RWKV_MODEL_SMALL]: 77, [RWKV_MODEL_TINY]: 79 },
-    shared: { [RWKV_MODEL_BIG]: 0, [RWKV_MODEL_SMALL]: 76, [RWKV_MODEL_TINY]: 78 },
-    curve: { [RWKV_MODEL_BIG]: 0, [RWKV_MODEL_SMALL]: 76, [RWKV_MODEL_TINY]: 78 },
-    instant: { [RWKV_MODEL_BIG]: 0, [RWKV_MODEL_SMALL]: 76, [RWKV_MODEL_TINY]: 79 },
+    paired: { [RWKV_MODEL_BIG]: 0, [RWKV_MODEL_SMALL]: 77, [RWKV_MODEL_TINY]: 88 },
+    shared: { [RWKV_MODEL_BIG]: 0, [RWKV_MODEL_SMALL]: 76, [RWKV_MODEL_TINY]: 87 },
+    curve: { [RWKV_MODEL_BIG]: 0, [RWKV_MODEL_SMALL]: 76, [RWKV_MODEL_TINY]: 87 },
+    instant: { [RWKV_MODEL_BIG]: 0, [RWKV_MODEL_SMALL]: 76, [RWKV_MODEL_TINY]: 87 },
 };
 
 export function rwkvModelLayout(usage: RwkvSchedulerUsage, singleModel: boolean): RwkvModelLayout {

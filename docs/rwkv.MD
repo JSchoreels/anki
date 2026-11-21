@@ -66,47 +66,64 @@ Older clients can use the saved whole-day due date.
 The bundled weights under `qt/aqt/rwkv_inference/` are not covered by the
 code's license: see [WEIGHTS-NOTICE.md](../qt/aqt/rwkv_inference/WEIGHTS-NOTICE.md)
 (the training data's research terms, open upstream question
-srs-benchmark#353). The build copies it beside the weights.
+srs-benchmark#353). The build copies it into `_aqt/rwkv_inference/` and into every
+model folder there, so a copy sits beside every shipped weights file.
 
 Deck Options → RWKV → **Advanced** offers three model sizes for the entire
 local profile (since 2026-11-11, replacing the **Use Smaller Model** switch):
 
-What each size runs, by the schedulers the profile's presets use (since 2026-11-13,
-the family wiring (SM114); [report](rwkv-sm114-2026-11-13.MD); Small's and Tiny's
-Instant-Only models since 2026-11-16, [report](rwkv-time-heads-2026-11-16.MD)). Each
-size runs exactly its own two models (a two-head model and an Instant-Only model)
-and never another size's model (`RWKV_SIZE_MODELS` in `qt/aqt/rwkv_model.py`):
+What each size runs, by the schedulers the profile's presets use (the family wiring
+(SM114), [report](rwkv-sm114-2026-11-13.MD); the models of the 2026-11 release
+candidate, [report](rwkv-rc-2026-11.MD)). Each size runs exactly its own two models
+(a two-head model and an Instant-Only model) and never another size's model
+(`RWKV_SIZE_MODELS` in `qt/aqt/rwkv_model.py`; the native runtime also refuses a
+model key whose weights have other layer counts):
 
 | Presets use | Big (`legacy`) | Small (`sm72e25`, default) | Tiny (`tiny`) |
 | --- | --- | --- | --- |
-| RWKV-Instant and RWKV-Curve (default) | the show-time big model (SM91s2) for the curve, intervals and S90, beside the show-time instant-only big model (SM99) for RWKV-Instant | the show-time retrain (SM92) beside the longer Small Instant-Only model (SM113) | the Tiny two-head model (SM106) beside the longer cool-down for Tiny (SM115) |
-| RWKV-Instant and RWKV-Curve, one-model opt-out on | the show-time big model (SM91s2) alone | the show-time retrain (SM92) alone | the Tiny two-head model (SM106) alone |
-| RWKV-Instant without RWKV-Curve (opt-out ignored) | the show-time instant-only big model (SM99) alone | the longer Small Instant-Only model (SM113) alone | the longer cool-down for Tiny (SM115) alone |
-| RWKV-Curve only, or neither | the show-time big model (SM91s2) alone | the show-time retrain (SM92) alone | the Tiny two-head model (SM106) alone |
+| RWKV-Instant and RWKV-Curve (default) | the show-time big model (SM91s2) for the curve, intervals and S90, beside the show-time instant-only big model (SM99) for RWKV-Instant | the show-time two-head cool-down for Small (SM118) beside the longer Small Instant-Only model (SM113) | the six-layer Tiny two-head model (SM130) beside the six-layer Tiny Instant-Only model (SM130) |
+| RWKV-Instant and RWKV-Curve, one-model opt-out on | the show-time big model (SM91s2) alone | the show-time two-head cool-down for Small (SM118) alone | the six-layer Tiny two-head model (SM130) alone |
+| RWKV-Instant without RWKV-Curve (opt-out ignored) | the show-time instant-only big model (SM99) alone | the longer Small Instant-Only model (SM113) alone | the six-layer Tiny Instant-Only model (SM130) alone |
+| RWKV-Curve only, or neither | the show-time big model (SM91s2) alone | the show-time two-head cool-down for Small (SM118) alone | the six-layer Tiny two-head model (SM130) alone |
 
-In every size the two-head model gives RWKV-Curve, the intervals, S90 and the workload
-simulation, and the Instant-Only model gives RWKV-Instant's recall and button
-probabilities. Until 2026-11-16 Small ran the Small Instant-Only model (SM98) and
-Tiny the Tiny Instant-Only model (SM101); both stay bundled, unused.
+Model keys and folders: Big `legacy` (`RWKV_trained_on_5000_10000.bin`) and `sm99`;
+Small `sm118` and `sm113`; Tiny `sm130th` and `sm130io`. In every size the two-head
+model gives RWKV-Curve, the intervals, S90 and the workload simulation, and the
+Instant-Only model gives RWKV-Instant's recall and button probabilities. The
+models these replace stay bundled, unused by any size: the show-time retrain (SM92,
+still a profile value of its own), the Tiny two-head model (SM106), the longer
+cool-down for Tiny (SM115), and the older Small Instant-Only model (SM98) and Tiny
+Instant-Only model (SM101).
+
+**State format** (2026-11 release candidate,
+[report](rwkv-rc-state-format-2026-11-21.MD)): every size stores card and note state
+as int8 rows with float16 row scales and int8 shift vectors (`compact_cards_int8`,
+the default). Per card and per note, one model: Big 13,891 / 9,267 B, Small 2,545 /
+1,315 B, Tiny 1,315 / 1,315 B (the six-layer Tiny keeps the Tiny card and note
+layers, so its state per card and note is the Tiny one; its cut deck, preset and
+user layers are per deck, preset and collection).
 
 **Answer time in every size** (since 2026-11-16, the time heads for the family
 (SM117); [report](rwkv-time-heads-2026-11-16.MD)). The answer time is the whole time
 on the card, front and back together: from the question shown to the grade press,
-capped at the preset's maximum answer seconds. Card Info's "recall within S s"
-means recalled and answered within S s, reading the back included. Every two-head
-model has an answer-time head (the show-time big model (SM91s2), the show-time
-retrain (SM92), the Tiny two-head model (SM106)), and so has the show-time
-instant-only big model (SM99); the heads of the longer Small Instant-Only model
-(SM113) and the longer cool-down for Tiny (SM115) are still being trained (the
-time heads for the new candidates (SM119)).
+capped at the preset's maximum answer seconds (the "Show answer" moment is not
+stored). Card Info's "recall within S s" means recalled (Hard, Good or Easy) and
+answered within S s, reading the back included. Every model a size runs has its
+own answer-time head: the show-time big model (SM91s2) and the show-time
+instant-only big model (SM99) (SM117), the show-time two-head cool-down for Small
+(SM118) and the longer Small Instant-Only model (SM113) (the time heads for the new
+candidates (SM119)), and the two six-layer Tiny models (SM130) (the answer-time
+heads for the six-layer Tiny (SM138)). The small engine's heads take 474 inputs
+(the residual after the input encoder and after each of the 4 layer rounds, the
+128-wide instant hidden layer, 26 history features); the six-layer Tiny has 2 layer
+rounds, so its heads take 346; a head of another width is refused beside a model.
 A head always runs on the model it was trained on: one model alone uses its own
 head, and a pair uses its Instant-Only model's head when it has one (its grade
 probabilities are the ones Card Info shows), else its two-head model's. So Big
 answers from the show-time instant-only big model (SM99) in the pair and alone,
 and from the show-time big model (SM91s2) with the opt-out; Small and Tiny answer
-from their two-head model in the pair and alone, and show no answer time with
-RWKV-Instant alone until the heads of the time heads for the new candidates
-(SM119) land. These heads also
+from their Instant-Only model in the pair and alone, and from their two-head model
+with the opt-out. These heads also
 answer cards last reviewed today (format 2); only a card's first review has no
 estimate. The default small model (SM63, model key `sm72e25`) is no
 longer run by any size; it stays bundled, and a profile value `sm63` runs it alone
@@ -116,9 +133,11 @@ model alone in every case. The big models (2,762,884 parameters each: the show-t
 and the show-time instant-only big model (SM99), see below), the 331,511-parameter small models
 SM40, SM36 Muon, SM55, SM56, the small model, leak-free (SM72, cool-down from epoch
 15, from epoch 20 and from epoch 25), the show-time retrain of the release (SM92),
+the show-time two-head cool-down for Small (SM118),
 the instant-only small model (SM57), the Small Instant-Only model (SM98) and the longer Small Instant-Only model (SM113),
-and the 311,786-parameter Tiny Instant-Only model (SM101), longer cool-down for Tiny
-(SM115) and Tiny two-head model (SM106) are bundled. Only the models the size and the presets'
+the 311,786-parameter Tiny Instant-Only model (SM101), longer cool-down for Tiny
+(SM115) and Tiny two-head model (SM106), and the 185,057-parameter six-layer Tiny
+two-head and Instant-Only models (SM130) are bundled. Only the models the size and the presets'
 schedulers need, and their states, are loaded.
 
 Each size is a selectable card showing estimated model-state RAM and disk use,
@@ -451,6 +470,41 @@ SM98), Small with RWKV-Curve only or neither (SM63 → SM92), Tiny with both (SM
 SM101 → SM106 + SM101), Tiny with RWKV-Curve only or neither (SM63 → SM106). Big,
 Small's and Tiny's opt-out with both schedulers and Tiny with RWKV-Instant alone keep
 their state. See the [report](rwkv-sm114-2026-11-13.MD).
+
+### The 2026-11 Release Candidate: SM118 and the Six-Layer Tiny (SM130)
+
+Branch `rc-2026-11` ([report](rwkv-rc-2026-11.MD)) changes two sizes' models:
+
+| Size | Two-head model | Instant-Only model |
+| --- | --- | --- |
+| Big (`legacy`) | the show-time big model (SM91s2), unchanged | the show-time instant-only big model (SM99), unchanged |
+| Small (`sm72e25`) | the show-time two-head cool-down for Small (SM118) (`sm118`, small plan, SM119 head), in place of the show-time retrain (SM92) | the longer Small Instant-Only model (SM113), unchanged |
+| Tiny (`tiny`) | the six-layer Tiny two-head model (SM130) (`sm130th`, SM138 head), in place of the Tiny two-head model (SM106) | the six-layer Tiny Instant-Only model (SM130) (`sm130io`, SM138 head), in place of the longer cool-down for Tiny (SM115) |
+
+**The six-layer plan.** The six-layer Tiny (arch `w64-c1-d2p1u1`, 185,057
+parameters instead of 311,786) keeps Tiny's one card layer and one note layer and
+cuts the deck, preset and user streams to 2 / 1 / 1 layers: 6 sequential layer steps
+instead of 12, `(0,0) (1,0) (2,0) (3,0) (4,0) (1,1)`, an exact subsequence of Tiny's
+schedule, with the same channel mixers (card 0, deck 0, note 0). The small engine
+has three layer plans (`SMALL_LAYER_PLANS` in `rslib/src/rwkv/architecture.rs`: the
+engine's, the tiny plan and the six-layer plan) and picks the one whose layer
+counts the weights hold; every other dimension is compiled in as before. Each small
+model key names its layer counts (`ModelKind::module_layers`), and weights with other
+counts are refused for that key, so `sm106` weights never load as `sm130th` and the
+reverse. The answer-time head's width follows the plan (474 inputs for four layer
+rounds, 346 for the six-layer plan's two). Card and note state per card and note are
+Tiny's; the int8 weights file is 238,585 B instead of 409,483 B.
+
+**Accuracy** (722 users of the 732 set, show-time inputs, w8+s8; % = 100 x (new /
+reference - 1), 95% CI from 2,000 paired user bootstraps): the six-layer Tiny
+two-head model (SM130) vs Small's two-head model (SM118): curve +0.467% [+0.398,
++0.546], instant +0.524% [+0.484, +0.567]; the six-layer Tiny Instant-Only model
+(SM130) vs the longer Small Instant-Only model (SM113): +0.564% [+0.522, +0.607]; all
+within the user's +1% budget for Tiny. Against Big's models (the Deck Options
+estimates): Small curve +0.20%, instant +0.01% (shared +0.15%); Tiny curve +0.67%,
+instant +0.58% (shared +0.68%). SM118 vs SM92: curve -0.113% [-0.176, -0.062],
+instant -0.100% [-0.110, -0.091]. Every Small and Tiny combination of size,
+schedulers and opt-out rebuilds its state once (new model keys); Big's keep theirs.
 
 ### Answer-Time Heads and the Longer Instant-Only Models (2026-11-16)
 

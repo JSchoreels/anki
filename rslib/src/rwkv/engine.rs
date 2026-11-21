@@ -736,7 +736,8 @@ impl RwkvInference {
             max_interval_days,
             precision,
         );
-        engine.answer_time_head = AnswerTimeHead::load_beside(&path)?.map(Arc::new);
+        let inputs = answer_time_inputs(engine.model.layer_plan);
+        engine.answer_time_head = AnswerTimeHead::load_beside(&path, inputs)?.map(Arc::new);
         Ok(engine)
     }
 
@@ -749,6 +750,13 @@ impl RwkvInference {
     /// smaller instant-only model, SM101), 2 for the other small models.
     pub fn card_layers(&self) -> usize {
         self.model.card_layers()
+    }
+
+    /// Layer counts per stream (card, deck, note, preset, user) of the
+    /// loaded checkpoint: its layer plan (the engine's, the tiny model's or
+    /// the six-layer Tiny (SM130)'s).
+    pub fn module_layers(&self) -> [usize; 5] {
+        self.model.layer_plan.module_layers
     }
 
     /// Predicts the answer time of each query from the frozen trunk and the
@@ -3981,22 +3989,28 @@ impl Default for ReviewRetrievabilityScratch {
     }
 }
 
-/// The tiny model is the small architecture without the card's second
-/// layer: its weights hold no `rwkv_modules.0.blocks.1.` tensor at all. Any
-/// other checkpoint keeps the engine's layers (a partly missing layer fails
-/// to load as before).
+/// The small engine's plan whose layer counts the weights hold: the tiny
+/// model has no `rwkv_modules.0.blocks.1.` tensor at all (one card layer),
+/// the six-layer Tiny (SM130) also lacks the trailing deck, preset and user
+/// layers. A layer counts when any tensor of it is present. Any other
+/// checkpoint keeps the engine's layers (a partly missing layer fails to
+/// load as before), and the big engine always does.
 fn layer_plan_for(weights: &WeightMap) -> LayerPlan {
-    let card_second_layer = "rwkv_modules.0.blocks.1.";
-    if SMALL_MODEL
-        && !weights
-            .tensors
-            .keys()
-            .any(|name| name.starts_with(card_second_layer))
-    {
-        TINY_LAYER_PLAN
-    } else {
-        ENGINE_LAYER_PLAN
+    if !SMALL_MODEL {
+        return ENGINE_LAYER_PLAN;
     }
+    let layers: [usize; 5] = std::array::from_fn(|module_id| {
+        (0..MODULE_LAYERS[module_id])
+            .take_while(|layer_id| {
+                let prefix = format!("rwkv_modules.{module_id}.blocks.{layer_id}.");
+                weights.tensors.keys().any(|name| name.starts_with(&prefix))
+            })
+            .count()
+    });
+    SMALL_LAYER_PLANS
+        .into_iter()
+        .find(|plan| plan.module_layers == layers)
+        .unwrap_or(ENGINE_LAYER_PLAN)
 }
 
 impl SrsModel {
@@ -4399,7 +4413,7 @@ impl SrsModel {
             weight: vec![1.0; D_MODEL],
             bias: vec![0.0; D_MODEL],
         };
-        let mut out = Vec::with_capacity(AnswerTimeHead::FROZEN);
+        let mut out = Vec::with_capacity(answer_time_frozen(self.layer_plan));
         let mut x = self.feature_mlp(features);
         out.extend(unit.apply(&x));
         let states = [
@@ -4488,6 +4502,10 @@ impl SrsModel {
 /// affine parameters), the instant head's hidden layer, and the history
 /// features.
 struct AnswerTimeHead {
+    /// Frozen inputs plus history features: 474 for the small and tiny
+    /// plans, 346 for the six-layer Tiny (SM130), 1,306 for the big engine
+    /// (see [`answer_time_inputs`]).
+    inputs: usize,
     hidden: Linear,
     out: Linear,
     /// Format 2 heads (trained on show-time inputs with same-day reviews
@@ -4497,15 +4515,22 @@ struct AnswerTimeHead {
 }
 
 impl AnswerTimeHead {
-    const FROZEN: usize = (ANSWER_TIME_UNITS + 1) * D_MODEL + HEAD_DIM;
-    const INPUTS: usize = Self::FROZEN + answer_time_items::ANSWER_TIME_FEATURES;
+    /// The frozen inputs and the input count of the engine's own plan (the
+    /// tests' reference widths; each engine compiles only some of the tests).
+    #[cfg(test)]
+    #[allow(dead_code)]
+    const FROZEN: usize = answer_time_frozen(ENGINE_LAYER_PLAN);
+    #[cfg(test)]
+    #[allow(dead_code)]
+    const INPUTS: usize = answer_time_inputs(ENGINE_LAYER_PLAN);
 
     /// Loads the head beside the weights: `<weights file name without
     /// .bin>.time_head.f32.bin` (the show-time big model (SM91s2)'s weights
     /// file has no folder of its own), else `time_head.f32.bin` in the folder
     /// of the weights; `.int8.bin` instead beside INT8 weights. `None` when
-    /// neither exists.
-    fn load_beside(weights: &Path) -> io::Result<Option<Self>> {
+    /// neither exists. A head must take `inputs` values, the count of the
+    /// model it sits beside (a head of another layer plan is refused).
+    fn load_beside(weights: &Path, inputs: usize) -> io::Result<Option<Self>> {
         let Some(name) = weights.file_name().and_then(|name| name.to_str()) else {
             return Ok(None);
         };
@@ -4517,7 +4542,17 @@ impl AnswerTimeHead {
         ] {
             let path = weights.with_file_name(candidate);
             if path.is_file() {
-                return Self::load(&path).map(Some);
+                let head = Self::load(&path)?;
+                if head.inputs != inputs {
+                    return Err(io::Error::new(
+                        io::ErrorKind::InvalidData,
+                        format!(
+                            "RWKV answer-time head takes {} inputs, its model gives {inputs}",
+                            head.inputs
+                        ),
+                    ));
+                }
+                return Ok(Some(head));
             }
         }
         Ok(None)
@@ -4532,10 +4567,13 @@ impl AnswerTimeHead {
                 format!("unsupported RWKV answer-time head format {version}"),
             ));
         }
-        let hidden = weights
+        let (hidden, inputs) = weights
             .tensors
             .get("time_mlps.0.hidden.weight")
-            .map(|tensor| tensor.shape[0])
+            .and_then(|tensor| match tensor.shape[..] {
+                [hidden, inputs] => Some((hidden, inputs)),
+                _ => None,
+            })
             .ok_or_else(|| {
                 io::Error::new(
                     io::ErrorKind::InvalidData,
@@ -4543,7 +4581,8 @@ impl AnswerTimeHead {
                 )
             })?;
         Ok(Self {
-            hidden: weights.linear("time_mlps.0.hidden", Self::INPUTS, hidden, true)?,
+            inputs,
+            hidden: weights.linear("time_mlps.0.hidden", inputs, hidden, true)?,
             out: weights.linear(
                 "time_mlps.0.out",
                 hidden,
@@ -4564,7 +4603,7 @@ impl AnswerTimeHead {
     }
 
     fn logits(&self, frozen: &[f32], explicit: &[f32]) -> Vec<f32> {
-        let mut inputs = Vec::with_capacity(Self::INPUTS);
+        let mut inputs = Vec::with_capacity(self.inputs);
         inputs.extend_from_slice(frozen);
         inputs.extend_from_slice(explicit);
         let mut hidden = self.hidden.apply(&inputs);
@@ -4616,6 +4655,25 @@ const ANSWER_TIME_UNITS: usize = answer_time_units(LAYER_STEPS);
 // beside it reads the same number of residuals.
 const _: () = assert!(!SMALL_MODEL || answer_time_units(TINY_LAYER_STEPS) == ANSWER_TIME_UNITS);
 const _: () = assert!(ANSWER_TIME_UNITS == if SMALL_MODEL { 4 } else { 5 });
+// The six-layer Tiny (SM130) keeps 2 layer rounds: its heads take 346
+// inputs (3 x 64 residuals, the 128-wide instant hidden layer, 26 history
+// features) instead of 474.
+const _: () = assert!(!SMALL_MODEL || answer_time_units(SIX_LAYER_STEPS) == 2);
+const _: () = assert!(!SMALL_MODEL || answer_time_inputs(SIX_LAYER_PLAN) == 346);
+const _: () = assert!(!SMALL_MODEL || answer_time_inputs(TINY_LAYER_PLAN) == 474);
+
+/// The answer-time head's frozen inputs on a plan: the residual after the
+/// input encoder and after each schedule unit, then the instant head's
+/// hidden layer.
+const fn answer_time_frozen(plan: LayerPlan) -> usize {
+    (answer_time_units(plan.steps) + 1) * D_MODEL + HEAD_DIM
+}
+
+/// The answer-time head's input count on a plan: the frozen inputs and the
+/// history features.
+const fn answer_time_inputs(plan: LayerPlan) -> usize {
+    answer_time_frozen(plan) + answer_time_items::ANSWER_TIME_FEATURES
+}
 
 struct ReviewHeads {
     retrievability: f32,

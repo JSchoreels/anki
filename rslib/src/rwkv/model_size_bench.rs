@@ -38,17 +38,23 @@ fn weights(folder: &str) -> PathBuf {
 
 /// `(name, main model, instant model beside it)`: each size's runtimes of
 /// the RWKV family release (the family wiring (SM114)), plus the default
-/// small model (SM63) alone, which no size runs any more.
-const RUNTIMES: [(&str, &str, Option<&str>); 10] = [
+/// small model (SM63) alone, which no size runs any more. Tiny is the
+/// six-layer Tiny (SM130) since the 2026-11 release candidate; the earlier
+/// Tiny runtimes (the Tiny two-head model (SM106), the longer cool-down for
+/// Tiny (SM115)) stay for comparison.
+const RUNTIMES: [(&str, &str, Option<&str>); 13] = [
     ("big", "legacy", None),
     ("big-pair", "legacy", Some("sm99")),
     ("big-instant", "sm99", None),
-    ("small", "sm92", None),
-    ("small-pair", "sm92", Some("sm113")),
+    ("small", "sm118", None),
+    ("small-pair", "sm118", Some("sm113")),
     ("small-instant", "sm113", None),
-    ("tiny", "sm106", None),
-    ("tiny-pair", "sm106", Some("sm115")),
-    ("tiny-instant", "sm115", None),
+    ("tiny", "sm130th", None),
+    ("tiny-pair", "sm130th", Some("sm130io")),
+    ("tiny-instant", "sm130io", None),
+    ("tiny-sm106", "sm106", None),
+    ("tiny-sm106-pair", "sm106", Some("sm115")),
+    ("tiny-sm115-instant", "sm115", None),
     ("sm63", "sm72e25", None),
 ];
 

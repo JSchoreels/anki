@@ -119,10 +119,19 @@ fn build_generated_sources(build: &mut Build) -> Result<()> {
             output: "qt/_aqt/rwkv_inference/RWKV_trained_on_5000_10000.bin",
         },
     )?;
+    // Every model folder also gets a copy of the weights notice, so the
+    // notice sits beside every shipped weights file.
     for model in [
         "sm40v2", "sm36", "sm55", "sm56", "sm72", "sm72e20", "sm72e25", "sm92", "sm57", "sm98",
-        "sm101", "sm99", "sm106", "sm113", "sm115",
+        "sm101", "sm99", "sm106", "sm113", "sm115", "sm118", "sm130th", "sm130io",
     ] {
+        build.add_action(
+            format!("qt:aqt:rwkv_{model}_weights_notice"),
+            CopyFile {
+                input: "qt/aqt/rwkv_inference/WEIGHTS-NOTICE.md".into(),
+                output: &format!("qt/_aqt/rwkv_inference/{model}/WEIGHTS-NOTICE.md"),
+            },
+        )?;
         for name in ["weights.f32.bin", "architecture.json", "manifest.json"] {
             let output = format!("qt/_aqt/rwkv_inference/{model}/{name}");
             build.add_action(
@@ -137,8 +146,12 @@ fn build_generated_sources(build: &mut Build) -> Result<()> {
     // The optional answer-time head is read from the folder of the weights
     // (the time heads for the family (SM117): every two-head model and the
     // show-time instant-only big model (SM99), and the heads of the longer
-    // Small and Tiny Instant-Only models (SM113, SM115) from the SM119 run).
-    for model in ["sm72e25", "sm92", "sm106", "sm99", "sm113", "sm115"] {
+    // Small and Tiny Instant-Only models (SM113, SM115) and the show-time
+    // two-head cool-down for Small (SM118) from the SM119 run, the six-layer
+    // Tiny (SM130) heads from the SM138 run).
+    for model in [
+        "sm72e25", "sm92", "sm106", "sm99", "sm113", "sm115", "sm118", "sm130th", "sm130io",
+    ] {
         for name in ["time_head.f32.bin", "time_head.json"] {
             let output = format!("qt/_aqt/rwkv_inference/{model}/{name}");
             build.add_action(

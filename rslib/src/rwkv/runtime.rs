@@ -19,7 +19,15 @@ pub enum ModelKind {
     Sm72,
     Sm72e20,
     Sm72e25,
+    /// The show-time retrain (SM92): Small's two-head model until the
+    /// 2026-11 release candidate; still a profile value of its own.
     Sm92,
+    /// The show-time two-head cool-down for Small (SM118): SM92's epoch 26
+    /// with a two-pass 32k Muon cool-down distilled from the show-time big
+    /// model (SM91s2). A full model of the small plan with an answer-time
+    /// head (SM119); Small's two-head model since the 2026-11 release
+    /// candidate, in SM92's place.
+    Sm118,
     /// The instant-only small model (SM57): its curve head is untrained, so
     /// it never provides curve outputs (see [`RwkvRuntime::InstantOnly`] and
     /// [`RwkvRuntime::load_paired`]).
@@ -53,8 +61,24 @@ pub enum ModelKind {
     Sm113,
     /// The longer cool-down for Tiny (SM115): the Tiny Instant-Only model
     /// (SM101)'s recipe (one card layer) with the same longer cool-down as
-    /// SM113. Tiny's Instant-Only model since 2026-11-16, in SM101's place.
+    /// SM113. Tiny's Instant-Only model from 2026-11-16 to the 2026-11
+    /// release candidate, in SM101's place.
     Sm115,
+    /// The six-layer Tiny two-head model (SM130): the Tiny two-head chain
+    /// (SM106's constant-LR epoch 29) cut to six layer steps (arch
+    /// `w64-c1-d2p1u1`: card 1, deck 2, note 1, preset 1, user 1 layers; two
+    /// schedule rounds), recovered three epochs and cooled down like the
+    /// show-time two-head cool-down for Tiny (SM124). A full model; Tiny's
+    /// two-head model since the 2026-11 release candidate (user decision
+    /// 2026-11-21), in SM106's place. Its answer-time head (SM138) takes 346
+    /// inputs.
+    Sm130Th,
+    /// The six-layer Tiny Instant-Only model (SM130): the Tiny Instant-Only
+    /// chain (SM101's epoch 38) cut the same way and cooled down like the
+    /// longer cool-down for Tiny (SM115). Tiny's Instant-Only model since the
+    /// 2026-11 release candidate, in SM115's place; 346-input answer-time
+    /// head (SM138).
+    Sm130Io,
 }
 
 impl ModelKind {
@@ -69,6 +93,7 @@ impl ModelKind {
             "sm72e20" => Ok(Self::Sm72e20),
             "sm72e25" => Ok(Self::Sm72e25),
             "sm92" => Ok(Self::Sm92),
+            "sm118" => Ok(Self::Sm118),
             "sm57" => Ok(Self::Sm57),
             "sm98" => Ok(Self::Sm98),
             "sm101" => Ok(Self::Sm101),
@@ -76,6 +101,8 @@ impl ModelKind {
             "sm106" => Ok(Self::Sm106),
             "sm113" => Ok(Self::Sm113),
             "sm115" => Ok(Self::Sm115),
+            "sm130th" => Ok(Self::Sm130Th),
+            "sm130io" => Ok(Self::Sm130Io),
             _ => Err(io::Error::new(
                 io::ErrorKind::InvalidInput,
                 "unknown RWKV model",
@@ -95,6 +122,7 @@ impl ModelKind {
                 | Self::Sm72e20
                 | Self::Sm72e25
                 | Self::Sm92
+                | Self::Sm118
                 | Self::Sm57
                 | Self::Sm98
                 | Self::Sm101
@@ -102,6 +130,8 @@ impl ModelKind {
                 | Self::Sm106
                 | Self::Sm113
                 | Self::Sm115
+                | Self::Sm130Th
+                | Self::Sm130Io
         )
     }
 
@@ -110,7 +140,13 @@ impl ModelKind {
     pub fn instant_only(self) -> bool {
         matches!(
             self,
-            Self::Sm57 | Self::Sm98 | Self::Sm101 | Self::Sm99 | Self::Sm113 | Self::Sm115
+            Self::Sm57
+                | Self::Sm98
+                | Self::Sm101
+                | Self::Sm99
+                | Self::Sm113
+                | Self::Sm115
+                | Self::Sm130Io
         )
     }
 
@@ -125,21 +161,29 @@ impl ModelKind {
         self.small() == super::SMALL_MODEL
     }
 
-    /// Card layers of the small models' checkpoints: the small engine reads
-    /// the count from the weights, and a file that does not match its model
-    /// key is refused.
-    fn card_layers(self) -> Option<usize> {
+    /// Layer counts per stream (card, deck, note, preset, user) of the small
+    /// models' checkpoints: the small engine reads them from the weights
+    /// (its layer plan), and a file that does not match its model key is
+    /// refused, so a key never runs another size's weights.
+    fn module_layers(self) -> Option<[usize; 5]> {
         match self {
             Self::Legacy | Self::Sm99 => None,
-            Self::Sm101 | Self::Sm106 | Self::Sm115 => Some(1),
-            _ => Some(2),
+            Self::Sm101 | Self::Sm106 | Self::Sm115 => Some([1, 4, 1, 3, 3]),
+            Self::Sm130Th | Self::Sm130Io => Some([1, 2, 1, 1, 1]),
+            _ => Some([2, 4, 1, 3, 3]),
         }
+    }
+
+    /// Card layers of the small models' checkpoints.
+    #[cfg(test)]
+    fn card_layers(self) -> Option<usize> {
+        self.module_layers().map(|layers| layers[0])
     }
 }
 
-fn check_card_layers(model: ModelKind, card_layers: usize) -> io::Result<()> {
-    match model.card_layers() {
-        Some(expected) if expected != card_layers => {
+fn check_module_layers(model: ModelKind, module_layers: [usize; 5]) -> io::Result<()> {
+    match model.module_layers() {
+        Some(expected) if expected != module_layers => {
             Err(invalid_input("RWKV weights do not match the model"))
         }
         _ => Ok(()),
@@ -414,7 +458,7 @@ impl RwkvRuntime {
             max_interval_days,
             precision,
         )?;
-        check_card_layers(model, engine.card_layers())?;
+        check_module_layers(model, engine.module_layers())?;
         if model.leak_free_inputs() {
             engine.with_leak_free_inputs()
         } else {
@@ -435,7 +479,7 @@ impl RwkvRuntime {
             max_interval_days,
             precision,
         )?;
-        check_card_layers(model, engine.card_layers())?;
+        check_module_layers(model, engine.module_layers())?;
         if model.leak_free_inputs() {
             engine.with_leak_free_inputs()
         } else {
@@ -1151,6 +1195,7 @@ mod tests {
             ModelKind::Sm72e20 => "../qt/aqt/rwkv_inference/sm72e20/weights.f32.bin",
             ModelKind::Sm72e25 => "../qt/aqt/rwkv_inference/sm72e25/weights.f32.bin",
             ModelKind::Sm92 => "../qt/aqt/rwkv_inference/sm92/weights.f32.bin",
+            ModelKind::Sm118 => "../qt/aqt/rwkv_inference/sm118/weights.f32.bin",
             ModelKind::Sm57 => "../qt/aqt/rwkv_inference/sm57/weights.f32.bin",
             ModelKind::Sm98 => "../qt/aqt/rwkv_inference/sm98/weights.f32.bin",
             ModelKind::Sm101 => "../qt/aqt/rwkv_inference/sm101/weights.f32.bin",
@@ -1158,6 +1203,8 @@ mod tests {
             ModelKind::Sm106 => "../qt/aqt/rwkv_inference/sm106/weights.f32.bin",
             ModelKind::Sm113 => "../qt/aqt/rwkv_inference/sm113/weights.f32.bin",
             ModelKind::Sm115 => "../qt/aqt/rwkv_inference/sm115/weights.f32.bin",
+            ModelKind::Sm130Th => "../qt/aqt/rwkv_inference/sm130th/weights.f32.bin",
+            ModelKind::Sm130Io => "../qt/aqt/rwkv_inference/sm130io/weights.f32.bin",
         });
         RwkvRuntime::load_with_precision(path, 0.9, 36_500, precision, model).unwrap()
     }
@@ -1188,7 +1235,9 @@ mod tests {
                 (ModelKind::Sm72e20, load(ModelKind::Sm72e20, precision)),
                 (ModelKind::Sm72e25, load(ModelKind::Sm72e25, precision)),
                 (ModelKind::Sm92, load(ModelKind::Sm92, precision)),
+                (ModelKind::Sm118, load(ModelKind::Sm118, precision)),
                 (ModelKind::Sm106, load(ModelKind::Sm106, precision)),
+                (ModelKind::Sm130Th, load(ModelKind::Sm130Th, precision)),
             ] {
                 let answers = crate::rwkv::precision_tests::reviews(14);
                 engine.warm_up_reviews(answers.clone(), false).unwrap();
@@ -1220,6 +1269,7 @@ mod tests {
         assert_eq!(ModelKind::parse("sm72e25").unwrap(), ModelKind::Sm72e25);
         assert_eq!(ModelKind::parse("sm92").unwrap(), ModelKind::Sm92);
         assert_eq!(ModelKind::parse("sm106").unwrap(), ModelKind::Sm106);
+        assert_eq!(ModelKind::parse("sm130th").unwrap(), ModelKind::Sm130Th);
         // The same checkpoint without the runtime's input rule.
         let unadjusted = |model: ModelKind| {
             let path = PathBuf::from(env!("CARGO_MANIFEST_DIR")).join(match model {
@@ -1229,6 +1279,7 @@ mod tests {
                 ModelKind::Sm72e25 => "../qt/aqt/rwkv_inference/sm72e25/weights.f32.bin",
                 ModelKind::Sm92 => "../qt/aqt/rwkv_inference/sm92/weights.f32.bin",
                 ModelKind::Sm106 => "../qt/aqt/rwkv_inference/sm106/weights.f32.bin",
+                ModelKind::Sm130Th => "../qt/aqt/rwkv_inference/sm130th/weights.f32.bin",
                 _ => "../qt/aqt/rwkv_inference/sm72/weights.f32.bin",
             });
             // Legacy runs on the big engine, the small models on the small one.
@@ -1269,6 +1320,7 @@ mod tests {
             ModelKind::Sm72e25,
             ModelKind::Sm92,
             ModelKind::Sm106,
+            ModelKind::Sm130Th,
         ] {
             assert_eq!(model.leak_free_inputs(), model != ModelKind::Sm56);
             for missing_ids in [false, true] {
@@ -1300,7 +1352,9 @@ mod tests {
         for (model, file, same_day) in [
             (ModelKind::Sm72e25, "sm72e25/weights.f32.bin", false),
             (ModelKind::Sm92, "sm92/weights.f32.bin", true),
+            (ModelKind::Sm118, "sm118/weights.f32.bin", true),
             (ModelKind::Sm106, "sm106/weights.f32.bin", true),
+            (ModelKind::Sm130Th, "sm130th/weights.f32.bin", true),
             (ModelKind::Legacy, "RWKV_trained_on_5000_10000.bin", true),
         ] {
             check_answer_time_head_is_optional(model, file, same_day);
@@ -1308,10 +1362,11 @@ mod tests {
         // Instant-only models with a head of their own (SM99) answer alone;
         // the older ones (SM57, SM98, SM101) have none (small instant-only
         // models load only with the small-model feature). The longer Small
-        // and Tiny Instant-Only models (SM113, SM115) have one (SM119).
+        // and Tiny Instant-Only models (SM113, SM115) have one (SM119), the
+        // six-layer Tiny Instant-Only model (SM130) too (SM138, 346 inputs).
         assert!(load(ModelKind::Sm99, StatePrecision::F32).has_answer_time_head());
         if super::super::SMALL_MODEL {
-            for model in [ModelKind::Sm113, ModelKind::Sm115] {
+            for model in [ModelKind::Sm113, ModelKind::Sm115, ModelKind::Sm130Io] {
                 assert!(load(model, StatePrecision::F32).has_answer_time_head());
             }
             for model in [ModelKind::Sm57, ModelKind::Sm98, ModelKind::Sm101] {
@@ -1433,17 +1488,20 @@ mod tests {
     ];
 
     /// The instant-only models: never a full model alone.
-    const INSTANT_ONLY_MODELS: [(ModelKind, &str); 5] = [
+    const INSTANT_ONLY_MODELS: [(ModelKind, &str); 6] = [
         (ModelKind::Sm57, "sm57"),
         (ModelKind::Sm98, "sm98"),
         (ModelKind::Sm101, "sm101"),
         (ModelKind::Sm113, "sm113"),
         (ModelKind::Sm115, "sm115"),
+        (ModelKind::Sm130Io, "sm130io"),
     ];
 
-    /// A model key loads only weights with its card layers: the tiny model's
-    /// key refuses two-layer weights and every other small key refuses the
-    /// tiny weights, alone or in a pair.
+    /// A model key loads only weights with its layer counts: the tiny
+    /// model's key refuses two-layer weights and every other small key
+    /// refuses the tiny weights, and the six-layer Tiny (SM130) keys and the
+    /// four-round Tiny keys refuse each other's weights (same card layers,
+    /// fewer deck, preset and user layers), alone or in a pair.
     #[test]
     fn rwkv_runtime_refuses_weights_of_another_layer_plan() {
         if !super::super::SMALL_MODEL {
@@ -1456,6 +1514,14 @@ mod tests {
             (ModelKind::Sm106, "sm92"),
             (ModelKind::Sm92, "sm106"),
             (ModelKind::Sm72e25, "sm106"),
+            (ModelKind::Sm130Th, "sm106"),
+            (ModelKind::Sm106, "sm130th"),
+            (ModelKind::Sm130Io, "sm115"),
+            (ModelKind::Sm115, "sm130io"),
+            (ModelKind::Sm130Th, "sm92"),
+            (ModelKind::Sm118, "sm106"),
+            (ModelKind::Sm118, "sm130th"),
+            (ModelKind::Sm72e25, "sm130th"),
         ] {
             assert!(
                 RwkvRuntime::load_with_precision(
@@ -1491,14 +1557,24 @@ mod tests {
         .is_err());
     }
 
-    /// The Tiny two-head model (SM106) alone is a full runtime on the tiny
-    /// plan: curve recall, intervals and S90 beside instant recall and
-    /// buttons, one card layer, and an answer-time head (the time heads for
-    /// the family (SM117)), at every state precision.
+    /// The Tiny two-head model (SM106) and the six-layer Tiny two-head model
+    /// (SM130) alone are full runtimes on their plans: curve recall,
+    /// intervals and S90 beside instant recall and buttons, one card layer,
+    /// and an answer-time head (the time heads for the family (SM117); SM138
+    /// for SM130, 346 inputs), at every state precision.
     #[test]
-    fn rwkv_sm106_alone_is_a_full_tiny_model() {
-        assert!(!ModelKind::Sm106.instant_only() && ModelKind::Sm106.leak_free_inputs());
-        assert!(ModelKind::Sm106.small() && ModelKind::Sm106.card_layers() == Some(1));
+    fn rwkv_tiny_two_head_models_alone_are_full_models() {
+        assert_eq!(ModelKind::Sm130Th.module_layers(), Some([1, 2, 1, 1, 1]));
+        assert_eq!(ModelKind::Sm130Io.module_layers(), Some([1, 2, 1, 1, 1]));
+        assert!(ModelKind::Sm130Io.instant_only() && ModelKind::Sm130Io.small());
+        for model in [ModelKind::Sm106, ModelKind::Sm130Th] {
+            check_tiny_two_head_model_alone(model);
+        }
+    }
+
+    fn check_tiny_two_head_model_alone(model: ModelKind) {
+        assert!(!model.instant_only() && model.leak_free_inputs());
+        assert!(model.small() && model.card_layers() == Some(1));
         for precision in [
             StatePrecision::F32,
             StatePrecision::Int8,
@@ -1506,7 +1582,7 @@ mod tests {
             StatePrecision::CompactCardsInt8,
             StatePrecision::CompactCardsInt4,
         ] {
-            let mut engine = load(ModelKind::Sm106, precision);
+            let mut engine = load(model, precision);
             assert!(!engine.is_paired() && engine.has_curve(), "{precision:?}");
             assert!(engine.has_answer_time_head(), "{precision:?}");
             let answers = crate::rwkv::precision_tests::reviews(14);
@@ -1793,10 +1869,14 @@ mod tests {
     }
 
     /// The pairs of the Small and Tiny sizes (the family wiring (SM114)):
-    /// the show-time retrain (SM92) beside the longer Small Instant-Only
-    /// model (SM113), and the Tiny two-head model (SM106) beside the longer
-    /// cool-down for Tiny (SM115) (until 2026-11-16: SM98 and SM101, still
-    /// checked). Instant recall and buttons come from the Instant-Only
+    /// the show-time two-head cool-down for Small (SM118) (until the 2026-11
+    /// release candidate: the show-time retrain (SM92)) beside the longer
+    /// Small Instant-Only
+    /// model (SM113), and the six-layer Tiny two-head model (SM130) beside
+    /// the six-layer Tiny Instant-Only model (SM130) (until the 2026-11
+    /// release candidate: the Tiny two-head model (SM106) beside the longer
+    /// cool-down for Tiny (SM115); until 2026-11-16: SM98 and SM101; all
+    /// still checked). Instant recall and buttons come from the Instant-Only
     /// model, the curve, intervals and S90 from the two-head model, bit for
     /// bit, at every state precision. The answer time comes from the
     /// Instant-Only model's head when it has one, else from the two-head
@@ -1821,10 +1901,22 @@ mod tests {
         // note at int4 cards + int8 notes and at the compact default)
         for (release, instant, stored, stored_compact) in [
             (
+                (ModelKind::Sm118, "sm118"),
+                (ModelKind::Sm113, "sm113"),
+                7_098,
+                7_758,
+            ),
+            (
                 (ModelKind::Sm92, "sm92"),
                 (ModelKind::Sm113, "sm113"),
                 7_098,
                 7_758,
+            ),
+            (
+                (ModelKind::Sm130Th, "sm130th"),
+                (ModelKind::Sm130Io, "sm130io"),
+                5_282,
+                5_298,
             ),
             (
                 (ModelKind::Sm106, "sm106"),
@@ -1874,7 +1966,10 @@ mod tests {
                 // The longer Instant-Only models carry their own head (SM119).
                 assert_eq!(
                     pair().answer_time_from_instant_model(),
-                    matches!(instant.0, ModelKind::Sm113 | ModelKind::Sm115),
+                    matches!(
+                        instant.0,
+                        ModelKind::Sm113 | ModelKind::Sm115 | ModelKind::Sm130Io
+                    ),
                     "{label}"
                 );
                 let expected = match precision {
@@ -2666,6 +2761,24 @@ mod tests {
                 "tiny instant alone",
                 true,
                 load(ModelKind::Sm101, precision),
+            ));
+            layouts.push((
+                "six-layer tiny pair",
+                true,
+                family_pair(
+                    (ModelKind::Sm130Th, "sm130th"),
+                    (ModelKind::Sm130Io, "sm130io"),
+                ),
+            ));
+            layouts.push((
+                "six-layer tiny alone",
+                true,
+                load(ModelKind::Sm130Th, precision),
+            ));
+            layouts.push((
+                "six-layer tiny instant alone",
+                true,
+                load(ModelKind::Sm130Io, precision),
             ));
         }
         for (_, _, engine) in &mut layouts {

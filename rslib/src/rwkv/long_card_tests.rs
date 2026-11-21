@@ -37,8 +37,10 @@ use crate::rwkv::StatePrecision;
 const F16_MAX: f32 = 65_504.0;
 
 /// The release family (`rwkv-family-2026-11-13`): each size's two-head and
-/// Instant-Only model.
-const MODELS: [(&str, ModelKind, &str); 6] = [
+/// Instant-Only model, plus the 2026-11 release candidate's new Small and
+/// Tiny models (the show-time two-head cool-down for Small (SM118), the
+/// longer Small Instant-Only model (SM113), the six-layer Tiny (SM130)).
+const MODELS: [(&str, ModelKind, &str); 10] = [
     (
         "Big: the show-time big model (SM91s2)",
         ModelKind::Legacy,
@@ -69,6 +71,26 @@ const MODELS: [(&str, ModelKind, &str); 6] = [
         ModelKind::Sm101,
         "sm101/weights.f32.bin",
     ),
+    (
+        "Small (RC): the show-time two-head cool-down for Small (SM118)",
+        ModelKind::Sm118,
+        "sm118/weights.f32.bin",
+    ),
+    (
+        "Small (RC): the longer Small Instant-Only model (SM113)",
+        ModelKind::Sm113,
+        "sm113/weights.f32.bin",
+    ),
+    (
+        "Tiny (RC): the six-layer Tiny two-head model (SM130)",
+        ModelKind::Sm130Th,
+        "sm130th/weights.f32.bin",
+    ),
+    (
+        "Tiny (RC): the six-layer Tiny Instant-Only model (SM130)",
+        ModelKind::Sm130Io,
+        "sm130io/weights.f32.bin",
+    ),
 ];
 
 /// The release models this build can load alone: the small Instant-Only
@@ -77,7 +99,10 @@ fn models() -> Vec<(&'static str, ModelKind, &'static str)> {
     MODELS
         .into_iter()
         .filter(|(_, kind, _)| {
-            !(matches!(kind, ModelKind::Sm98 | ModelKind::Sm101) && !super::SMALL_MODEL)
+            !(matches!(
+                kind,
+                ModelKind::Sm98 | ModelKind::Sm101 | ModelKind::Sm113 | ModelKind::Sm130Io
+            ) && !super::SMALL_MODEL)
         })
         .collect()
 }

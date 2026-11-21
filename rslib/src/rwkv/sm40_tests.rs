@@ -281,24 +281,104 @@ fn rwkv_sm115_feature_builder_matches_show_time_intervals() {
     check_show_time_intervals("sm115", &sm115_vectors());
 }
 
-/// The small engine reads the card layers from the weights: one for the
-/// tiny models (SM101, SM106, SM115), two for every other small model, at
-/// f32 and INT8 weights.
+/// The show-time two-head cool-down for Small (SM118), Small's two-head
+/// model since the 2026-11 release candidate: the small plan, show-time
+/// inputs, synthetic users (as below).
+fn sm118_vectors() -> Vec<u8> {
+    bundled_vectors(
+        "ANKI_RWKV_SM118_VECTORS",
+        include_bytes!("testdata/sm118-vectors.json.gz"),
+    )
+}
+
+#[test]
+fn rwkv_sm118_matches_published_vectors() {
+    check_published_vectors("sm118", &sm118_vectors());
+}
+
+#[test]
+fn rwkv_sm118_ignores_missing_id_flags_in_every_inference_path() {
+    check_ignores_missing_id_flags("sm118", &sm118_vectors());
+}
+
+#[test]
+fn rwkv_sm118_feature_builder_matches_show_time_intervals() {
+    check_show_time_intervals("sm118", &sm118_vectors());
+}
+
+/// The six-layer Tiny two-head model (SM130), Tiny's two-head model since
+/// the 2026-11 release candidate: the six-layer plan (arch `w64-c1-d2p1u1`),
+/// show-time inputs. The package's vectors are the training repository's
+/// PyTorch model on the two SYNTHETIC users of `synthetic_testvector_users.py`
+/// (no dataset data), checked against its NumPy reference (<= 1e-5), first
+/// 500 rows per user (`qt/tools/rwkv_sm40_vectors.py --limit 500
+/// --intervals`).
+fn sm130th_vectors() -> Vec<u8> {
+    bundled_vectors(
+        "ANKI_RWKV_SM130TH_VECTORS",
+        include_bytes!("testdata/sm130th-vectors.json.gz"),
+    )
+}
+
+#[test]
+fn rwkv_sm130th_matches_published_vectors() {
+    check_published_vectors("sm130th", &sm130th_vectors());
+}
+
+#[test]
+fn rwkv_sm130th_ignores_missing_id_flags_in_every_inference_path() {
+    check_ignores_missing_id_flags("sm130th", &sm130th_vectors());
+}
+
+#[test]
+fn rwkv_sm130th_feature_builder_matches_show_time_intervals() {
+    check_show_time_intervals("sm130th", &sm130th_vectors());
+}
+
+/// The six-layer Tiny Instant-Only model (SM130), Tiny's Instant-Only model
+/// since the 2026-11 release candidate: the six-layer plan, show-time
+/// inputs, synthetic users.
+fn sm130io_vectors() -> Vec<u8> {
+    bundled_vectors(
+        "ANKI_RWKV_SM130IO_VECTORS",
+        include_bytes!("testdata/sm130io-vectors.json.gz"),
+    )
+}
+
+#[test]
+fn rwkv_sm130io_matches_published_vectors() {
+    check_published_vectors("sm130io", &sm130io_vectors());
+}
+
+#[test]
+fn rwkv_sm130io_ignores_missing_id_flags_in_every_inference_path() {
+    check_ignores_missing_id_flags("sm130io", &sm130io_vectors());
+}
+
+#[test]
+fn rwkv_sm130io_feature_builder_matches_show_time_intervals() {
+    check_show_time_intervals("sm130io", &sm130io_vectors());
+}
+
+/// The small engine reads the layer counts from the weights: one card
+/// layer for the tiny models (SM101, SM106, SM115), the six-layer plan for
+/// the six-layer Tiny (SM130), the engine's plan for every other small
+/// model, at f32 and INT8 weights.
 #[test]
 fn rwkv_small_engine_reads_card_layers_from_the_weights() {
     for package in [
         "sm40v2", "sm36", "sm55", "sm56", "sm72", "sm72e20", "sm72e25", "sm92", "sm57", "sm98",
-        "sm101", "sm106", "sm113", "sm115",
+        "sm101", "sm106", "sm113", "sm115", "sm118", "sm130th", "sm130io",
     ] {
         for format in ["f32", "int8"] {
             let model = SrsModel::load(&PathBuf::from(env!("CARGO_MANIFEST_DIR")).join(format!(
                 "../qt/aqt/rwkv_inference/{package}/weights.{format}.bin"
             )))
             .unwrap();
-            let plan = if matches!(package, "sm101" | "sm106" | "sm115") {
-                TINY_LAYER_PLAN
-            } else {
-                ENGINE_LAYER_PLAN
+            let plan = match package {
+                "sm101" | "sm106" | "sm115" => TINY_LAYER_PLAN,
+                "sm130th" | "sm130io" => SIX_LAYER_PLAN,
+                _ => ENGINE_LAYER_PLAN,
             };
             assert_eq!(model.layer_plan, plan, "{package} {format}");
             let layers: Vec<_> = model.modules.iter().map(|m| m.layers.len()).collect();
@@ -555,14 +635,23 @@ fn rwkv_sm40_spec_matches_compiled_architecture() {
         include_str!("../../../qt/aqt/rwkv_inference/sm92/architecture.json"),
         include_str!("../../../qt/aqt/rwkv_inference/sm57/architecture.json"),
         include_str!("../../../qt/aqt/rwkv_inference/sm98/architecture.json"),
+        include_str!("../../../qt/aqt/rwkv_inference/sm113/architecture.json"),
+        include_str!("../../../qt/aqt/rwkv_inference/sm118/architecture.json"),
     ] {
         check_compiled_architecture(source, ENGINE_LAYER_PLAN);
     }
     for source in [
         include_str!("../../../qt/aqt/rwkv_inference/sm101/architecture.json"),
         include_str!("../../../qt/aqt/rwkv_inference/sm106/architecture.json"),
+        include_str!("../../../qt/aqt/rwkv_inference/sm115/architecture.json"),
     ] {
         check_compiled_architecture(source, TINY_LAYER_PLAN);
+    }
+    for source in [
+        include_str!("../../../qt/aqt/rwkv_inference/sm130th/architecture.json"),
+        include_str!("../../../qt/aqt/rwkv_inference/sm130io/architecture.json"),
+    ] {
+        check_compiled_architecture(source, SIX_LAYER_PLAN);
     }
 }
 
@@ -657,6 +746,35 @@ fn sm115_answer_time_vectors() -> Vec<AnswerTimeUser> {
     )
 }
 
+/// The answer-time head of the show-time two-head cool-down for Small
+/// (SM118) (SM119): the small layout, format 2.
+fn sm118_answer_time_vectors() -> Vec<AnswerTimeUser> {
+    answer_time_vectors(
+        "ANKI_RWKV_SM118_TIME_VECTORS",
+        include_bytes!("testdata/sm118-time-vectors.json.gz"),
+        &sm118_vectors(),
+    )
+}
+
+/// The answer-time heads of the six-layer Tiny (SM130) (SM138): 2 layer
+/// rounds, so 346 inputs (3 x 64 residuals, the 128-wide instant hidden
+/// layer, 26 history features), format 2. Synthetic users.
+fn sm130th_answer_time_vectors() -> Vec<AnswerTimeUser> {
+    answer_time_vectors(
+        "ANKI_RWKV_SM130TH_TIME_VECTORS",
+        include_bytes!("testdata/sm130th-time-vectors.json.gz"),
+        &sm130th_vectors(),
+    )
+}
+
+fn sm130io_answer_time_vectors() -> Vec<AnswerTimeUser> {
+    answer_time_vectors(
+        "ANKI_RWKV_SM130IO_TIME_VECTORS",
+        include_bytes!("testdata/sm130io-time-vectors.json.gz"),
+        &sm130io_vectors(),
+    )
+}
+
 fn answer_time_vectors(variable: &str, fixture: &[u8], vectors: &[u8]) -> Vec<AnswerTimeUser> {
     let data = if let Ok(path) = std::env::var(variable) {
         fs::read(path).unwrap()
@@ -732,6 +850,21 @@ fn rwkv_sm115_answer_time_history_matches_published_features() {
     check_answer_time_history("sm115", sm115_answer_time_vectors());
 }
 
+#[test]
+fn rwkv_sm118_answer_time_history_matches_published_features() {
+    check_answer_time_history("sm118", sm118_answer_time_vectors());
+}
+
+#[test]
+fn rwkv_sm130th_answer_time_history_matches_published_features() {
+    check_answer_time_history("sm130th", sm130th_answer_time_vectors());
+}
+
+#[test]
+fn rwkv_sm130io_answer_time_history_matches_published_features() {
+    check_answer_time_history("sm130io", sm130io_answer_time_vectors());
+}
+
 fn check_answer_time_history(package: &str, users: Vec<AnswerTimeUser>) {
     let mut maximum = 0.0_f32;
     for user in users {
@@ -793,6 +926,70 @@ fn rwkv_sm115_answer_time_head_matches_published_vectors() {
     check_answer_time_head("sm115", sm115_answer_time_vectors());
 }
 
+#[test]
+fn rwkv_sm118_answer_time_head_matches_published_vectors() {
+    check_answer_time_head("sm118", sm118_answer_time_vectors());
+}
+
+#[test]
+fn rwkv_sm130th_answer_time_head_matches_published_vectors() {
+    check_answer_time_head("sm130th", sm130th_answer_time_vectors());
+}
+
+#[test]
+fn rwkv_sm130io_answer_time_head_matches_published_vectors() {
+    check_answer_time_head("sm130io", sm130io_answer_time_vectors());
+}
+
+/// The answer-time head's width follows the layer plan: the four-round small
+/// and tiny heads take 474 inputs, the six-layer Tiny (SM130) heads 346.
+/// Each head loads beside its own model and is refused beside a model of the
+/// other width (a size never runs another size's head).
+#[test]
+fn rwkv_answer_time_head_width_follows_the_layer_plan() {
+    assert_eq!(AnswerTimeHead::INPUTS, 474);
+    assert_eq!(answer_time_inputs(TINY_LAYER_PLAN), 474);
+    assert_eq!(answer_time_inputs(SIX_LAYER_PLAN), 346);
+    let folder = PathBuf::from(env!("CARGO_MANIFEST_DIR")).join("../qt/aqt/rwkv_inference");
+    for (package, inputs) in [
+        ("sm92", 474),
+        ("sm106", 474),
+        ("sm113", 474),
+        ("sm115", 474),
+        ("sm118", 474),
+        ("sm130th", 346),
+        ("sm130io", 346),
+    ] {
+        for format in ["f32", "int8"] {
+            let weights = folder.join(format!("{package}/weights.{format}.bin"));
+            let model = SrsModel::load(&weights).unwrap();
+            assert_eq!(answer_time_inputs(model.layer_plan), inputs, "{package}");
+            let head = AnswerTimeHead::load_beside(&weights, inputs)
+                .unwrap()
+                .unwrap();
+            assert_eq!(head.inputs, inputs, "{package} {format}");
+            let other = if inputs == 346 { 474 } else { 346 };
+            assert!(
+                AnswerTimeHead::load_beside(&weights, other).is_err(),
+                "{package} {format}"
+            );
+            let engine = RwkvInference::load(weights, 0.9, 36_500).unwrap();
+            assert!(engine.has_answer_time_head(), "{package} {format}");
+        }
+    }
+    // A four-round head beside six-layer weights fails the model's load.
+    let dir = tempfile::tempdir().unwrap();
+    for name in ["weights.f32.bin", "architecture.json"] {
+        fs::copy(folder.join("sm130th").join(name), dir.path().join(name)).unwrap();
+    }
+    fs::copy(
+        folder.join("sm106/time_head.f32.bin"),
+        dir.path().join("time_head.f32.bin"),
+    )
+    .unwrap();
+    assert!(RwkvInference::load(dir.path().join("weights.f32.bin"), 0.9, 36_500).is_err());
+}
+
 fn check_answer_time_head(package: &str, users: Vec<AnswerTimeUser>) {
     let folder = PathBuf::from(env!("CARGO_MANIFEST_DIR"))
         .join(format!("../qt/aqt/rwkv_inference/{package}"));
@@ -800,6 +997,11 @@ fn check_answer_time_head(package: &str, users: Vec<AnswerTimeUser>) {
         let mut model = SrsModel::load(&folder.join(format!("weights.{format}.bin"))).unwrap();
         model.leak_free_inputs = true;
         let head = AnswerTimeHead::load(&folder.join(format!("time_head.{format}.bin"))).unwrap();
+        assert_eq!(
+            head.inputs,
+            answer_time_inputs(model.layer_plan),
+            "{package}"
+        );
         // Format 2 heads (SM117) also answer same-day queries.
         assert_eq!(head.same_day, package != "sm72e25", "{package}");
         let (mut maximum, mut logit_maximum, mut checked) = (0.0_f64, 0.0_f32, 0);

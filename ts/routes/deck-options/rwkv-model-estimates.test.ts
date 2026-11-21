@@ -12,11 +12,11 @@ describe("RWKV model estimates", () => {
         const paired = rwkvModelEstimates(usage, false, "compact_cards_int8", counts);
         expect(paired.map(({ perCardAndNote }) => perCardAndNote)).toEqual([46_354, 7_758, 5_298]);
         expect(paired.map(({ totalStateBytes }) => totalStateBytes)).toEqual([37_077_500, 6_433_500, 3_973_500]);
-        expect(paired.map(({ replaySaving }) => replaySaving)).toEqual([0, 77, 79]);
+        expect(paired.map(({ replaySaving }) => replaySaving)).toEqual([0, 77, 88]);
         const shared = rwkvModelEstimates(usage, true, "compact_cards_int8", counts);
         expect(shared.map(({ totalStateBytes }) => totalStateBytes)).toEqual([18_524_500, 3_202_500, 1_972_500]);
         expect(shared.map(({ curveLoss }) => curveLoss)).toEqual(paired.map(({ curveLoss }) => curveLoss));
-        expect(shared.map(({ instantLoss }) => instantLoss)).toEqual([0, 0.25, 0.43]);
+        expect(shared.map(({ instantLoss }) => instantLoss)).toEqual([0, 0.15, 0.68]);
     });
 
     test("uses the selected precision and omits totals when counts are unavailable", () => {

@@ -124,7 +124,7 @@ def test_saved_model_change_prompts_and_builds_without_reopening(
             rwkv_scheduler._finish_rwkv_state_cache_operation(
                 owner, ready=False, prewarm_reason="previous operation"
             )
-        assert builds == [(RwkvRuntimeModels("sm106", "sm101"), True, calibration)]
+        assert builds == [(RwkvRuntimeModels("sm130th", "sm130io"), True, calibration)]
     finally:
         timer.stop()
         timeout.stop()
@@ -176,8 +176,8 @@ def test_one_model_setting_keeps_the_same_state_with_one_scheduler(
 @pytest.mark.parametrize(
     "curve,instant,old_models,new_models",
     [
-        (False, True, ("sm98", None), RwkvRuntimeModels("sm101")),
-        (True, False, ("sm92", None), RwkvRuntimeModels("sm106")),
+        (False, True, ("sm98", None), RwkvRuntimeModels("sm130io")),
+        (True, False, ("sm92", None), RwkvRuntimeModels("sm130th")),
     ],
 )
 def test_saved_size_change_prompts_with_one_scheduler(
