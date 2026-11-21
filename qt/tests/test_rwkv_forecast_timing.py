@@ -748,6 +748,27 @@ def test_forecast_dispatches_instant_with_history_and_scheduler_settings(
     assert streamed[-1]["scenario_history_days"] == 40
     assert streamed[-1]["scenario_bias_sd"] == 0.03
 
+    # A state change that lands after the backend forecast returned must still
+    # surface as the readable InterruptedError, not the internal signal.
+    forecast_calls = len(calls)
+
+    def require_current_until_forecast() -> None:
+        if len(calls) > forecast_calls:
+            raise rwkv_scheduler._ReviewerBackendWarmupInvalidated
+
+    @contextmanager
+    def invalidated_operation(*_args: Any, **_kwargs: Any) -> Any:
+        yield (SimpleNamespace(require_current=require_current_until_forecast), None)
+
+    monkeypatch.setattr(
+        rwkv_scheduler, "_temporary_reviewer_backend_operation", invalidated_operation
+    )
+    with pytest.raises(InterruptedError, match="invalidated by state change"):
+        rwkv_scheduler.forecast_rwkv_workload(
+            mw=SimpleNamespace(col=col), days=1, paths=3
+        )
+    assert len(calls) == forecast_calls + 1
+
 
 @pytest.fixture(autouse=True)
 def _empty_forecast_replay_cache() -> Any:

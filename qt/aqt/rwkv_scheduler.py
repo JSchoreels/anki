@@ -895,7 +895,10 @@ class _ReviewerBackendTemporaryOperation:
 
 
 class _ReviewerBackendWarmupInvalidated(Exception):
-    pass
+    # Callers convert this to InterruptedError; the message covers any that
+    # escapes so a UI never shows only the class name.
+    def __init__(self, message: str = "RWKV state changed; run it again") -> None:
+        super().__init__(message)
 
 
 class _RwkvGradeNowReconciliationUnavailable(Exception):
@@ -16552,11 +16555,11 @@ def forecast_rwkv_workload(
                         review_model=review_model,
                         progress=report_progress,
                     )
+                operation.require_current()
             except _ReviewerBackendWarmupInvalidated as exc:
                 raise InterruptedError(
                     "RWKV workload forecast invalidated by state change"
                 ) from exc
-            operation.require_current()
     result = _rwkv_forecast_result(output, cards, days=days, seed=seed)
     if instant_used:
         result["review_time_model"] = (
