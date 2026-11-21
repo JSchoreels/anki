@@ -1,6 +1,6 @@
 # RWKV Fork FAQ
 
-This FAQ collects public questions about this fork's RWKV features, including
+This FAQ collects community questions about this fork's RWKV features, including
 posts that mention the fork or JSchoreels. Source questions are quoted and
 linked below. Related questions are summarized first. For a deeper explanation
 of RWKV and this fork's implementation, see [RWKV FAQ](RWKV_FAQ.md).
@@ -20,18 +20,36 @@ current recall predictions rather than those stored due dates.
 Source: [Q1](#q1--getting-started).
 Details: [Where do I select the scheduler?](RWKV_FAQ.md#where-do-i-select-the-scheduler)
 
-### Why does the due count change after each answer? Will switching create a backlog?
+### How should I interpret the due count in RWKV-Instant?
 
-RWKV-Instant reassesses recall predictions as you review. An answer can change
-predictions for other cards, so cards can enter or leave the eligible pool
-during a session. Switching from FSRS can therefore reveal more or fewer
-eligible reviews. The displayed count is a changing snapshot, not a fixed
-checklist. Better recall prediction does not guarantee fewer reviews.
+The due count is a snapshot of the cards currently eligible for review under
+the latest predictions and scheduling rules. As you answer, RWKV updates its
+assessment of your memory, which can change the eligibility of other cards.
 
-If you want a predictable stopping point despite those changes, use a daily
-review limit as explained in the next answer.
+**A count of 3,000 does not necessarily mean you must answer 3,000 times to
+finish.** Some cards may stop being eligible as predictions change, while
+others may become eligible. The count could fall much faster than one card per
+answer—or increase. The example of “3,000 to zero in 500 reviews” illustrates
+that possibility; it is not a measured result or a guarantee.
 
-Source: [Q3](#q3--changing-due-counts-and-backlogs).
+Consequently, an increase from 1,000 to 3,000 due cards does not establish that
+your actual daily workload has tripled. It shows that the schedulers currently
+assess your review needs differently.
+
+You can choose a sustainable stopping point, just as with FSRS. Reviewing less
+can affect the retention you achieve or how many cards you can maintain at your
+target retention. For a predictable daily workload, see
+[Should I limit my daily reviews? Why and how?](#should-i-limit-my-daily-reviews-why-and-how)
+
+Prediction accuracy is also distinct from workload. The benchmark evaluates
+predictions against recorded review outcomes; RWKV does not earn better scores
+by assigning extra reviews during that evaluation. A percentage improvement in
+prediction error does not directly translate into the same percentage increase
+in retention.
+[Benchmark methodology](https://github.com/open-spaced-repetition/srs-benchmark#evaluation)
+
+Sources: [Q3](#q3--changing-due-counts-and-backlogs)
+and [Q6](#q6--interpreting-due-counts-and-workload).
 Details: [RWKV-Instant and RWKV-Curve](RWKV_FAQ.md#how-do-rwkv-instant-and-rwkv-curve-differ)
 and [workload](RWKV_FAQ.md#does-rwkv-guarantee-fewer-reviews-than-fsrs).
 
@@ -98,7 +116,17 @@ Answer: [How do I enable RWKV-Instant?](#how-do-i-enable-rwkv-instant)
 u/Ready-Bumblebee-6220, 2026-11-20,
 [Recommended settings for RWKV Instant on Anki?](https://www.reddit.com/r/Anki/comments/1y0u0h1/recommended_settings_for_rwkv_instant_on_anki/)
 
-Answer: [Why does the due count change after each answer? Will switching create a backlog?](#why-does-the-due-count-change-after-each-answer-will-switching-create-a-backlog)
+Answer: [How should I interpret the due count in RWKV-Instant?](#how-should-i-interpret-the-due-count-in-rwkv-instant)
+
+### Q6 — Interpreting due counts and workload
+
+> It went from 1k to 3k
+
+> I thought the point of rwkv is that you can just stop whenever you want, instead of having a fixed amount of workload per day?
+
+[Anki Discord](https://discord.com/channels/368267295601983490/1347982145418694747/1573680088665432259)
+
+Answer: [How should I interpret the due count in RWKV-Instant?](#how-should-i-interpret-the-due-count-in-rwkv-instant)
 
 ### Q2 — Daily review limits
 
