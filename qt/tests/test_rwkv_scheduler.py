@@ -153,6 +153,7 @@ def reset_rwkv_reviewer_backend() -> Iterator[None]:
     rwkv_scheduler._reviewer_backend_assignment_generation = 0
     rwkv_scheduler._reviewer_backend_warmup_generations.clear()
     rwkv_scheduler._reviewer_backend_warmup_pending_generations.clear()
+    rwkv_scheduler._reviewer_backend_temporary_operation_keys.clear()
     rwkv_scheduler._reviewer_backend_cold_fallback_generations.clear()
     rwkv_scheduler._rwkv_memorised_history_identity_cache.clear()
     rwkv_scheduler._resolved_preset_id_cache.clear()
@@ -13868,6 +13869,124 @@ def test_rwkv_state_cache_recovery_refreshes_review_only_when_requested(
 
     assert builds == (["preset change"] if allow_during_review else [])
     assert refreshed == ([True] if allow_during_review else [])
+
+
+def _held_state_recovery_harness(
+    monkeypatch: pytest.MonkeyPatch,
+) -> SimpleNamespace:
+    backend = SimpleNamespace()
+    set_reviewer_backend(cast(Any, backend))
+    harness = SimpleNamespace(
+        backend=backend, timers=[], builds=[], refreshes=[], mw=None, key=None
+    )
+    harness.mw = SimpleNamespace(
+        state="overview",
+        col=SimpleNamespace(db=object()),
+        progress=SimpleNamespace(
+            single_shot=lambda _delay, callback: harness.timers.append(callback)
+        ),
+        onRefreshTimer=lambda: harness.refreshes.append(True),
+    )
+    harness.reviewer = SimpleNamespace(mw=harness.mw)
+    harness.key = rwkv_scheduler._reviewer_backend_warmup_key(harness.reviewer)
+    rwkv_scheduler._reviewer_backend_warmup_states[harness.key] = (
+        _rwkv_resident_identity()
+    )
+    monkeypatch.setattr(
+        rwkv_scheduler,
+        "_rwkv_collection_config_state",
+        lambda _reviewer: SimpleNamespace(review_enabled=True),
+    )
+    monkeypatch.setattr(
+        rwkv_scheduler, "configure_reviewer_backend_from_environment", lambda: True
+    )
+    monkeypatch.setattr(
+        rwkv_scheduler,
+        "build_rwkv_state_cache_with_progress",
+        lambda _mw, **kwargs: harness.builds.append(kwargs["recovery_reason"]),
+    )
+    return harness
+
+
+def _held_state_operation(
+    harness: SimpleNamespace, *, restore_fails: bool = False
+) -> Any:
+    def restore(_snapshot: object) -> None:
+        if restore_fails:
+            raise RuntimeError("restore failed")
+
+    return rwkv_scheduler._temporary_reviewer_backend_operation(
+        harness.reviewer,
+        cast(Any, harness.backend),
+        cache_snapshot=lambda: "snapshot",
+        restore_cache_snapshot=restore,
+    )
+
+
+@pytest.mark.parametrize("outcome", ["restored", "invalidated", "restore failed"])
+def test_rwkv_state_recovery_is_deferred_while_temporary_operation_holds_state(
+    monkeypatch: pytest.MonkeyPatch, outcome: str
+) -> None:
+    harness = _held_state_recovery_harness(monkeypatch)
+    mw = harness.mw
+
+    def run_operation() -> None:
+        with _held_state_operation(
+            harness, restore_fails=outcome == "restore failed"
+        ) as operation:
+            assert operation is not None
+            assert not rwkv_scheduler._rwkv_resident_state_ready(mw)
+            assert not rwkv_scheduler.request_rwkv_state_cache_recovery(
+                mw, reason="overview"
+            )
+            assert not rwkv_scheduler.request_rwkv_state_cache_recovery(
+                mw, reason="deck or preset change", allow_during_review=True
+            )
+            assert harness.timers == []
+            assert mw._rwkv_state_cache_recovery_deferred == (
+                "deck or preset change",
+                True,
+            )
+            if outcome == "invalidated":
+                rwkv_scheduler._reviewer_backend_warmup_generations[harness.key] = 1
+
+    if outcome == "restore failed":
+        with pytest.raises(RuntimeError, match="restore failed"):
+            run_operation()
+    else:
+        run_operation()
+
+    assert rwkv_scheduler._reviewer_backend_temporary_operation_keys == set()
+    assert mw._rwkv_state_cache_recovery_deferred is None
+    assert len(harness.timers) == 1
+    harness.timers.pop()()
+
+    if outcome == "restored":
+        assert harness.builds == []
+        assert harness.refreshes == [True]
+    else:
+        assert harness.builds == ["deck or preset change"]
+
+
+def test_scheduled_rwkv_state_recovery_is_deferred_when_operation_starts_first(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    harness = _held_state_recovery_harness(monkeypatch)
+    rwkv_scheduler._reviewer_backend_warmup_states.pop(harness.key)
+    assert rwkv_scheduler.request_rwkv_state_cache_recovery(
+        harness.mw, reason="overview"
+    )
+    scheduled_start = harness.timers.pop()
+
+    with _held_state_operation(harness) as operation:
+        assert operation is not None
+        scheduled_start()
+        assert harness.builds == []
+        assert harness.mw._rwkv_state_cache_recovery_deferred == ("overview", False)
+
+    # Nothing was resident before the operation, so the re-run must recover.
+    harness.timers.pop()()
+    assert harness.builds == ["overview"]
 
 
 def test_rwkv_state_cache_recovery_does_not_run_in_another_collection(
