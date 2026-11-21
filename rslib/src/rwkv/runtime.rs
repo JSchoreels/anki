@@ -384,6 +384,10 @@ impl RwkvRuntime {
             StatePrecision::Int4CardsInt8Notes => {
                 super::alternate::StatePrecision::Int4CardsInt8Notes
             }
+            StatePrecision::Int8Compact => super::alternate::StatePrecision::Int8Compact,
+            StatePrecision::Int4Compact => super::alternate::StatePrecision::Int4Compact,
+            StatePrecision::CompactCardsInt8 => super::alternate::StatePrecision::CompactCardsInt8,
+            StatePrecision::CompactCardsInt4 => super::alternate::StatePrecision::CompactCardsInt4,
         };
         let engine = super::alternate::RwkvInference::load_with_precision(
             path,
@@ -1128,6 +1132,8 @@ mod tests {
             StatePrecision::F32,
             StatePrecision::Int8,
             StatePrecision::Int4CardsInt8Notes,
+            StatePrecision::CompactCardsInt8,
+            StatePrecision::CompactCardsInt4,
         ] {
             let mut legacy = load(ModelKind::Legacy, precision);
             let mut small = load(ModelKind::Sm40, precision);
@@ -1427,6 +1433,8 @@ mod tests {
             StatePrecision::F32,
             StatePrecision::Int8,
             StatePrecision::Int4CardsInt8Notes,
+            StatePrecision::CompactCardsInt8,
+            StatePrecision::CompactCardsInt4,
         ] {
             let mut engine = load(ModelKind::Sm106, precision);
             assert!(!engine.is_paired() && engine.has_curve(), "{precision:?}");
@@ -1677,6 +1685,8 @@ mod tests {
                 StatePrecision::F32,
                 StatePrecision::Int8,
                 StatePrecision::Int4CardsInt8Notes,
+                StatePrecision::CompactCardsInt8,
+                StatePrecision::CompactCardsInt4,
             ]
             .map(|p| (model, p))
         }) {
@@ -1720,19 +1730,27 @@ mod tests {
             return;
         }
         // (two-head model, Instant-Only model, stored pair bytes per card and
-        // note at int4 cards + int8 notes)
-        for (release, instant, stored) in [
-            ((ModelKind::Sm92, "sm92"), (ModelKind::Sm98, "sm98"), 7_098),
+        // note at int4 cards + int8 notes and at the compact default)
+        for (release, instant, stored, stored_compact) in [
+            (
+                (ModelKind::Sm92, "sm92"),
+                (ModelKind::Sm98, "sm98"),
+                7_098,
+                7_758,
+            ),
             (
                 (ModelKind::Sm106, "sm106"),
                 (ModelKind::Sm101, "sm101"),
                 5_282,
+                5_298,
             ),
         ] {
             for precision in [
                 StatePrecision::F32,
                 StatePrecision::Int8,
                 StatePrecision::Int4CardsInt8Notes,
+                StatePrecision::CompactCardsInt8,
+                StatePrecision::CompactCardsInt4,
             ] {
                 let label = format!("{}+{} {precision:?}", release.1, instant.1);
                 let pair = || {
@@ -1753,14 +1771,19 @@ mod tests {
                 let head = release.0 == ModelKind::Sm92;
                 assert_eq!(pair().has_answer_time_head(), head, "{label}");
                 assert_eq!(alone.has_answer_time_head(), head, "{label}");
-                if precision == StatePrecision::Int4CardsInt8Notes {
+                let expected = match precision {
+                    StatePrecision::Int4CardsInt8Notes => Some(stored),
+                    StatePrecision::CompactCardsInt8 => Some(stored_compact),
+                    _ => None,
+                };
+                if let Some(expected) = expected {
                     let mut engine = pair();
                     let answers = crate::rwkv::precision_tests::reviews(14);
                     engine.warm_up_reviews(answers.clone(), false).unwrap();
                     let state = engine.warm_up_state(&answers[0]).unwrap();
                     assert_eq!(
                         state.card.unwrap().len() + state.note.unwrap().len(),
-                        stored,
+                        expected,
                         "{label}"
                     );
                 }
@@ -1926,6 +1949,8 @@ mod tests {
                 StatePrecision::F32,
                 StatePrecision::Int8,
                 StatePrecision::Int4CardsInt8Notes,
+                StatePrecision::CompactCardsInt8,
+                StatePrecision::CompactCardsInt4,
             ]
             .map(|p| (model, p))
         }) {
@@ -2187,7 +2212,7 @@ mod tests {
             .is_err());
             return;
         }
-        let precision = StatePrecision::Int4CardsInt8Notes;
+        let precision = StatePrecision::CompactCardsInt8;
         check_pair_state_round_trips(|| paired(precision), load(ModelKind::Sm72e25, precision));
     }
 
@@ -2411,6 +2436,8 @@ mod tests {
             StatePrecision::F32,
             StatePrecision::Int8,
             StatePrecision::Int4CardsInt8Notes,
+            StatePrecision::CompactCardsInt8,
+            StatePrecision::CompactCardsInt4,
         ] {
             let pair = big_pair(precision);
             let release = load(ModelKind::Legacy, precision);
@@ -2428,6 +2455,8 @@ mod tests {
             StatePrecision::F32,
             StatePrecision::Int8,
             StatePrecision::Int4CardsInt8Notes,
+            StatePrecision::CompactCardsInt8,
+            StatePrecision::CompactCardsInt4,
         ] {
             let alone = load(ModelKind::Sm99, precision);
             assert!(!alone.is_paired() && !alone.has_curve());
@@ -2441,7 +2470,7 @@ mod tests {
 
     #[test]
     fn rwkv_big_pair_state_round_trips() {
-        let precision = StatePrecision::Int4CardsInt8Notes;
+        let precision = StatePrecision::CompactCardsInt8;
         check_pair_state_round_trips(|| big_pair(precision), load(ModelKind::Legacy, precision));
     }
 
@@ -2454,7 +2483,7 @@ mod tests {
     /// pairing.
     #[test]
     fn rwkv_switching_sizes_never_reuses_another_layout_state() {
-        let precision = StatePrecision::Int4CardsInt8Notes;
+        let precision = StatePrecision::CompactCardsInt8;
         let answers = crate::rwkv::precision_tests::reviews(14);
         // (name, small architecture, runtime)
         let mut layouts = vec![
@@ -2557,6 +2586,8 @@ mod tests {
             StatePrecision::F32,
             StatePrecision::Int8,
             StatePrecision::Int4CardsInt8Notes,
+            StatePrecision::CompactCardsInt8,
+            StatePrecision::CompactCardsInt4,
         ] {
             let sizes = |mut engine: RwkvRuntime| {
                 engine.warm_up_reviews(answers.clone(), false).unwrap();

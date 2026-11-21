@@ -4,11 +4,13 @@
 use super::state_scope_bench::load_for_scopes;
 use super::*;
 
-const PRECISIONS: [(StatePrecision, [bool; 3]); 4] = [
+const PRECISIONS: [(StatePrecision, [bool; 3]); 6] = [
     (StatePrecision::F32, [false; 3]),
     (StatePrecision::Int8, [false; 3]),
     (StatePrecision::Int4CardsInt8Notes, [false; 3]),
     (StatePrecision::Int8, [true; 3]),
+    (StatePrecision::CompactCardsInt8, [false; 3]),
+    (StatePrecision::CompactCardsInt4, [false; 3]),
 ];
 
 /// The tiny model (the smaller instant-only model, SM101): one card layer.
@@ -94,31 +96,38 @@ fn rwkv_state_precision_mixed_packs_cards_as_int4_and_notes_as_int8() {
 }
 
 fn check_mixed_packs_cards_as_int4_and_notes_as_int8(weights: &Path) {
-    let precision = StatePrecision::parse("cards_int4_notes_int8").unwrap();
-    let mut mixed = runtime(weights, precision, [false; 3]);
     let mut int8 = runtime(weights, StatePrecision::Int8, [false; 3]);
-    mixed.warm_up_reviews(reviews(14), false).unwrap();
     int8.warm_up_reviews(reviews(14), false).unwrap();
-    for (&id, state) in &mixed.warm_up_states.card {
-        let bytes = state.packed.as_ref().unwrap();
-        assert_eq!(bytes[precision::MAGIC.len()], 4);
-        assert!(bytes.len() < int8.warm_up_states.card[&id].packed.as_ref().unwrap().len());
+    // (policy, card precision byte, note precision byte, card smaller than int8,
+    // note smaller than int8)
+    for (name, card_code, note_code, card_smaller, note_smaller) in [
+        ("cards_int4_notes_int8", 4, 8, true, false),
+        ("compact_cards_int8", 0x18, 0x18, true, true),
+        ("compact_cards_int4", 0x14, 0x18, true, true),
+    ] {
+        let precision = StatePrecision::parse(name).unwrap();
+        let mut mixed = runtime(weights, precision, [false; 3]);
+        mixed.warm_up_reviews(reviews(14), false).unwrap();
+        for (&id, state) in &mixed.warm_up_states.card {
+            let bytes = state.packed.as_ref().unwrap();
+            assert_eq!(bytes[precision::MAGIC.len()], card_code, "{name}");
+            let int8_len = int8.warm_up_states.card[&id].packed.as_ref().unwrap().len();
+            assert_eq!(bytes.len() < int8_len, card_smaller, "{name}");
+        }
+        for (&id, state) in &mixed.warm_up_states.note {
+            let bytes = state.packed.as_ref().unwrap();
+            assert_eq!(bytes[precision::MAGIC.len()], note_code, "{name}");
+            let int8_len = int8.warm_up_states.note[&id].packed.as_ref().unwrap().len();
+            assert_eq!(bytes.len() < int8_len, note_smaller, "{name}");
+        }
+        assert!(mixed
+            .warm_up_states
+            .deck
+            .values()
+            .chain(mixed.warm_up_states.preset.values())
+            .chain(&mixed.warm_up_states.global)
+            .all(|state| state.packed.is_none()));
     }
-    for (&id, state) in &mixed.warm_up_states.note {
-        let bytes = state.packed.as_ref().unwrap();
-        assert_eq!(bytes[precision::MAGIC.len()], 8);
-        assert_eq!(
-            bytes.len(),
-            int8.warm_up_states.note[&id].packed.as_ref().unwrap().len()
-        );
-    }
-    assert!(mixed
-        .warm_up_states
-        .deck
-        .values()
-        .chain(mixed.warm_up_states.preset.values())
-        .chain(&mixed.warm_up_states.global)
-        .all(|state| state.packed.is_none()));
 }
 
 #[test]
@@ -180,11 +189,26 @@ fn rwkv_state_precision_queries_and_undo_read_packed_history() {
         let features = inference.features.features_for(&query);
         let packed = inference.warm_up_states.state_owned(&query);
         let decoded = SrsStateOwned {
-            card: packed.card.clone().map(ModuleState::into_decoded),
-            note: packed.note.clone().map(ModuleState::into_decoded),
-            deck: packed.deck.clone().map(ModuleState::into_decoded),
-            preset: packed.preset.clone().map(ModuleState::into_decoded),
-            global: packed.global.clone().map(ModuleState::into_decoded),
+            card: packed
+                .card
+                .clone()
+                .map(|state| state.try_into_decoded().unwrap()),
+            note: packed
+                .note
+                .clone()
+                .map(|state| state.try_into_decoded().unwrap()),
+            deck: packed
+                .deck
+                .clone()
+                .map(|state| state.try_into_decoded().unwrap()),
+            preset: packed
+                .preset
+                .clone()
+                .map(|state| state.try_into_decoded().unwrap()),
+            global: packed
+                .global
+                .clone()
+                .map(|state| state.try_into_decoded().unwrap()),
         };
         // Query-only scalar, GEMM batch, and full review heads all read the same
         // truncated history. Empty packed layers must never mean fresh state.
@@ -362,8 +386,9 @@ fn rwkv_state_precision_session_checkpoints_and_spills_preserve_continuation() {
 }
 
 /// Bytes of one stored card or note layer: shift vectors at f16 and the WKV
-/// matrix as one f32 scale plus the codes per row (int8 and int4), or the
-/// f32 layout without compaction.
+/// matrix as one f32 scale plus the codes per row (int8 and int4); in the
+/// compact layout int8 shift codes with one f16 scale per vector and one f16
+/// scale per row; or the f32 layout without compaction.
 fn stored_layer_bytes(precision: StatePrecision, channel_mixer: bool) -> usize {
     let rows = HEADS * HEAD_SIZE;
     let channel = usize::from(channel_mixer);
@@ -379,7 +404,15 @@ fn stored_layer_bytes(precision: StatePrecision, channel_mixer: bool) -> usize {
             };
             (4 + 2 * D_MODEL) + (4 + rows * (4 + codes)) + 4 + 2 * D_MODEL * channel
         }
-        StatePrecision::Int4CardsInt8Notes => unreachable!(),
+        StatePrecision::Int8Compact | StatePrecision::Int4Compact => {
+            let codes = if precision == StatePrecision::Int8Compact {
+                HEAD_SIZE
+            } else {
+                HEAD_SIZE / 2
+            };
+            (4 + 2 + D_MODEL) + (4 + rows * (2 + codes)) + 4 + (2 + D_MODEL) * channel
+        }
+        _ => unreachable!(),
     }
 }
 
@@ -387,7 +420,10 @@ fn stored_layer_bytes(precision: StatePrecision, channel_mixer: bool) -> usize {
 /// Instant-Only model (SM101) and the Tiny two-head model (SM106)) keep one
 /// card layer (the one with a channel mixer), the small model two; notes are
 /// the same. Per card + note, int8: small 4,554 B, tiny 3,134 B; int4 cards +
-/// int8 notes: 3,530 B and 2,622 B; f32: 13,640 B and 9,276 B.
+/// int8 notes: 3,530 B and 2,622 B; f32: 13,640 B and 9,276 B. Compact
+/// (float16 scales, int8 shifts), card / note: int8 cards small 2,545 /
+/// 1,315 B, tiny 1,315 / 1,315 B; int4 cards small 1,521 / 1,315 B, tiny
+/// 803 / 1,315 B (the training repository's `w8+s8hx8` and `w8+s4c8nhx8`).
 #[test]
 fn rwkv_state_precision_stored_sizes_of_the_small_and_tiny_models() {
     if !SMALL_MODEL {
@@ -415,6 +451,16 @@ fn rwkv_state_precision_stored_sizes_of_the_small_and_tiny_models() {
                 StatePrecision::Int4CardsInt8Notes,
                 StatePrecision::Int4,
                 StatePrecision::Int8,
+            ),
+            (
+                StatePrecision::CompactCardsInt8,
+                StatePrecision::Int8Compact,
+                StatePrecision::Int8Compact,
+            ),
+            (
+                StatePrecision::CompactCardsInt4,
+                StatePrecision::Int4Compact,
+                StatePrecision::Int8Compact,
             ),
         ] {
             let mut inference = runtime(&weights, precision, [false; 3]);
@@ -446,11 +492,69 @@ fn rwkv_state_precision_stored_sizes_of_the_small_and_tiny_models() {
                     "{weights:?} {precision:?}"
                 );
             }
-            per_card_and_note.push(card_bytes + note_bytes);
+            per_card_and_note.push((card_bytes, note_bytes));
         }
     }
+    let small = [
+        (9_002, 4_638),
+        (2_987, 1_567),
+        (1_963, 1_567),
+        (2_545, 1_315),
+        (1_521, 1_315),
+    ];
+    let tiny = [
+        (4_638, 4_638),
+        (1_567, 1_567),
+        (1_055, 1_567),
+        (1_315, 1_315),
+        (803, 1_315),
+    ];
+    assert_eq!(per_card_and_note, [small, tiny, tiny].concat());
+}
+
+/// Big (the bundled big model): stored card / note bytes per policy. Compact
+/// int8 cards: 13,891 / 9,267 B; compact int4 cards: 7,747 / 9,267 B; plain
+/// int4 cards + int8 notes: 9,271 / 10,283 B; int8: 15,415 / 10,283 B.
+#[test]
+fn rwkv_state_precision_stored_sizes_of_the_big_model() {
+    if SMALL_MODEL {
+        return;
+    }
+    let root = PathBuf::from(env!("CARGO_MANIFEST_DIR"));
+    let mut sizes = Vec::new();
+    for precision in [
+        StatePrecision::Int8,
+        StatePrecision::Int4CardsInt8Notes,
+        StatePrecision::CompactCardsInt8,
+        StatePrecision::CompactCardsInt4,
+    ] {
+        let mut inference = runtime(&root.join(MODEL_PATH), precision, [false; 3]);
+        inference.warm_up_reviews(reviews(14), false).unwrap();
+        let card: HashSet<usize> = inference
+            .warm_up_states
+            .card
+            .values()
+            .map(|state| serialize_module_state(state).len())
+            .collect();
+        let note: HashSet<usize> = inference
+            .warm_up_states
+            .note
+            .values()
+            .map(|state| serialize_module_state(state).len())
+            .collect();
+        assert_eq!((card.len(), note.len()), (1, 1), "{precision:?}");
+        sizes.push((
+            card.into_iter().next().unwrap(),
+            note.into_iter().next().unwrap(),
+        ));
+    }
     assert_eq!(
-        per_card_and_note,
-        [13_640, 4_554, 3_530, 9_276, 3_134, 2_622, 9_276, 3_134, 2_622]
+        sizes,
+        [
+            (15_415, 10_283),
+            (9_271, 10_283),
+            (13_891, 9_267),
+            (7_747, 9_267)
+        ]
     );
 }

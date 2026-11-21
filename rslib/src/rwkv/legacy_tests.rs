@@ -244,3 +244,166 @@ fn rwkv_legacy_feature_builder_matches_show_time_intervals() {
     assert!(queries > 0);
     println!("legacy interval features: {queries} queries, maximum absolute error {maximum}");
 }
+
+#[derive(serde::Deserialize)]
+struct CompactVectorRow {
+    features: Vec<f32>,
+    ids: [i64; 5],
+    skip: bool,
+    elapsed: f32,
+    fp32: Vec<f32>,
+    compact_int8: Vec<f32>,
+    compact_int4: Vec<f32>,
+}
+
+#[derive(serde::Deserialize)]
+struct CompactVectors {
+    name: String,
+    sweep: Vec<f32>,
+    rows: Vec<CompactVectorRow>,
+}
+
+fn compact_input(row: &CompactVectorRow) -> ReviewInput {
+    ReviewInput {
+        card_id: row.ids[0],
+        deck_id: Some(row.ids[1]),
+        note_id: Some(row.ids[2]),
+        preset_id: Some(row.ids[3]),
+        is_query: row.skip,
+        ease: None,
+        duration_millis: None,
+        card_type: None,
+        day_offset: None,
+        current_elapsed_days: None,
+        current_elapsed_seconds: None,
+        target_retentions: [None; 4],
+        enforce_grade_order: true,
+    }
+}
+
+fn compact_outputs(heads: &ReviewHeads, elapsed: f32, sweep: &[f32]) -> Vec<f32> {
+    let mut out = vec![heads.retrievability.clamp(1e-5, 1.0 - 1e-5)];
+    out.extend(heads.button_probabilities);
+    out.push(predict_curve(&heads.curve, elapsed));
+    out.extend(
+        sweep
+            .iter()
+            .map(|&elapsed| predict_curve(&heads.curve, elapsed)),
+    );
+    out
+}
+
+/// The training repository scorer's outputs of the show-time big model
+/// (SM91s2, float32 weights) with the card and note state stored rounded
+/// after every answer, at float32, `compact_cards_int8` and
+/// `compact_cards_int4`, on the two SYNTHETIC users of
+/// `synthetic_testvector_users.py` (show-time inputs, first 500 rows per user;
+/// made by `qt/tools/rwkv_compact_state_big_vectors.py`).
+/// `ANKI_RWKV_COMPACT_BIG_VECTORS` points the test at the full vectors.
+///
+/// Float32 state must match within 1e-5. A rounded state is chaotic: a float
+/// summation-order difference of one ulp flips an occasional code, and the
+/// flip carries forward. So the compact gate is measured against that floor:
+/// the same model run on inputs moved by one ulp. The mean difference from
+/// the scorer must stay within three times the mean difference the one-ulp
+/// change causes, and the rounding's effect (the mean distance from the float32
+/// state) must agree with the scorer's within 5%: a missing or extra rounding
+/// step changes that effect.
+#[test]
+fn rwkv_legacy_compact_state_matches_the_scorer() {
+    let data = {
+        let bytes = match std::env::var("ANKI_RWKV_COMPACT_BIG_VECTORS") {
+            Ok(path) => fs::read(path).unwrap(),
+            Err(_) => include_bytes!("testdata/compact-state-big-vectors.json.gz").to_vec(),
+        };
+        let mut data = Vec::new();
+        flate2::read::GzDecoder::new(&bytes[..])
+            .read_to_end(&mut data)
+            .unwrap();
+        data
+    };
+    let vectors: Vec<CompactVectors> = serde_json::from_slice(&data).unwrap();
+    for (label, precision) in [
+        ("fp32", StatePrecision::F32),
+        ("compact_int8", StatePrecision::CompactCardsInt8),
+        ("compact_int4", StatePrecision::CompactCardsInt4),
+    ] {
+        let mut model = legacy_model();
+        let (card, note) = precision.module_precisions();
+        model.modules[0].precision = card;
+        model.modules[2].precision = note;
+        let (mut count, mut maximum, mut above) = (0usize, 0.0_f32, 0usize);
+        let (mut scorer, mut ulp, mut effect, mut scorer_effect) = (0.0_f64, 0.0, 0.0, 0.0);
+        for user in &vectors {
+            let mut states = ReviewStateMaps::default();
+            let mut moved_states = ReviewStateMaps::default();
+            for (index, row) in user.rows.iter().enumerate() {
+                let input = compact_input(row);
+                let heads = model.review(&row.features, states.state_ref(&input));
+                let moved_features: Vec<f32> = row
+                    .features
+                    .iter()
+                    .map(|&value| {
+                        if value == 0.0 {
+                            value
+                        } else {
+                            f32::from_bits(value.to_bits() + 1)
+                        }
+                    })
+                    .collect();
+                let rounded = label != "fp32";
+                let actual = compact_outputs(&heads, row.elapsed, &user.sweep);
+                let moved_heads =
+                    rounded.then(|| model.review(&moved_features, moved_states.state_ref(&input)));
+                let moved = moved_heads.as_ref().map_or_else(
+                    || actual.clone(),
+                    |moved| compact_outputs(moved, row.elapsed, &user.sweep),
+                );
+                let expected = match label {
+                    "fp32" => &row.fp32,
+                    "compact_int8" => &row.compact_int8,
+                    _ => &row.compact_int4,
+                };
+                assert_eq!(actual.len(), expected.len());
+                for (head, &a) in actual.iter().enumerate() {
+                    let error = (a - expected[head]).abs();
+                    if label == "fp32" {
+                        assert!(
+                            error <= 1e-5,
+                            "{} row {index} head {head}: {a} != {}",
+                            user.name,
+                            expected[head]
+                        );
+                    }
+                    count += 1;
+                    maximum = maximum.max(error);
+                    above += usize::from(error > 1e-4);
+                    scorer += f64::from(error);
+                    ulp += f64::from((a - moved[head]).abs());
+                    effect += f64::from((a - row.fp32[head]).abs());
+                    scorer_effect += f64::from((expected[head] - row.fp32[head]).abs());
+                }
+                if !row.skip {
+                    states.store(&input, heads.next_state);
+                    if let Some(moved) = moved_heads {
+                        moved_states.store(&input, moved.next_state);
+                    }
+                }
+            }
+        }
+        let n = count as f64;
+        let (scorer, ulp, effect, scorer_effect) =
+            (scorer / n, ulp / n, effect / n, scorer_effect / n);
+        println!(
+            "{label}: {count} outputs; vs the scorer: mean {scorer:.3e}, maximum {maximum:.3e}, {above} above 1e-4; \
+             one-ulp input change: mean {ulp:.3e}; mean distance from float32 state: {effect:.3e} (scorer {scorer_effect:.3e})"
+        );
+        if label != "fp32" {
+            assert!(scorer <= 3.0 * ulp, "{label}: {scorer} > 3 x {ulp}");
+            assert!(
+                (effect - scorer_effect).abs() <= 0.05 * scorer_effect,
+                "{label}: rounding effect {effect} vs the scorer's {scorer_effect}"
+            );
+        }
+    }
+}

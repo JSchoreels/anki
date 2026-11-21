@@ -4,8 +4,8 @@
 //! Manual benchmark of the runtimes behind the Big / Small / Tiny model
 //! sizes: answer replay (reviews/s), queue scoring, full predictions and the
 //! stored state per card, on a synthetic history of 4,000 cards, 2,000
-//! notes and 32,000 answers at the default state precision (int4 cards +
-//! int8 notes).
+//! notes and 32,000 answers at the default state precision (compact int8
+//! cards and notes, `compact_cards_int8`).
 //!
 //! ```sh
 //! ANKI_RWKV_SIZE_BENCH_RUNTIMES=small,small-pair,small-instant \
@@ -14,7 +14,8 @@
 //!
 //! `ANKI_RWKV_SIZE_BENCH_RUNTIMES` picks runtimes (default: all that load),
 //! `ANKI_RWKV_SIZE_BENCH_SAMPLES` the timed samples per runtime (default 5,
-//! after one untimed warm-up sample). A runtime whose model key the engine
+//! after one untimed warm-up sample), `ANKI_RWKV_SIZE_BENCH_PRECISION` the
+//! state precision (default `compact_cards_int8`). A runtime whose model key the engine
 //! does not know is skipped, so the same file runs on older sources.
 
 use std::path::PathBuf;
@@ -52,7 +53,10 @@ const RUNTIMES: [(&str, &str, Option<&str>); 10] = [
 ];
 
 fn load(main: &str, instant: Option<&str>) -> Option<RwkvRuntime> {
-    let precision = StatePrecision::Int4CardsInt8Notes;
+    let precision = StatePrecision::parse(
+        &std::env::var("ANKI_RWKV_SIZE_BENCH_PRECISION").unwrap_or("compact_cards_int8".into()),
+    )
+    .unwrap();
     let main_kind = ModelKind::parse(main).ok()?;
     Some(match instant {
         None => RwkvRuntime::load_with_precision(weights(main), 0.9, 36_500, precision, main_kind)

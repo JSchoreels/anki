@@ -811,10 +811,7 @@ impl RwkvInference {
         max_interval_days: u32,
         precision: StatePrecision,
     ) -> Self {
-        let (card_precision, note_precision) = match precision {
-            StatePrecision::Int4CardsInt8Notes => (StatePrecision::Int4, StatePrecision::Int8),
-            precision => (precision, precision),
-        };
+        let (card_precision, note_precision) = precision.module_precisions();
         model.modules[0].precision = card_precision;
         model.modules[2].precision = note_precision;
         Self {
@@ -4336,7 +4333,7 @@ impl SrsModel {
         ];
         let decoded: Vec<_> = states
             .iter()
-            .map(|state| state.map(ModuleState::decoded))
+            .map(|state| state.and_then(ModuleState::decoded_or_fresh))
             .collect();
         let mut x = x;
         let mut v0 = [const { Vec::new() }; 5];
@@ -4413,7 +4410,7 @@ impl SrsModel {
         ];
         let decoded: Vec<_> = states
             .iter()
-            .map(|state| state.map(ModuleState::decoded))
+            .map(|state| state.and_then(ModuleState::decoded_or_fresh))
             .collect();
         let mut v0 = [const { Vec::new() }; 5];
         let steps = self.layer_plan.steps;
@@ -11124,7 +11121,11 @@ order by e.id, e.cid
                     review.current_elapsed_seconds.map(|seconds| seconds.max(0));
             }
         }
-        for precision in [StatePrecision::F32, StatePrecision::Int4CardsInt8Notes] {
+        for precision in [
+            StatePrecision::F32,
+            StatePrecision::Int4CardsInt8Notes,
+            StatePrecision::CompactCardsInt8,
+        ] {
             for after in [false, true] {
                 let queries: Vec<_> = reviews
                     .iter()
@@ -11252,6 +11253,8 @@ order by e.id, e.cid
             StatePrecision::F32,
             StatePrecision::Int8,
             StatePrecision::Int4CardsInt8Notes,
+            StatePrecision::CompactCardsInt8,
+            StatePrecision::CompactCardsInt4,
         ] {
             let mut sequential =
                 RwkvInference::load_with_precision(weights.clone(), 0.9, 36_500, precision)
@@ -12863,7 +12866,11 @@ order by e.id, e.cid
             eprintln!("skipping: embedded RWKV weights not found");
             return;
         };
-        for precision in [StatePrecision::F32, StatePrecision::Int4CardsInt8Notes] {
+        for precision in [
+            StatePrecision::F32,
+            StatePrecision::Int4CardsInt8Notes,
+            StatePrecision::CompactCardsInt8,
+        ] {
             let mut inference =
                 RwkvInference::load_with_precision(weights.clone(), 0.9, 36_500, precision)
                     .unwrap();

@@ -47,7 +47,7 @@
 //!   note state bytes (it serializes a snapshot, so keep it out of RAM runs).
 //! - `ANKI_SPEED_ITERATIONS` (default 1): runs of each op in this process;
 //!   iteration 0 of a fresh process is the cold run, later ones are warm.
-//! - `ANKI_SPEED_PRECISION` (default `cards_int4_notes_int8`, the app's
+//! - `ANKI_SPEED_PRECISION` (default `compact_cards_int8`, the app's
 //!   default), `ANKI_SPEED_CHUNK` (default 16384), `ANKI_SPEED_WORK_DIR`
 //!   (default `<collection folder>/speed-work`), `ANKI_SPEED_OUT` (JSON lines
 //!   appended per run).
@@ -811,7 +811,7 @@ fn rwkv_app_speed_benchmark() {
         .unwrap_or(1)
         .max(1);
     let precision = StatePrecision::parse(
-        &std::env::var("ANKI_SPEED_PRECISION").unwrap_or("cards_int4_notes_int8".into()),
+        &std::env::var("ANKI_SPEED_PRECISION").unwrap_or("compact_cards_int8".into()),
     )
     .unwrap();
     let chunk = std::env::var("ANKI_SPEED_CHUNK")
