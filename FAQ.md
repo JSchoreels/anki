@@ -1,9 +1,9 @@
 # RWKV Fork FAQ
 
-This FAQ collects community questions about this fork's RWKV features, including
-posts that mention the fork or JSchoreels. Source questions are quoted and
-linked below. Related questions are summarized first. For a deeper explanation
-of RWKV and this fork's implementation, see [RWKV FAQ](RWKV_FAQ.md).
+This FAQ collects community questions about this fork's RWKV features. Source
+questions are quoted and linked below. Related questions are summarized first.
+For a deeper explanation of RWKV and this fork's implementation, see
+[RWKV FAQ](RWKV_FAQ.md).
 
 Last reviewed: 2026-11-21.
 
@@ -104,8 +104,8 @@ and [queue refresh behavior](docs/rwkv.MD).
 
 > Does anyone here have a guide on how to approach it?
 
-u/Ready-Bumblebee-6220, 2026-11-20,
-[Recommended settings for RWKV Instant on Anki?](https://www.reddit.com/r/Anki/comments/1y0u0h1/recommended_settings_for_rwkv_instant_on_anki/)
+Reddit, 2026-11-20 —
+[source post](https://www.reddit.com/r/Anki/comments/1y0u0h1/recommended_settings_for_rwkv_instant_on_anki/)
 
 Answer: [How do I enable RWKV-Instant?](#how-do-i-enable-rwkv-instant)
 
@@ -113,8 +113,8 @@ Answer: [How do I enable RWKV-Instant?](#how-do-i-enable-rwkv-instant)
 
 > Will there be a huge backlog after enabling it?i tested it and the review count changes after every single review so I'm not sure how to tell
 
-u/Ready-Bumblebee-6220, 2026-11-20,
-[Recommended settings for RWKV Instant on Anki?](https://www.reddit.com/r/Anki/comments/1y0u0h1/recommended_settings_for_rwkv_instant_on_anki/)
+Reddit, 2026-11-20 —
+[source post](https://www.reddit.com/r/Anki/comments/1y0u0h1/recommended_settings_for_rwkv_instant_on_anki/)
 
 Answer: [How should I interpret the due count in RWKV-Instant?](#how-should-i-interpret-the-due-count-in-rwkv-instant)
 
@@ -124,7 +124,8 @@ Answer: [How should I interpret the due count in RWKV-Instant?](#how-should-i-in
 
 > I thought the point of rwkv is that you can just stop whenever you want, instead of having a fixed amount of workload per day?
 
-[Anki Discord](https://discord.com/channels/368267295601983490/1347982145418694747/1573680088665432259)
+Anki Discord, 2026-11-21 —
+[source discussion](https://discord.com/channels/368267295601983490/1347982145418694747/1573680088665432259)
 
 Answer: [How should I interpret the due count in RWKV-Instant?](#how-should-i-interpret-the-due-count-in-rwkv-instant)
 
@@ -132,8 +133,8 @@ Answer: [How should I interpret the due count in RWKV-Instant?](#how-should-i-in
 
 > I would like to have a maximum of 150 reviews per day (since RWKV can give a huge amount of cards so I'd rather limit it)
 
-u/Ready-Bumblebee-6220, 2026-11-20,
-[Recommended settings for RWKV Instant on Anki?](https://www.reddit.com/r/Anki/comments/1y0u0h1/recommended_settings_for_rwkv_instant_on_anki/)
+Reddit, 2026-11-20 —
+[source post](https://www.reddit.com/r/Anki/comments/1y0u0h1/recommended_settings_for_rwkv_instant_on_anki/)
 
 Answer: [Should I limit my daily reviews? Why and how?](#should-i-limit-my-daily-reviews-why-and-how)
 
@@ -141,8 +142,8 @@ Answer: [Should I limit my daily reviews? Why and how?](#should-i-limit-my-daily
 
 > Can this version sync with ankiweb? And if it can, since its pc only, can you tell me how it handle merging different platforms running current fsrs versions? Ty
 
-u/kronpas, 2026-11-19,
-[Original sync question in Open Reply to LMSherlock from the Anki Team](https://www.reddit.com/r/Anki/comments/1y0lor6/comment/19sw7p1gno48z/)
+Reddit, 2026-11-19 —
+[source comment](https://www.reddit.com/r/Anki/comments/1y0lor6/comment/19sw7p1gno48z/)
 
 Answer: [Can I sync with AnkiWeb and keep reviewing on other devices?](#can-i-sync-with-ankiweb-and-keep-reviewing-on-other-devices)
 
@@ -150,7 +151,7 @@ Answer: [Can I sync with AnkiWeb and keep reviewing on other devices?](#can-i-sy
 
 > Would you recommend enabling all 3 sibling-burying toggles, or disabling "Precompute next card" + setting the review sort order to "Ascending retrievability"?
 
-u/ozonep2, 2026-11-20,
-[Original reverse-card question in Recommended settings for RWKV Instant on Anki?](https://www.reddit.com/r/Anki/comments/1y0u0h1/comment/19sxq0vwlrc69/)
+Reddit, 2026-11-20 —
+[source comment](https://www.reddit.com/r/Anki/comments/1y0u0h1/comment/19sxq0vwlrc69/)
 
 Answer: [Should reverse cards use sibling burying or RWKV ordering?](#should-reverse-cards-use-sibling-burying-or-rwkv-ordering)
