@@ -23,6 +23,7 @@ Last reviewed: 2026-10-28.
 - [Anki: mobile-support reply](https://discord.com/channels/368267295601983490/1347982145418694747/1553731488997052537)
 - [Reddit: fork description](https://www.reddit.com/r/Anki/comments/1w0p9qc/comment/paqq1oe/)
 - [SRS benchmark: RWKV features](https://github.com/open-spaced-repetition/srs-benchmark#features-note)
+- GitHub, 2026-10-31 — [FSRS7-Instant experiment](https://github.com/open-spaced-repetition/srs-benchmark/pull/360)
 
 ## Table of contents
 
@@ -35,6 +36,7 @@ Last reviewed: 2026-10-28.
   - [Does RWKV adapt to different users and subjects?](#does-rwkv-adapt-to-different-users-and-subjects)
 - [2. RWKV-Instant and RWKV-Curve](#2-rwkv-instant-and-rwkv-curve)
   - [How do RWKV-Instant and RWKV-Curve differ?](#how-do-rwkv-instant-and-rwkv-curve-differ)
+  - [Why does fresh review information matter?](#why-does-fresh-review-information-matter)
   - [How do intervals and desired retention fit in?](#how-do-intervals-and-desired-retention-fit-in)
   - [How do answer buttons affect the model?](#how-do-answer-buttons-affect-the-model)
 - [3. Collection, deck, and preset scope](#3-collection-deck-and-preset-scope)
@@ -161,6 +163,24 @@ RWKV-Curve exposes the model through interval-producing behavior. It is the
 closer fit for a user who wants a conventional interval display while still
 using RWKV's learned representation. This distinction is also illustrated in
 the [RWKV-Curve/Instant discussion](https://discord.com/channels/368267295601983490/1526305928603766784/1552363440973025311).
+
+### Why does fresh review information matter?
+
+An experimental
+[FSRS7-Instant study](https://github.com/open-spaced-repetition/srs-benchmark/pull/360)
+keeps FSRS-7's formula and updates its 34 parameters after each review. On users
+1–300, it reports 7.1% lower per-user mean LogLoss than FSRS-7 when predictions
+use parameters updated up to review time (0.3269 versus 0.3519). When predictions
+instead use parameters from just after the card's previous review, the reported
+change is +0.4%, with the 95% confidence interval for the paired LogLoss
+difference including zero. The scheduling-time comparison therefore shows no
+comparable improvement.
+
+These results support the value of fresh review information for predicting
+current retrievability. They remain experimental prediction-accuracy results;
+they do not measure achieved retention or review workload. For the practical
+effect on the displayed count, see
+[How should I interpret the due count in RWKV-Instant?](FAQ.md#how-should-i-interpret-the-due-count-in-rwkv-instant)
 
 ### Which model does RWKV-Instant use?
 

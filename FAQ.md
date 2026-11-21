@@ -26,6 +26,27 @@ The due count is a snapshot of the cards currently eligible for review under
 the latest predictions and scheduling rules. As you answer, RWKV updates its
 assessment of your memory, which can change the eligibility of other cards.
 
+**Each review provides new evidence about your current memory, while the
+practice itself can also change what you remember.**
+
+Conventional FSRS chooses a card's next interval using the information available
+when that card was last answered. RWKV-Instant can reassess its eligibility
+using subsequent reviews of other cards, including your performance during
+today's session. FSRS can still calculate retrievability for today; the
+difference is the information used to update that prediction, not simply when
+the calculation runs.
+
+For example, after a two-week break, RWKV-Instant might initially identify
+10,000 cards as needing review. If your first 500 answers go better than
+expected, that provides evidence for revising predictions for the remaining
+cards. Some may move above your desired-retention threshold without being
+reviewed themselves. If your answers go worse than expected, the count can
+increase instead.
+
+This combines two effects: the model learns more about your present condition,
+and reviewing may improve your actual recall. A changing prediction does not
+directly establish which memory connections changed.
+
 **A count of 3,000 does not necessarily mean you must answer 3,000 times to
 finish.** Some cards may stop being eligible as predictions change, while
 others may become eligible. The count could fall much faster than one card per
@@ -50,7 +71,8 @@ in retention.
 
 Sources: [Q3](#q3--changing-due-counts-and-backlogs)
 and [Q6](#q6--interpreting-due-counts-and-workload).
-Details: [RWKV-Instant and RWKV-Curve](RWKV_FAQ.md#how-do-rwkv-instant-and-rwkv-curve-differ)
+Details: [RWKV-Instant and RWKV-Curve](RWKV_FAQ.md#how-do-rwkv-instant-and-rwkv-curve-differ),
+[fresh review information](RWKV_FAQ.md#why-does-fresh-review-information-matter),
 and [workload](RWKV_FAQ.md#does-rwkv-guarantee-fewer-reviews-than-fsrs).
 
 ### Should I limit my daily reviews? Why and how?
