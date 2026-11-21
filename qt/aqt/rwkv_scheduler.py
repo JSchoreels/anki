@@ -7504,6 +7504,9 @@ def clear_deck_browser_rwkv_count_scores(mw: object) -> None:
         clear_scores()
 
 
+_RWKV_DECK_BROWSER_STALE_RETRIES = 2
+
+
 def prepare_deck_browser_rwkv_counts_incrementally(
     mw: object,
     deck_ids: Sequence[int],
@@ -7511,8 +7514,14 @@ def prepare_deck_browser_rwkv_counts_incrementally(
     should_continue: Callable[[], bool],
     on_update: Callable[[int, DeckTreeNode | None], None],
     on_done: Callable[[bool], None] | None = None,
+    on_unavailable: Callable[[int, str], None] | None = None,
 ) -> None:
-    """Score deck scopes, reporting if unresolved loading state may be cleared."""
+    """Score deck scopes, reporting if unresolved loading state may be cleared.
+
+    ``on_update(deck_id, None)`` means RWKV does not apply to the scope, so the
+    due-date count is correct. ``on_unavailable(deck_id, reason)`` means RWKV
+    should apply but its count could not be computed.
+    """
 
     reviewer = SimpleNamespace(mw=mw)
     taskman = getattr(mw, "taskman", None)
@@ -7548,13 +7557,23 @@ def prepare_deck_browser_rwkv_counts_incrementally(
         if on_done is not None:
             on_done(clear_pending)
 
-    def fail(stage: str) -> None:
+    def mark_unavailable(deck_id: int, reason: str) -> None:
+        logger.info(
+            "RWKV deck browser count unavailable: deck_id=%s reason=%s",
+            deck_id,
+            reason,
+        )
+        if on_unavailable is not None:
+            on_unavailable(deck_id, reason)
+
+    def fail(stage: str, deck_id: int) -> None:
         if not should_continue():
             logger.debug("RWKV deck browser count %s cancelled", stage)
             finish()
             return
         logger.exception("RWKV deck browser count %s failed", stage)
-        finish(clear_pending=True)
+        mark_unavailable(deck_id, "error")
+        prepare_next_deck()
 
     def prepare_next_deck() -> None:
         if not should_continue():
@@ -7564,7 +7583,9 @@ def prepare_deck_browser_rwkv_counts_incrementally(
         if deck_id is None:
             finish()
             return
+        prepare_deck(deck_id, _RWKV_DECK_BROWSER_STALE_RETRIES)
 
+    def prepare_deck(deck_id: int, retries_left: int) -> None:
         def prepare() -> tuple[RwkvReviewQueueOrderAsyncWork | None, bool]:
             if not should_continue():
                 return None, False
@@ -7584,7 +7605,7 @@ def prepare_deck_browser_rwkv_counts_incrementally(
             try:
                 work, loading = future.result()
             except Exception:
-                fail("preparation")
+                fail("preparation", deck_id)
                 return
             if work is None:
                 if loading:
@@ -7595,7 +7616,10 @@ def prepare_deck_browser_rwkv_counts_incrementally(
                         deck_id,
                     )
                 elif should_continue():
-                    on_update(deck_id, None)
+                    if _rwkv_score_prewarm_applies(reviewer, deck_id):
+                        mark_unavailable(deck_id, "scores_not_prepared")
+                    else:
+                        on_update(deck_id, None)
                 prepare_next_deck()
                 return
             if not should_continue():
@@ -7609,7 +7633,7 @@ def prepare_deck_browser_rwkv_counts_incrementally(
                 try:
                     result = future.result()
                 except Exception:
-                    fail("scoring")
+                    fail("scoring", deck_id)
                     return
                 if not should_continue():
                     finish()
@@ -7796,15 +7820,20 @@ def prepare_deck_browser_rwkv_counts_incrementally(
                     try:
                         tree = future.result()
                     except Exception:
-                        fail("installation")
+                        fail("installation", deck_id)
                         return
-                    if should_continue():
-                        if tree is not None:
-                            updated_scopes += 1
-                            if first_update_elapsed_ms is None:
-                                first_update_elapsed_ms = (
-                                    time.monotonic() - start
-                                ) * 1000
+                    if not should_continue():
+                        prepare_next_deck()
+                        return
+                    if tree is None:
+                        if retries_left > 0:
+                            prepare_deck(deck_id, retries_left - 1)
+                            return
+                        mark_unavailable(deck_id, "stale_after_retries")
+                    else:
+                        updated_scopes += 1
+                        if first_update_elapsed_ms is None:
+                            first_update_elapsed_ms = (time.monotonic() - start) * 1000
                         on_update(result.deck_id, tree)
                     prepare_next_deck()
 
@@ -7815,6 +7844,22 @@ def prepare_deck_browser_rwkv_counts_incrementally(
         run_in_background(prepare, prepared, uses_collection=True)
 
     prepare_next_deck()
+
+
+def _rwkv_score_prewarm_applies(reviewer: object, deck_id: int) -> bool:
+    """Whether RWKV counts are expected for this scope (backend and preset)."""
+
+    if _reviewer_backend is None:
+        configure_reviewer_backend_from_environment()
+    backend = _reviewer_backend
+    if backend is None or not callable(
+        getattr(backend, "cached_review_input_predictions", None)
+    ):
+        return False
+    deck_config = _deck_config_for_deck_id(reviewer, deck_id)
+    return isinstance(deck_config, dict) and _rwkv_review_instant_order_enabled(
+        deck_config
+    )
 
 
 def _begin_rwkv_score_prewarm(key: RwkvScorePrewarmKey) -> bool:

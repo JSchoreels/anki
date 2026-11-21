@@ -82,6 +82,7 @@ class DeckBrowser:
         self._refresh_needed = False
         self._rwkv_count_generation = 0
         self._rwkv_pending_deck_ids: set[int] = set()
+        self._rwkv_unavailable_deck_ids: set[int] = set()
 
     def show(self) -> None:
         av_player.stop_and_clear_queue()
@@ -206,6 +207,7 @@ class DeckBrowser:
                     output.tree,
                     output.rwkv_count_scope_ids,
                 )
+                self._rwkv_unavailable_deck_ids = set()
                 self.__renderPage(None)
                 if not output.rwkv_count_scope_ids:
                     return
@@ -218,6 +220,7 @@ class DeckBrowser:
                             generation
                         ),
                         on_update=self._update_rwkv_deck_counts,
+                        on_unavailable=self._mark_rwkv_scope_unavailable,
                         on_done=lambda clear_pending: self._finish_rwkv_count_refresh(
                             generation,
                             clear_pending=clear_pending,
@@ -295,6 +298,26 @@ class DeckBrowser:
             self._render_data.tree = tree
         self._render_rwkv_deck_counts()
 
+    def _mark_rwkv_scope_unavailable(self, scope_id: int, reason: str) -> None:
+        deck_ids = self._deck_ids_in_rwkv_scopes(self._render_data.tree, [scope_id])
+        self._rwkv_unavailable_deck_ids.update(deck_ids)
+        self._update_rwkv_deck_counts(scope_id, None)
+
+    def _rwkv_unavailable_titles(self, tree: DeckTreeNode) -> dict[int, str]:
+        titles: dict[int, str] = {}
+
+        def collect(node: DeckTreeNode) -> None:
+            if node.deck_id in self._rwkv_unavailable_deck_ids:
+                titles[node.deck_id] = tr.decks_rwkv_count_unavailable_tooltip(
+                    count=node.review_uncapped_including_children
+                )
+            for child in node.children:
+                collect(child)
+
+        for child in tree.children:
+            collect(child)
+        return titles
+
     def _finish_rwkv_count_refresh(
         self,
         generation: int,
@@ -314,6 +337,7 @@ class DeckBrowser:
             total = node.review_uncapped_including_children
             if (
                 node.deck_id not in self._rwkv_pending_deck_ids
+                and node.deck_id not in self._rwkv_unavailable_deck_ids
                 and total > node.review_count
             ):
                 labels[node.deck_id] = (
@@ -331,6 +355,7 @@ class DeckBrowser:
 
     def _render_rwkv_deck_counts(self) -> None:
         rows: list[tuple[int, int, int, int | None]] = []
+        unavailable_titles = self._rwkv_unavailable_titles(self._render_data.tree)
 
         def collect(node: DeckTreeNode) -> None:
             rows.append(
@@ -356,6 +381,7 @@ class DeckBrowser:
             (() => {
                 const rows = %s;
                 const limitLabels = %s;
+                const unavailableTitles = %s;
                 const kinds = ["new", "learn", "review"];
                 for (const [deckId, ...counts] of rows) {
                     kinds.forEach((kind, index) => {
@@ -364,10 +390,19 @@ class DeckBrowser:
                         );
                         if (!element) return;
                         const count = counts[index];
-                        element.textContent = count === null ? "…" : count;
-                        element.className = count === null || count
+                        const unavailable = kind === "review"
+                            && deckId in unavailableTitles;
+                        element.textContent = unavailable
+                            ? "?"
+                            : count === null ? "…" : count;
+                        element.className = unavailable || count === null || count
                             ? `${kind}-count`
                             : "zero-count";
+                        if (kind === "review") {
+                            element.title = unavailable
+                                ? unavailableTitles[deckId]
+                                : "";
+                        }
                     });
                     const limit = document.getElementById(`deck-${deckId}-review-limit`);
                     if (limit) {
@@ -381,6 +416,7 @@ class DeckBrowser:
             % (
                 json.dumps(rows),
                 json.dumps(self._review_limit_labels(self._render_data.tree)),
+                json.dumps(unavailable_titles),
             )
         )
 
@@ -467,7 +503,15 @@ class DeckBrowser:
                 klass = "zero-count"
             return f'<span id="{count_id}" class="{klass}">{cnt}</span>'
 
-        if node.deck_id in self._rwkv_pending_deck_ids:
+        if node.deck_id in self._rwkv_unavailable_deck_ids:
+            title = tr.decks_rwkv_count_unavailable_tooltip(
+                count=node.review_uncapped_including_children
+            )
+            review = (
+                f'<span id="deck-{node.deck_id}-review-count" class="review-count" '
+                f'title="{html.escape(title, quote=True)}">?</span>'
+            )
+        elif node.deck_id in self._rwkv_pending_deck_ids:
             review = (
                 f'<span id="deck-{node.deck_id}-review-count" '
                 'class="review-count">…</span>'

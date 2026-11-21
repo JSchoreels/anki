@@ -20,6 +20,7 @@ decks-review-header = Due
 decks-review-limit-tooltip = { $total } review cards are due. Daily review limits allow { $count } to be shown.
 decks-rwkv = RWKV
 decks-reschedule-with-rwkv-curve = Reschedule With RWKV-Curve
+decks-rwkv-count-unavailable-tooltip = The RWKV review count is unavailable. Due-date count: { $count }
 decks-rwkv-reschedule-all-decks = Reschedule All Decks
 
 ##

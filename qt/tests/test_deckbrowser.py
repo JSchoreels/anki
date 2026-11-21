@@ -25,6 +25,7 @@ def browser(monkeypatch: pytest.MonkeyPatch):
 
     browser = DeckBrowser.__new__(DeckBrowser)
     browser._rwkv_pending_deck_ids = set()
+    browser._rwkv_unavailable_deck_ids = set()
     return browser
 
 
@@ -133,7 +134,9 @@ def test_deck_browser_scores_due_totals_after_reviewer_refresh(browser, monkeypa
         published.append("reviewer scores")
         return True
 
-    def prepare_deck_counts(mw, deck_ids, *, should_continue, on_update, on_done):
+    def prepare_deck_counts(
+        mw, deck_ids, *, should_continue, on_update, on_done, on_unavailable
+    ):
         assert should_continue()
         assert deck_ids == (deck_id,)
         published.append("deck counts")

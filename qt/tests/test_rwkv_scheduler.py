@@ -19621,6 +19621,9 @@ def test_deck_browser_counts_score_off_collection_and_update_incrementally(
             on_done(future)
 
     monkeypatch.setattr(rwkv_scheduler, "_rwkv_score_prewarm_work_for_deck", prepare)
+    monkeypatch.setattr(
+        rwkv_scheduler, "_rwkv_score_prewarm_applies", lambda reviewer, deck_id: False
+    )
     monkeypatch.setattr(rwkv_scheduler, "score_reviewer_queue_order_async_work", score)
     monkeypatch.setattr(rwkv_scheduler, "_set_rwkv_deck_count_scores", install)
     monkeypatch.setattr(rwkv_scheduler, "_reviewer_backend_state_generation", lambda: 0)
@@ -19653,6 +19656,149 @@ def test_deck_browser_counts_score_off_collection_and_update_incrementally(
     assert collection_flags == [True, False, True, True, True, False, True]
     assert installed_scores == [10, 30]
     assert updates == [(10, 1), (20, None), (30, 2)]
+
+
+def _run_deck_browser_counts(
+    monkeypatch: pytest.MonkeyPatch,
+    deck_ids: list[int],
+    *,
+    install_results: Mapping[int, Sequence[bool]],
+    failing_decks: Sequence[int] = (),
+    not_applicable: Sequence[int] = (),
+    unprepared: Sequence[int] = (),
+) -> tuple[list[tuple[int, bool]], list[tuple[int, str]], list[int]]:
+    """Run the incremental count flow synchronously with scripted outcomes."""
+
+    updates: list[tuple[int, bool]] = []
+    unavailable: list[tuple[int, str]] = []
+    prepared: list[int] = []
+    install_attempts: dict[int, int] = {}
+    context = SimpleNamespace(
+        dynamic_desired_retention_generation=0,
+        study_queue_generation=0,
+    )
+
+    def prepare(reviewer: object, *, deck_id: int, reason: str) -> object | None:
+        prepared.append(deck_id)
+        if deck_id in not_applicable or deck_id in unprepared:
+            return None
+        return SimpleNamespace(deck_id=deck_id, context=context)
+
+    def score(work: SimpleNamespace) -> SimpleNamespace:
+        if work.deck_id in failing_decks:
+            raise RuntimeError("scoring failed")
+        return SimpleNamespace(
+            deck_id=work.deck_id,
+            context=work.context,
+            state_generation=0,
+            scores=((work.deck_id, 0.5),),
+            target_retentions_by_card_id={},
+        )
+
+    def install(
+        reviewer: object, deck_id: int, *_args: object, **_kwargs: object
+    ) -> bool:
+        attempt = install_attempts.get(deck_id, 0)
+        install_attempts[deck_id] = attempt + 1
+        return install_results[deck_id][attempt]
+
+    class Taskman:
+        def run_in_background(
+            self,
+            task: Callable[[], object],
+            on_done: Callable[[Future[object]], None],
+            *,
+            uses_collection: bool,
+        ) -> None:
+            future: Future[object] = Future()
+            try:
+                future.set_result(task())
+            except Exception as error:
+                future.set_exception(error)
+            on_done(future)
+
+    monkeypatch.setattr(rwkv_scheduler, "_rwkv_score_prewarm_work_for_deck", prepare)
+    monkeypatch.setattr(
+        rwkv_scheduler,
+        "_rwkv_score_prewarm_applies",
+        lambda reviewer, deck_id: deck_id not in not_applicable,
+    )
+    monkeypatch.setattr(rwkv_scheduler, "score_reviewer_queue_order_async_work", score)
+    monkeypatch.setattr(rwkv_scheduler, "_set_rwkv_deck_count_scores", install)
+    monkeypatch.setattr(rwkv_scheduler, "_reviewer_backend_state_generation", lambda: 0)
+    monkeypatch.setattr(
+        rwkv_scheduler, "_rwkv_review_queue_context", lambda reviewer, deck_id: context
+    )
+    monkeypatch.setattr(rwkv_scheduler.logger, "exception", lambda *_a, **_k: None)
+    mw = SimpleNamespace(
+        col=SimpleNamespace(
+            sched=SimpleNamespace(deck_due_tree=lambda: SimpleNamespace())
+        ),
+        taskman=Taskman(),
+    )
+    rwkv_scheduler.prepare_deck_browser_rwkv_counts_incrementally(
+        mw,
+        deck_ids,
+        should_continue=lambda: True,
+        on_update=lambda deck_id, tree: updates.append((deck_id, tree is not None)),
+        on_unavailable=lambda deck_id, reason: unavailable.append((deck_id, reason)),
+    )
+    return updates, unavailable, prepared
+
+
+def test_deck_browser_count_stale_result_is_retried_then_installed(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    updates, unavailable, prepared = _run_deck_browser_counts(
+        monkeypatch, [10], install_results={10: [False, False, True]}
+    )
+
+    assert prepared == [10, 10, 10]
+    assert updates == [(10, True)]
+    assert unavailable == []
+
+
+def test_deck_browser_count_stale_three_times_is_unavailable(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    updates, unavailable, prepared = _run_deck_browser_counts(
+        monkeypatch,
+        [10, 20],
+        install_results={10: [False, False, False], 20: [True]},
+    )
+
+    assert prepared == [10, 10, 10, 20]
+    assert unavailable == [(10, "stale_after_retries")]
+    assert updates == [(20, True)]
+
+
+def test_deck_browser_count_error_in_one_scope_does_not_stop_the_next(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    updates, unavailable, _prepared = _run_deck_browser_counts(
+        monkeypatch,
+        [10, 20],
+        install_results={20: [True]},
+        failing_decks=[10],
+    )
+
+    assert unavailable == [(10, "error")]
+    assert updates == [(20, True)]
+
+
+def test_deck_browser_count_distinguishes_not_applicable_from_unprepared(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    updates, unavailable, _prepared = _run_deck_browser_counts(
+        monkeypatch,
+        [10, 20],
+        install_results={},
+        not_applicable=[10],
+        unprepared=[20],
+    )
+
+    assert updates == [(10, False)]
+    assert unavailable == [(20, "scores_not_prepared")]
 
 
 def test_deck_browser_count_prepare_skips_work_cancelled_while_queued(
@@ -19847,11 +19993,78 @@ def test_deck_browser_pending_rwkv_scopes_render_review_counts_as_ellipsis(
     browser.web = SimpleNamespace(eval=scripts.append)
     browser._render_data = SimpleNamespace(tree=tree)
     browser._rwkv_pending_deck_ids = browser._deck_ids_in_rwkv_scopes(tree, [10])
+    browser._rwkv_unavailable_deck_ids = set()
 
     browser._render_rwkv_deck_counts()
 
     assert browser._rwkv_pending_deck_ids == {10, 11}
     assert "[[10, 1, 2, null], [11, 3, 4, null], [20, 6, 7, 8]]" in scripts[0]
+
+
+def test_deck_browser_renders_unavailable_rwkv_counts_as_question_mark(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    from aqt.utils import tr
+
+    monkeypatch.setattr(
+        tr,
+        "decks_rwkv_count_unavailable_tooltip",
+        lambda *, count: f"unavailable, due {count}",
+        raising=False,
+    )
+    monkeypatch.setattr(tr, "decks_review_limit_tooltip", lambda **_kwargs: "limit")
+    from aqt.deckbrowser import DeckBrowser, RenderDeckNodeContext
+
+    child = SimpleNamespace(
+        deck_id=11,
+        new_count=0,
+        learn_count=0,
+        review_count=5,
+        review_uncapped_including_children=5,
+        children=[],
+        collapsed=False,
+        filtered=False,
+        level=2,
+        name="child",
+    )
+    scope = SimpleNamespace(
+        deck_id=10,
+        new_count=1,
+        learn_count=2,
+        review_count=60,
+        review_uncapped_including_children=800,
+        children=[child],
+        collapsed=False,
+        filtered=False,
+        level=1,
+        name="scope",
+    )
+    tree = SimpleNamespace(children=[scope])
+    scripts: list[str] = []
+    browser = DeckBrowser.__new__(DeckBrowser)
+    browser.web = SimpleNamespace(eval=scripts.append)
+    browser._render_data = SimpleNamespace(tree=tree)
+    browser._rwkv_pending_deck_ids = browser._deck_ids_in_rwkv_scopes(tree, [10])
+    browser._rwkv_unavailable_deck_ids = set()
+
+    browser._mark_rwkv_scope_unavailable(10, "error")
+
+    assert browser._rwkv_pending_deck_ids == set()
+    assert browser._rwkv_unavailable_deck_ids == {10, 11}
+    html_output = browser._render_deck_node(
+        scope,
+        RenderDeckNodeContext(
+            current_deck_id=0,
+            review_limit_labels=browser._review_limit_labels(tree),
+        ),
+    )
+    assert ">?</span>" in html_output
+    assert 'title="unavailable, due 800"' in html_output
+    assert "(/800)" not in html_output
+    assert ">60</span>" not in html_output
+    assert "[[10, 1, 2, 60], [11, 0, 0, 5]]" in scripts[-1]
+    assert '{"10": "unavailable, due 800", "11": "unavailable, due 5"}' in scripts[-1]
+    assert '{"10": ["", ""], "11": ["", ""]}' in scripts[-1]
 
 
 def test_deck_browser_keeps_pending_counts_when_cache_load_is_deferred() -> None:
