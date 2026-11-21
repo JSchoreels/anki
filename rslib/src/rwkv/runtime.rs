@@ -42,9 +42,19 @@ pub enum ModelKind {
     /// The Tiny two-head model (SM106), the Tiny choice's one model: the
     /// show-time retrain (SM92) cut to one card layer (the tiny plan of
     /// SM101) and trained on with both heads on show-time inputs. A full
-    /// model (curve, intervals, S90, instant recall and buttons) without an
-    /// answer-time head; it runs alone when the one-model opt-out is on.
+    /// model (curve, intervals, S90, instant recall and buttons, answer time
+    /// since the time heads for the family (SM117)); it runs alone when the
+    /// one-model opt-out is on.
     Sm106,
+    /// The longer Small Instant-Only model (SM113): the Small Instant-Only
+    /// model (SM98)'s recipe with a two-epoch cool-down distilled from the
+    /// show-time instant-only big model (SM99). Small's Instant-Only model
+    /// since 2026-11-16, in SM98's place.
+    Sm113,
+    /// The longer cool-down for Tiny (SM115): the Tiny Instant-Only model
+    /// (SM101)'s recipe (one card layer) with the same longer cool-down as
+    /// SM113. Tiny's Instant-Only model since 2026-11-16, in SM101's place.
+    Sm115,
 }
 
 impl ModelKind {
@@ -64,6 +74,8 @@ impl ModelKind {
             "sm101" => Ok(Self::Sm101),
             "sm99" => Ok(Self::Sm99),
             "sm106" => Ok(Self::Sm106),
+            "sm113" => Ok(Self::Sm113),
+            "sm115" => Ok(Self::Sm115),
             _ => Err(io::Error::new(
                 io::ErrorKind::InvalidInput,
                 "unknown RWKV model",
@@ -88,13 +100,18 @@ impl ModelKind {
                 | Self::Sm101
                 | Self::Sm99
                 | Self::Sm106
+                | Self::Sm113
+                | Self::Sm115
         )
     }
 
     /// Checkpoints whose curve head was never trained: they may provide
     /// instant recall and button probabilities only, never intervals.
     pub fn instant_only(self) -> bool {
-        matches!(self, Self::Sm57 | Self::Sm98 | Self::Sm101 | Self::Sm99)
+        matches!(
+            self,
+            Self::Sm57 | Self::Sm98 | Self::Sm101 | Self::Sm99 | Self::Sm113 | Self::Sm115
+        )
     }
 
     /// The small architecture; `Legacy` and `Sm99` run on the big engine.
@@ -114,7 +131,7 @@ impl ModelKind {
     fn card_layers(self) -> Option<usize> {
         match self {
             Self::Legacy | Self::Sm99 => None,
-            Self::Sm101 | Self::Sm106 => Some(1),
+            Self::Sm101 | Self::Sm106 | Self::Sm115 => Some(1),
             _ => Some(2),
         }
     }
@@ -132,8 +149,10 @@ fn check_card_layers(model: ModelKind, card_layers: usize) -> io::Result<()> {
 /// The release model and a second small model for RWKV-Instant (the
 /// show-time retrain, or the instant-only model) replaying the same history.
 /// Both keep their own recurrent state; the release provides the curve,
-/// intervals, S90 and the answer-time head, the instant model provides
-/// instant recall and button probabilities. Every serialized state holds
+/// intervals and S90, the instant model provides instant recall and button
+/// probabilities, and the answer time comes from the instant model's head
+/// when it has one (the head reads the same trunk as the grade
+/// probabilities it is mixed with), else from the release's. Every serialized state holds
 /// both (`super::paired`). Both models are of one architecture and run on
 /// its engine: two small models (Small, Tiny) or the two big models (Big:
 /// the show-time big model (SM91s2) and the show-time instant-only big model
@@ -429,7 +448,7 @@ impl RwkvRuntime {
     /// the small-model feature, or the two big models on the big engine)
     /// with the same inputs and state precision; the instant model may be
     /// instant-only (its curve is never used) or a full model, whose curve
-    /// and answer-time outputs are ignored.
+    /// outputs are ignored.
     pub fn load_paired(
         release_path: PathBuf,
         instant_path: PathBuf,
@@ -641,31 +660,46 @@ impl RwkvRuntime {
         })
     }
 
-    /// Whether the model folder had the optional answer-time head (the
-    /// release's folder for a paired runtime).
+    /// Whether the model folder had the optional answer-time head (for a
+    /// paired runtime: either model's folder). Each head was trained on its
+    /// own frozen model, so an instant-only model alone answers with its own
+    /// head.
     pub fn has_answer_time_head(&self) -> bool {
-        if self.is_instant_only() {
-            return false;
-        }
         dispatch!(self, engine, engine.has_answer_time_head(), pair => {
-            pair.release.has_answer_time_head()
+            pair.instant.has_answer_time_head() || pair.release.has_answer_time_head()
         })
     }
 
-    /// See [`super::RwkvInference::predict_answer_times`]. A paired runtime
-    /// runs the head on the release's state, the features it was trained on.
+    /// Whether a paired runtime's answer time comes from its instant model
+    /// (see [`Self::predict_answer_times`]); false for one model.
+    pub fn answer_time_from_instant_model(&self) -> bool {
+        match self {
+            Self::Paired(pair) => pair.instant.has_answer_time_head(),
+            Self::AlternatePaired(pair) => pair.instant.has_answer_time_head(),
+            _ => false,
+        }
+    }
+
+    /// See [`super::RwkvInference::predict_answer_times`]. Every head runs
+    /// on the state of the model it was trained on. A paired runtime uses
+    /// the instant model's head when it has one: RWKV-Instant's grade
+    /// probabilities come from that model, and the head's per-grade times
+    /// are mixed with the grade probabilities of its own trunk, as in its
+    /// training and scoring (the time heads for the family (SM117)).
+    /// Otherwise it uses the release's head on the release's state.
     pub fn predict_answer_times(
         &mut self,
         requests: Vec<ReviewPredictionRequest>,
         history: Vec<[f32; super::ANSWER_TIME_FEATURES]>,
     ) -> io::Result<Vec<Option<super::AnswerTimePrediction>>> {
-        if self.is_instant_only() {
-            // The head was trained on the release's features, never these.
-            return Ok(vec![None; requests.len()]);
-        }
         dispatch!(self, engine, engine.predict_answer_times(requests, history), pair => {
-            pair.release
-                .predict_answer_times(release_requests(requests)?, history)
+            if pair.instant.has_answer_time_head() {
+                pair.instant
+                    .predict_answer_times(instant_requests(requests)?, history)
+            } else {
+                pair.release
+                    .predict_answer_times(release_requests(requests)?, history)
+            }
         })
     }
 
@@ -1122,6 +1156,8 @@ mod tests {
             ModelKind::Sm101 => "../qt/aqt/rwkv_inference/sm101/weights.f32.bin",
             ModelKind::Sm99 => "../qt/aqt/rwkv_inference/sm99/weights.f32.bin",
             ModelKind::Sm106 => "../qt/aqt/rwkv_inference/sm106/weights.f32.bin",
+            ModelKind::Sm113 => "../qt/aqt/rwkv_inference/sm113/weights.f32.bin",
+            ModelKind::Sm115 => "../qt/aqt/rwkv_inference/sm115/weights.f32.bin",
         });
         RwkvRuntime::load_with_precision(path, 0.9, 36_500, precision, model).unwrap()
     }
@@ -1254,23 +1290,44 @@ mod tests {
 
     /// The answer-time head is optional: a model folder without
     /// `time_head.f32.bin` loads as before and predicts no answer time, and
-    /// loading the head changes no grade output.
+    /// loading the head changes no grade output. Every two-head model of the
+    /// family has a head since the time heads for the family (SM117), the
+    /// show-time big model (SM91s2) as
+    /// `RWKV_trained_on_5000_10000.time_head.f32.bin` beside its weights.
+    /// The SM117 heads (format 2) also answer same-day queries.
     #[test]
     fn rwkv_runtime_answer_time_head_is_optional_and_leaves_grades_unchanged() {
-        for (model, folder) in [(ModelKind::Sm72e25, "sm72e25"), (ModelKind::Sm92, "sm92")] {
-            check_answer_time_head_is_optional(model, folder);
+        for (model, file, same_day) in [
+            (ModelKind::Sm72e25, "sm72e25/weights.f32.bin", false),
+            (ModelKind::Sm92, "sm92/weights.f32.bin", true),
+            (ModelKind::Sm106, "sm106/weights.f32.bin", true),
+            (ModelKind::Legacy, "RWKV_trained_on_5000_10000.bin", true),
+        ] {
+            check_answer_time_head_is_optional(model, file, same_day);
         }
-        // Legacy never has a head; nor has the Tiny two-head model (SM106).
-        assert!(!load(ModelKind::Legacy, StatePrecision::F32).has_answer_time_head());
-        assert!(!load(ModelKind::Sm106, StatePrecision::F32).has_answer_time_head());
+        // Instant-only models with a head of their own (SM99) answer alone;
+        // the older ones (SM57, SM98, SM101) have none (small instant-only
+        // models load only with the small-model feature). The longer Small
+        // and Tiny Instant-Only models (SM113, SM115) have one (SM119).
+        assert!(load(ModelKind::Sm99, StatePrecision::F32).has_answer_time_head());
+        if super::super::SMALL_MODEL {
+            for model in [ModelKind::Sm113, ModelKind::Sm115] {
+                assert!(load(model, StatePrecision::F32).has_answer_time_head());
+            }
+            for model in [ModelKind::Sm57, ModelKind::Sm98, ModelKind::Sm101] {
+                assert!(!load(model, StatePrecision::F32).has_answer_time_head());
+            }
+        }
     }
 
-    fn check_answer_time_head_is_optional(model: ModelKind, folder: &str) {
+    fn check_answer_time_head_is_optional(model: ModelKind, file: &str, same_day_head: bool) {
         let dir = tempfile::tempdir().unwrap();
-        let bare = dir.path().join("weights.f32.bin");
+        let bare = dir
+            .path()
+            .join(Path::new(file).file_name().unwrap().to_str().unwrap());
         std::fs::copy(
             PathBuf::from(env!("CARGO_MANIFEST_DIR"))
-                .join(format!("../qt/aqt/rwkv_inference/{folder}/weights.f32.bin")),
+                .join(format!("../qt/aqt/rwkv_inference/{file}")),
             &bare,
         )
         .unwrap();
@@ -1327,13 +1384,24 @@ mod tests {
                 RwkvRuntime::load_with_precision(bare, 0.9, 36_500, StatePrecision::F32, model)
                     .unwrap(),
             );
-        assert!(with_head && !without_head);
+        assert!(with_head && !without_head, "{model:?}");
         assert_eq!(grades, bare_grades);
         assert_eq!(bare_times, vec![None, None]);
         let prediction = times[0]
             .as_ref()
             .expect("a later-day query has an answer time");
-        assert!(times[1].is_none(), "same-day queries have no answer time");
+        assert_eq!(
+            times[1].is_some(),
+            same_day_head,
+            "{model:?}: only format 2 heads answer same-day queries"
+        );
+        if let Some(same_day) = &times[1] {
+            assert_eq!(
+                same_day.button_probabilities.map(f32::to_bits),
+                grades[1].2,
+                "{model:?}: same-day buttons"
+            );
+        }
         for grade in 0..4 {
             let total: f32 = prediction.probabilities[grade].iter().sum();
             assert!((total - 1.0).abs() < 1e-5);
@@ -1365,10 +1433,12 @@ mod tests {
     ];
 
     /// The instant-only models: never a full model alone.
-    const INSTANT_ONLY_MODELS: [(ModelKind, &str); 3] = [
+    const INSTANT_ONLY_MODELS: [(ModelKind, &str); 5] = [
         (ModelKind::Sm57, "sm57"),
         (ModelKind::Sm98, "sm98"),
         (ModelKind::Sm101, "sm101"),
+        (ModelKind::Sm113, "sm113"),
+        (ModelKind::Sm115, "sm115"),
     ];
 
     /// A model key loads only weights with its card layers: the tiny model's
@@ -1423,8 +1493,8 @@ mod tests {
 
     /// The Tiny two-head model (SM106) alone is a full runtime on the tiny
     /// plan: curve recall, intervals and S90 beside instant recall and
-    /// buttons, one card layer, no answer-time head, at every state
-    /// precision.
+    /// buttons, one card layer, and an answer-time head (the time heads for
+    /// the family (SM117)), at every state precision.
     #[test]
     fn rwkv_sm106_alone_is_a_full_tiny_model() {
         assert!(!ModelKind::Sm106.instant_only() && ModelKind::Sm106.leak_free_inputs());
@@ -1438,7 +1508,7 @@ mod tests {
         ] {
             let mut engine = load(ModelKind::Sm106, precision);
             assert!(!engine.is_paired() && engine.has_curve(), "{precision:?}");
-            assert!(!engine.has_answer_time_head(), "{precision:?}");
+            assert!(engine.has_answer_time_head(), "{precision:?}");
             let answers = crate::rwkv::precision_tests::reviews(14);
             engine.warm_up_reviews(answers.clone(), false).unwrap();
             let review = review_with_state(&mut engine, &query_of(&answers[0], 2));
@@ -1604,16 +1674,32 @@ mod tests {
         );
 
         let history = vec![[0.25; super::super::ANSWER_TIME_FEATURES]; queries.len()];
-        // The pair answers time questions exactly as its release does (the Big
-        // release has no answer-time head).
-        assert_eq!(pair.has_answer_time_head(), release.has_answer_time_head());
+        // The pair answers time questions exactly as its instant model alone
+        // does when that model has a head (on the instant model's state),
+        // else exactly as its release does.
         assert_eq!(
-            pair.predict_answer_times(requests(pair, queries), history.clone())
-                .unwrap(),
+            pair.has_answer_time_head(),
+            instant.has_answer_time_head() || release.has_answer_time_head()
+        );
+        assert_eq!(
+            pair.answer_time_from_instant_model(),
+            instant.has_answer_time_head(),
+            "{label}"
+        );
+        let expected = if instant.has_answer_time_head() {
+            instant
+                .predict_answer_times(requests(instant, queries), history.clone())
+                .unwrap()
+        } else {
             release
-                .predict_answer_times(requests(release, queries), history)
+                .predict_answer_times(requests(release, queries), history.clone())
+                .unwrap()
+        };
+        assert_eq!(
+            pair.predict_answer_times(requests(pair, queries), history)
                 .unwrap(),
-            "{label}: answer time stays on the release state"
+            expected,
+            "{label}: answer time on the state of the model whose head runs"
         );
     }
 
@@ -1695,8 +1781,8 @@ mod tests {
             let release = load(ModelKind::Sm72e25, precision);
             let instant = instant_alone_of(precision, instant_model);
             assert!(pair.is_paired() && pair.has_curve() && !release.is_paired());
-            // Only the instant-only models (SM57, SM98, SM101) lack an
-            // answer-time head.
+            // Only the instant-only models without a head (SM57, SM98,
+            // SM101) lack an answer-time head here.
             assert_eq!(
                 instant.has_answer_time_head(),
                 !instant_model.0.instant_only()
@@ -1706,13 +1792,15 @@ mod tests {
         }
     }
 
-    /// The pairs of the RWKV family release's Small and Tiny sizes (the
-    /// family wiring (SM114)): the show-time retrain (SM92) beside the Small
-    /// Instant-Only model (SM98), and the Tiny two-head model (SM106) beside
-    /// the Tiny Instant-Only model (SM101). Instant recall and buttons come
-    /// from the Instant-Only model, the curve, intervals, S90 and answer time
-    /// from the two-head model, bit for bit, at every state precision. The
-    /// Tiny pair has no answer-time head, like SM106 alone.
+    /// The pairs of the Small and Tiny sizes (the family wiring (SM114)):
+    /// the show-time retrain (SM92) beside the longer Small Instant-Only
+    /// model (SM113), and the Tiny two-head model (SM106) beside the longer
+    /// cool-down for Tiny (SM115) (until 2026-11-16: SM98 and SM101, still
+    /// checked). Instant recall and buttons come from the Instant-Only
+    /// model, the curve, intervals and S90 from the two-head model, bit for
+    /// bit, at every state precision. The answer time comes from the
+    /// Instant-Only model's head when it has one, else from the two-head
+    /// model's (SM113 and SM115 have one since SM119; SM98 and SM101 do not).
     #[test]
     fn rwkv_family_pairs_match_each_model_alone() {
         if !super::super::SMALL_MODEL {
@@ -1732,6 +1820,18 @@ mod tests {
         // (two-head model, Instant-Only model, stored pair bytes per card and
         // note at int4 cards + int8 notes and at the compact default)
         for (release, instant, stored, stored_compact) in [
+            (
+                (ModelKind::Sm92, "sm92"),
+                (ModelKind::Sm113, "sm113"),
+                7_098,
+                7_758,
+            ),
+            (
+                (ModelKind::Sm106, "sm106"),
+                (ModelKind::Sm115, "sm115"),
+                5_282,
+                5_298,
+            ),
             (
                 (ModelKind::Sm92, "sm92"),
                 (ModelKind::Sm98, "sm98"),
@@ -1768,9 +1868,15 @@ mod tests {
                 let alone = load(release.0, precision);
                 let instant_alone = instant_alone_of(precision, instant);
                 assert!(pair().is_paired() && pair().has_curve(), "{label}");
-                let head = release.0 == ModelKind::Sm92;
-                assert_eq!(pair().has_answer_time_head(), head, "{label}");
-                assert_eq!(alone.has_answer_time_head(), head, "{label}");
+                // Both two-head models have a head (SM117).
+                assert!(pair().has_answer_time_head(), "{label}");
+                assert!(alone.has_answer_time_head(), "{label}");
+                // The longer Instant-Only models carry their own head (SM119).
+                assert_eq!(
+                    pair().answer_time_from_instant_model(),
+                    matches!(instant.0, ModelKind::Sm113 | ModelKind::Sm115),
+                    "{label}"
+                );
                 let expected = match precision {
                     StatePrecision::Int4CardsInt8Notes => Some(stored),
                     StatePrecision::CompactCardsInt8 => Some(stored_compact),
@@ -2106,7 +2212,38 @@ mod tests {
                     .unwrap()
             )
         );
-        assert!(!alone.has_answer_time_head());
+        // An instant-only model alone answers with its own head, if any,
+        // exactly as the plain engine of the same weights.
+        assert_eq!(alone.has_answer_time_head(), raw.has_answer_time_head());
+        if raw.has_answer_time_head() {
+            let mut history = super::super::AnswerTimeHistory::new();
+            for answer in &answers {
+                history.push(
+                    answer.card_id,
+                    answer.ease.unwrap() as i64,
+                    answer.duration_millis.unwrap(),
+                );
+            }
+            let mut later = answers[0].clone();
+            later.is_query = true;
+            later.ease = None;
+            later.duration_millis = None;
+            later.current_elapsed_days = Some(3);
+            later.current_elapsed_seconds = Some(3 * 86_400);
+            let features = history.features(later.card_id, 3);
+            let times = |engine: &mut RwkvRuntime| {
+                let request = ReviewPredictionRequest {
+                    input: later.clone(),
+                    state: engine.warm_up_state(&later).unwrap(),
+                };
+                engine
+                    .predict_answer_times(vec![request], vec![features])
+                    .unwrap()
+            };
+            let (alone_times, raw_times) = (times(&mut alone), times(&mut raw));
+            assert!(alone_times[0].is_some());
+            assert_eq!(alone_times, raw_times);
+        }
         let config = || RwkvWorkloadSimulationConfig {
             min_dr: 80,
             max_dr: 90,
@@ -2423,7 +2560,10 @@ mod tests {
         )
         .is_err());
         let pair = big_pair(StatePrecision::F32);
-        assert!(pair.is_paired() && pair.has_curve() && !pair.has_answer_time_head());
+        // Both big models have a head (SM117); the pair uses the instant
+        // model's (SM99).
+        assert!(pair.is_paired() && pair.has_curve() && pair.has_answer_time_head());
+        assert!(pair.answer_time_from_instant_model());
         assert_eq!(
             matches!(pair, RwkvRuntime::AlternatePaired(_)),
             super::super::SMALL_MODEL
@@ -2442,7 +2582,7 @@ mod tests {
             let pair = big_pair(precision);
             let release = load(ModelKind::Legacy, precision);
             let instant = big_alone(precision, ModelKind::Sm99);
-            assert!(!release.is_paired() && !instant.has_answer_time_head());
+            assert!(!release.is_paired() && instant.has_answer_time_head());
             check_pair_matches_models(pair, release, instant, format!("big {precision:?}"));
         }
     }

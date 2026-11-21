@@ -8491,16 +8491,17 @@ def _rwkv_card_info_answer_time_prediction(
     candidate: RwkvReviewCandidate,
     wait_for_backend: bool,
 ) -> RwkvAnswerTimePrediction | None:
-    """Predicted answer times from the model's optional answer-time head; no
-    rows without the head, for a card last reviewed today or a new card."""
+    """Predicted answer times from the runtime's optional answer-time head
+    (an instant-only model alone uses its own head; a pair uses its instant
+    model's head when it has one, else its two-head model's); no rows
+    without a head or for a new card, and with an older head (format 1) for
+    a card last reviewed today. The answer time is front + back: question
+    shown -> grade press, capped at the preset's maximum answer seconds."""
     backend = _reviewer_backend
     card_id = _card_id(card)
     has_head = getattr(backend, "has_answer_time_head", None)
     predict = getattr(backend, "predict_answer_time", None)
     if card_id is None or not callable(has_head) or not callable(predict):
-        return None
-    if not _rwkv_runtime_has_curve():
-        # The head reads the release's state; an instant-only model has none.
         return None
     try:
         if not has_head() or not _prepare_reviewer_backend_for_card_info(reviewer):

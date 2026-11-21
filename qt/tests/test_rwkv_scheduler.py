@@ -29,7 +29,7 @@ import anki.collection  # Initialize collection before the cards/decks import cy
 from anki import cards_pb2, collection_pb2, deck_config_pb2, scheduler_pb2
 from anki.decks import DeckId, FilteredDeckConfig
 from anki.scheduler.v3 import SchedulingState, SchedulingStates
-from aqt import rwkv_scheduler
+from aqt import rwkv_answer_time, rwkv_scheduler
 from aqt.rwkv_scheduler import (
     RwkvBackendCacheSnapshot,
     RwkvIntervalOverride,
@@ -26960,14 +26960,20 @@ def test_rwkv_workload_forecast_job_reports_progress_and_result(
     )
 
 
+@pytest.mark.parametrize("answer_time_head", [False, True])
 @pytest.mark.parametrize("curve_preset", [False, True])
-def test_card_info_without_curve_model_omits_curve_and_answer_time_rows(
+def test_card_info_without_curve_model_omits_curve_rows(
     curve_preset: bool,
+    monkeypatch: pytest.MonkeyPatch,
+    answer_time_head: bool,
 ) -> None:
-    """The show-time instant-only model, stage 2 (SM98) alone: RWKV-Instant's
-    recall, buttons and after-review rows only. No RWKV-Curve S90 rows and no
-    answer-time rows, even for a preset that turned on RWKV-Curve before the
-    runtime is reopened; FSRS rows come from the card's own stats."""
+    """An Instant-Only model alone (the longer Small Instant-Only model
+    (SM113)): RWKV-Instant's recall, buttons and after-review rows, and the
+    answer-time rows only when the runtime has an answer-time head (an
+    instant-only model alone answers with its own head since the time heads
+    for the family (SM117)). No RWKV-Curve S90 rows, even for a preset that
+    turned on RWKV-Curve before the runtime is reopened; FSRS rows come from
+    the card's own stats."""
 
     expected_snapshot = RwkvBackendCacheSnapshot(
         card_states={},
@@ -26979,7 +26985,7 @@ def test_card_info_without_curve_model_omits_curve_and_answer_time_rows(
     )
 
     class InstantOnlyBackend:
-        model_name = "sm98"
+        model_name = "sm113"
         instant_model_name = None
 
         def predict_review(
@@ -26995,10 +27001,16 @@ def test_card_info_without_curve_model_omits_curve_and_answer_time_rows(
             )
 
         def has_answer_time_head(self) -> bool:
-            return True
+            return answer_time_head
 
         def predict_answer_time(self, *_args: object) -> object:
-            raise AssertionError("no answer time without a curve model")
+            if not answer_time_head:
+                raise AssertionError("no answer time without a head")
+            return rwkv_answer_time.RwkvAnswerTimePrediction(
+                median_seconds=(9.0, 7.0, 5.0, 3.0),
+                fast_probabilities=(0.1, 0.2, 0.3, 0.4),
+                mixed_median_seconds=6.0,
+            )
 
         def cache_snapshot(self) -> RwkvBackendCacheSnapshot:
             return expected_snapshot
@@ -27023,6 +27035,11 @@ def test_card_info_without_curve_model_omits_curve_and_answer_time_rows(
                 for answer in answers
             ]
 
+    monkeypatch.setattr(
+        rwkv_scheduler,
+        "_rwkv_answer_time_history_features",
+        lambda _reviewer, _card_id: [0.0] * 26,
+    )
     backend = InstantOnlyBackend()
     set_reviewer_backend(backend)
     assert not rwkv_scheduler.rwkv_workload_simulation_available()
@@ -27041,16 +27058,28 @@ def test_card_info_without_curve_model_omits_curve_and_answer_time_rows(
         fallback_source="FSRS",
     )
 
+    answer_time_rows = (
+        [
+            (
+                "RWKV : Answer Time by Button",
+                "Again:9.0s Hard:7.0s Good:5.0s Easy:3.0s",
+            ),
+            ("RWKV : Expected Answer Time", "6.0s (Good under 3.9s: 30%)"),
+        ]
+        if answer_time_head
+        else []
+    )
     assert rows == [
         ("RWKV computed R", "45%"),
         RWKV_BUTTON_PROBABILITY_ROW,
         ("Retrievability source", "RWKV"),
+        *answer_time_rows,
         ("RWKV : R After Review", "Again:65% Hard:70% Good:75% Easy:80%"),
         ("RWKV : R After 10min", "Again:66% Hard:71% Good:76% Easy:81%"),
     ]
     labels = {label for label, _ in rows}
     assert not labels & {"RWKV Curve Next S90", "FSRS Next S90"}
-    assert not any("answer time" in label.lower() for label in labels)
+    assert any("answer time" in label.lower() for label in labels) == answer_time_head
 
 
 def test_instant_only_prediction_keeps_fsrs_scheduling_states() -> None:
