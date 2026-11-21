@@ -6,13 +6,17 @@ from __future__ import annotations
 import aqt
 import aqt.forms
 import aqt.operations
-from anki.collection import Collection
+from anki.collection import Collection, OpChanges
 from anki.consts import *
 from anki.decks import DeckId
 from anki.scheduler import CustomStudyRequest
 from anki.scheduler.base import CustomStudyDefaults
-from aqt.operations import QueryOp
-from aqt.operations.scheduling import custom_study
+from aqt.operations import CollectionOp, QueryOp
+from aqt.operations.scheduling import (
+    FilteredDeckRwkvPolicy,
+    custom_study,
+    custom_study_rwkv_config,
+)
 from aqt.qt import *
 from aqt.taglimit import TagLimit
 from aqt.utils import disable_help_button, tr
@@ -212,8 +216,23 @@ class CustomStudy(QDialog):
         self._create_and_close(request)
 
     def _create_and_close(self, request: CustomStudyRequest) -> None:
+        from aqt.rwkv_filtered_deck import run_filtered_deck_op_with_rwkv_check
+
         # keep open on failure, as the cause was most likely an empty search
         # result, which the user can remedy
-        custom_study(parent=self, request=request).success(
-            lambda _: QDialog.accept(self)
-        ).run_in_background()
+        def make_op(
+            rwkv_policy: FilteredDeckRwkvPolicy,
+        ) -> CollectionOp[OpChanges]:
+            return custom_study(
+                parent=self, request=request, rwkv_policy=rwkv_policy
+            ).success(lambda _: QDialog.accept(self))
+
+        config = custom_study_rwkv_config(self.mw.col, request)
+        if config is None:
+            make_op(FilteredDeckRwkvPolicy.WARM_UP).run_in_background()
+            return
+        # `is:due` may need RWKV scores; ask before a full replay as for
+        # filtered decks.
+        run_filtered_deck_op_with_rwkv_check(
+            mw=self.mw, parent=self, config=config, make_op=make_op
+        )

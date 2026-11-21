@@ -14,9 +14,9 @@ import pytest
 
 import anki.collection  # Initialize collection before the cards/decks import cycle.
 import aqt
-from anki.collection import OpChangesWithCount, OpChangesWithId
+from anki.collection import OpChanges, OpChangesWithCount, OpChangesWithId
 from anki.decks import DeckId, FilteredDeckConfig
-from anki.scheduler import FilteredDeckForUpdate
+from anki.scheduler import CustomStudyRequest, FilteredDeckForUpdate
 from aqt import rwkv_filtered_deck, rwkv_scheduler
 from aqt.filtered_deck import FilteredDeckConfigDialog
 from aqt.operations import scheduling
@@ -79,6 +79,62 @@ def test_rwkv_need_ignores_inactive_and_third_filters() -> None:
     assert rwkv_scheduler.filtered_deck_rwkv_need(config) is FilteredDeckRwkvNeed.ORDER
     config.search_terms[0].limit = 10
     assert rwkv_scheduler.filtered_deck_rwkv_need(config) is FilteredDeckRwkvNeed.SEARCH
+
+
+@pytest.mark.parametrize(
+    "instant_due_enabled,expected",
+    [(True, FilteredDeckRwkvNeed.SEARCH), (False, FilteredDeckRwkvNeed.NONE)],
+)
+def test_rwkv_need_treats_is_due_as_rwkv_search_only_with_instant_presets(
+    instant_due_enabled: bool, expected: FilteredDeckRwkvNeed
+) -> None:
+    config = config_for("deck:Default is:due", Order.DUE)
+    assert (
+        rwkv_scheduler.filtered_deck_rwkv_need(
+            config, instant_due_enabled=instant_due_enabled
+        )
+        is expected
+    )
+    fsrs_due = config_for("deck:Default is:fsrs:due", Order.DUE)
+    assert (
+        rwkv_scheduler.filtered_deck_rwkv_need(fsrs_due, instant_due_enabled=True)
+        is FilteredDeckRwkvNeed.NONE
+    )
+
+
+@pytest.mark.parametrize("instant_presets", [True, False])
+def test_is_due_filter_prepares_instant_scores_only_with_instant_presets(
+    monkeypatch: pytest.MonkeyPatch, instant_presets: bool
+) -> None:
+    reviewer = SimpleNamespace(
+        mw=SimpleNamespace(
+            col=SimpleNamespace(
+                build_search_string=lambda *terms, joiner="AND": f" {joiner} ".join(
+                    terms
+                )
+            )
+        )
+    )
+    monkeypatch.setattr(
+        rwkv_scheduler, "rwkv_instant_due_enabled", lambda _r: instant_presets
+    )
+    prepare = MagicMock(return_value=RwkvStatsPreparationStatus.READY)
+    monkeypatch.setattr(rwkv_scheduler, "prepare_stats_retrievability_scores", prepare)
+
+    status = rwkv_scheduler.prepare_filtered_deck_retrievability_scores(
+        reviewer, config_for("deck:Default is:due", Order.DUE)
+    )
+
+    if instant_presets:
+        assert status is RwkvStatsPreparationStatus.READY
+        assert prepare.call_args.kwargs["prepare_instant_due"] is True
+        assert (
+            prepare.call_args.kwargs["snapshot_key"]
+            == rwkv_scheduler.RWKV_FILTERED_BUILD_SNAPSHOT_KEY
+        )
+    else:
+        assert status is None
+        prepare.assert_not_called()
 
 
 @pytest.mark.parametrize(
@@ -165,7 +221,10 @@ def test_filtered_preparation_refuses_full_replay_but_default_still_warms(
     )
     restore.assert_called_once_with(reviewer)
     warm_up.assert_not_called()
-    clear_scores.assert_called_once_with(reviewer, "deck:Default AND -is:suspended", [])
+    # A filtered build publishes under its own key, which only builds read.
+    clear_scores.assert_called_once_with(
+        reviewer, rwkv_scheduler.RWKV_FILTERED_BUILD_SNAPSHOT_KEY, []
+    )
 
     warm_up.side_effect = None
     warm_up.return_value = False
@@ -310,6 +369,52 @@ def test_operation_defaults_to_full_warmup(
     getattr(
         operation_context.col.sched, f"{operation}_filtered_deck"
     ).assert_called_once()
+
+
+def custom_study_request(kind: Any) -> CustomStudyRequest:
+    request = CustomStudyRequest(deck_id=1)
+    request.cram.kind = kind
+    request.cram.card_limit = 50
+    return request
+
+
+def test_custom_study_due_cards_prepares_rwkv_scores_before_building(
+    operation_context: SimpleNamespace, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    col = operation_context.col
+    col.build_search_string = lambda *nodes: "is:due deck:Default"
+    col.decks = SimpleNamespace(name=lambda _deck_id: "Default")
+    col.sched.custom_study = MagicMock(return_value=OpChanges())
+    prepared: list[FilteredDeckForUpdate] = []
+
+    def prepare(_col: object, deck: FilteredDeckForUpdate, **kwargs: Any) -> None:
+        # Scores must be ready before the build consumes them.
+        col.sched.custom_study.assert_not_called()
+        assert kwargs["rwkv_policy"] is FilteredDeckRwkvPolicy.REQUIRE_STATE
+        prepared.append(deck)
+
+    monkeypatch.setattr(
+        scheduling, "_prepare_filtered_deck_retrievability_scores", prepare
+    )
+    request = custom_study_request(CustomStudyRequest.Cram.CRAM_KIND_DUE)
+
+    scheduling.custom_study(
+        parent=None, request=request, rwkv_policy=FilteredDeckRwkvPolicy.REQUIRE_STATE
+    )._op(col)
+
+    assert len(prepared) == 1
+    term = prepared[0].config.search_terms[0]
+    assert (term.search, term.limit) == ("is:due deck:Default", 50)
+    col.sched.custom_study.assert_called_once_with(request)
+
+
+def test_custom_study_without_is_due_needs_no_rwkv_preparation(
+    operation_context: SimpleNamespace,
+) -> None:
+    request = custom_study_request(CustomStudyRequest.Cram.CRAM_KIND_NEW)
+    assert scheduling.custom_study_rwkv_config(operation_context.col, request) is None
+    request = CustomStudyRequest(deck_id=1, review_limit_delta=10)
+    assert scheduling.custom_study_rwkv_config(operation_context.col, request) is None
 
 
 class FakeOp:

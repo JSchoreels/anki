@@ -1392,8 +1392,18 @@ not depend on a previously selected deck, Card Info, Stats, or background deck
 count calculation. Cards without an applicable current prediction do not match
 the explicit RWKV property.
 
-Filtered decks support two explicit RWKV due predicates without changing the
-meaning of `is:due`:
+Searches support two explicit RWKV due predicates, and `is:due` follows
+RWKV-Instant per card:
+
+- `is:due` keeps its learning and day-learning branches. A review card uses
+  `is:rwkv:due` below when its home preset (original deck for a card in a
+  filtered deck) has `rwkv_review_instant_order_enabled` and the search's
+  prepared scores include the card; otherwise it uses its stored due date or
+  review step. RWKV-Curve-only presets keep due dates. The deck-wide daily
+  minimum is not added. Without a preset that enables RWKV-Instant, `is:due`
+  does not prepare RWKV scores.
+- `is:fsrs:due` is the previous `is:due`: stored due dates and review steps
+  only.
 
 - `is:rwkv:due` matches review cards whose source deck has
   `rwkv_review_instant_order_enabled` and whose fresh RWKV-Instant score passes
@@ -1407,11 +1417,32 @@ meaning of `is:due`:
   review has reached the current/query RWKV-Curve interval at the resolved
   target retention.
 
-Desktop filtered-deck creation and rebuilding detect these predicates, warm the
-RWKV backend, and prepare fresh scores before the final search. Cards without a
-fresh applicable prediction do not match either predicate. Candidate discovery
-temporarily broadens the RWKV-dependent predicates so future cards that the
-model considers due are not omitted before scoring.
+Desktop filtered-deck creation and rebuilding, and custom study of due cards,
+detect these predicates (and `is:due` when a preset enables RWKV-Instant), warm
+the RWKV backend, and prepare fresh scores before the final search. Cards
+without a fresh applicable prediction do not match either predicate. Candidate
+discovery temporarily broadens the RWKV-dependent predicates, including
+`is:due`, so future cards that the model considers due are not omitted before
+scoring.
+
+Each search uses only scores prepared for it. Browser and `find_cards` searches
+use the newest score snapshot whose normalized search text equals the search;
+the snapshot must carry RWKV-Instant inputs (`instant_due`) for `is:due` and
+`is:rwkv:due` to use it. The Browser prepares one before running a search with
+`prop:rwkv:r`, `prop:rwkv-curve:r`, `is:rwkv:due`, `is:rwkv-curve:due`, or (with
+an RWKV-Instant preset) `is:due`; if preparation does not finish, the search
+still runs, `is:due` uses due dates and the RWKV predicates match nothing.
+Filtered-deck preparation publishes its scores under a reserved key; the next
+build takes them for all its filters, and later builds do not reuse them. Other
+searches (for example FSRS preset rules) find no snapshot. A search that needed
+RWKV-Instant scores but found none logs one INFO line when such presets exist.
+
+Known differences from deck-list counts: the deck list applies the selected
+deck's preset to every card in its tree, while searches use each card's home
+preset; the deck list leaves out cards currently in a filtered deck, while
+`deck:X is:due` includes them through their original deck; and the deck list
+counts intervening reviews over the selected deck's tree, while search scores
+count them over each card's home deck tree.
 
 Filtered-deck preparation waits on its collection worker for concurrent RWKV
 predictions to release the resident backend, then holds that access through

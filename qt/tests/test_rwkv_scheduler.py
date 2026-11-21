@@ -20618,8 +20618,83 @@ def test_rwkv_due_search_detection(
     assert rwkv_scheduler._search_uses_rwkv_curve_due(search) is curve_due
 
 
+@pytest.mark.parametrize(
+    ("search", "expected"),
+    [
+        ("is:due", True),
+        ("deck:current -is:due", True),
+        ("(IS:DUE OR is:new)", True),
+        ('"is:due"', True),
+        ("is:fsrs:due", False),
+        ("is:rwkv:due", False),
+        ("is:rwkv-curve:due", False),
+        ("tag:x-is:due", False),
+        ("front:is:due", False),
+        ("is:dues", False),
+    ],
+)
+def test_smart_due_search_detection(search: str, expected: bool) -> None:
+    assert rwkv_scheduler._search_uses_smart_due(search) is expected
+
+
+@pytest.mark.parametrize(
+    ("search", "instant_presets", "expected"),
+    [
+        ("deck:current is:due", True, True),
+        # Without RWKV-Instant presets, `is:due` is the stored due date.
+        ("deck:current is:due", False, False),
+        ("deck:current is:fsrs:due", True, False),
+        ("is:rwkv:due", False, True),
+        ("is:rwkv-curve:due", False, True),
+        ("prop:rwkv:r<0.9", False, True),
+        ("prop:r<0.9", True, False),
+    ],
+)
+def test_browser_search_needs_rwkv_scores(
+    monkeypatch: pytest.MonkeyPatch,
+    search: str,
+    instant_presets: bool,
+    expected: bool,
+) -> None:
+    config_reads: list[object] = []
+
+    def instant_due_enabled(reviewer: object) -> bool:
+        config_reads.append(reviewer)
+        return instant_presets
+
+    monkeypatch.setattr(rwkv_scheduler, "rwkv_instant_due_enabled", instant_due_enabled)
+
+    assert rwkv_scheduler.search_needs_rwkv_scores(object(), search) is expected
+    if not rwkv_scheduler._search_uses_smart_due(search):
+        assert config_reads == []
+
+
+def test_rwkv_instant_due_enabled_reads_deck_presets() -> None:
+    def collection(configs: list[dict[str, object]]) -> SimpleNamespace:
+        return SimpleNamespace(
+            mw=SimpleNamespace(
+                col=SimpleNamespace(
+                    decks=SimpleNamespace(all_config=lambda: configs),
+                    get_config=lambda _key: None,
+                )
+            )
+        )
+
+    instant = {"rwkvReviewEnabled": False, "rwkvReviewInstantOrderEnabled": True}
+    curve_only = {"rwkvReviewEnabled": True, "rwkvReviewInstantOrderEnabled": False}
+
+    assert rwkv_scheduler.rwkv_instant_due_enabled(collection([instant])) is True
+    assert rwkv_scheduler.rwkv_instant_due_enabled(collection([curve_only])) is False
+    assert rwkv_scheduler.rwkv_instant_due_enabled(collection([])) is False
+
+
+@pytest.mark.parametrize(
+    "search",
+    ["deck:current is:rwkv:due", "deck:current is:due"],
+)
 def test_prepare_stats_due_search_transports_dynamic_desired_retention(
     monkeypatch: pytest.MonkeyPatch,
+    search: str,
 ) -> None:
     class Backend:
         def __init__(self) -> None:
@@ -20716,18 +20791,18 @@ def test_prepare_stats_due_search_transports_dynamic_desired_retention(
         "_fresh_rwkv_review_queue_score_map",
         lambda _reviewer: {},
     )
+    # A preset uses RWKV-Instant, so plain `is:due` needs eligibility inputs.
+    monkeypatch.setattr(rwkv_scheduler, "rwkv_instant_due_enabled", lambda _r: True)
 
     backend = Backend()
     previous_backend = set_reviewer_backend(backend)
     try:
-        status = prepare_stats_retrievability_scores(
-            reviewer,
-            "deck:current is:rwkv:due",
-        )
+        status = prepare_stats_retrievability_scores(reviewer, search)
     finally:
         set_reviewer_backend(previous_backend)
 
     assert status == rwkv_scheduler.RwkvStatsPreparationStatus.READY
+    assert rpc.stats_calls[0]["instant_due"] is True
     assert len(backend.review_inputs) == 1
     assert backend.review_inputs[0].target_retentions == pytest.approx(
         (0.40, 0.40, 0.40, 0.40)
@@ -20826,9 +20901,11 @@ def test_filtered_deck_retrievability_prepares_rwkv_candidate_scores(
         prepare_instant_due: bool = False,
         prepare_curve_due: bool = False,
         prepare_curve_retrievability: bool = False,
+        snapshot_key: str | None = None,
     ) -> rwkv_scheduler.RwkvStatsPreparationStatus:
         assert warm_up_if_needed
         assert allow_full_replay
+        assert snapshot_key == rwkv_scheduler.RWKV_FILTERED_BUILD_SNAPSHOT_KEY
         prepared.append(
             (
                 reviewer,
@@ -21090,7 +21167,8 @@ def test_filtered_deck_waits_for_busy_backend_before_mutating(
             else collection_pb2.OpChangesWithId(id=200)
         ]
         call = col._backend.stats_calls[-1]
-        assert call["search"] == "deck:current AND -is:suspended"
+        # Filtered builds read scores published under their reserved key.
+        assert call["search"] == rwkv_scheduler.RWKV_FILTERED_BUILD_SNAPSHOT_KEY
         assert [score.retrievability for score in call["scores"]] == [
             pytest.approx(0.64)
         ]
@@ -21494,15 +21572,18 @@ def test_stats_score_transport_includes_due_metadata() -> None:
     class Backend:
         def __init__(self) -> None:
             self.scores: list[object] = []
+            self.instant_due: bool | None = None
 
         def set_rwkv_stats_graph_scores(
             self,
             *,
             search: str,
             scores: list[object],
+            instant_due: bool,
         ) -> None:
             assert search == "is:rwkv:due"
             self.scores = scores
+            self.instant_due = instant_due
 
     backend = Backend()
     reviewer = SimpleNamespace(
@@ -21516,7 +21597,9 @@ def test_stats_score_transport_includes_due_metadata() -> None:
         intervening_reviews_by_card_id={1: 3},
         curve_due_card_ids={2},
         curve_retrievabilities_by_card_id={1: 0.6},
+        instant_due=True,
     )
+    assert backend.instant_due is True
 
     first, second = backend.scores
     assert getattr(first, "target_retention") == pytest.approx(0.8)
@@ -25563,8 +25646,11 @@ class _RwkvQueueScoreRpc:
         *,
         search: str,
         scores: list[object],
+        instant_due: bool = False,
     ) -> None:
-        self.stats_calls.append({"search": search, "scores": scores})
+        self.stats_calls.append(
+            {"search": search, "scores": scores, "instant_due": instant_due}
+        )
 
     def set_rwkv_card_info_score(self, message: Any) -> None:
         card_id = getattr(message, "card_id")

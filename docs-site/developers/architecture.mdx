@@ -232,8 +232,10 @@ remaining preset steps. Their queue is Review, so they use review ordering and
 limits. The optional `review_step_secs` card-data field and the last-answer
 timestamp determine when the review becomes due, including across rollover.
 The stored day in `cards.due` gives clients without timed review support a
-whole-day fallback. The queue, Deck Browser counts, and `is:due` use the exact
-timestamp on clients that support it.
+whole-day fallback. The queue, Deck Browser counts, `is:fsrs:due`, and the
+due-date part of `is:due` use the exact timestamp on clients that support it.
+For review cards whose preset uses RWKV-Instant, `is:due` follows RWKV-Instant
+eligibility when scores were prepared for the search (see `docs/rwkv.MD`).
 
 When FSRS computes a failing review interval for `Again`, the scheduler clamps
 that interval to the deck preset's minimum lapse interval and maximum review

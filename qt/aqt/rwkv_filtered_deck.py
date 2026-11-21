@@ -4,6 +4,7 @@
 from __future__ import annotations
 
 from collections.abc import Callable
+from types import SimpleNamespace
 from typing import Any
 
 from anki.decks import FilteredDeckConfig
@@ -23,7 +24,11 @@ def run_filtered_deck_op_with_rwkv_check(
 ) -> None:
     """Ask before a desktop filtered-deck build needs a full historical replay."""
 
-    need = rwkv_scheduler.filtered_deck_rwkv_need(config)
+    reviewer = getattr(mw, "reviewer", None) or SimpleNamespace(mw=mw)
+    need = rwkv_scheduler.filtered_deck_rwkv_need(
+        config,
+        instant_due_enabled=rwkv_scheduler.rwkv_instant_due_enabled(reviewer),
+    )
     logger = rwkv_scheduler.logger
 
     def failure(exc: Exception) -> None:

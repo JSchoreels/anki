@@ -429,6 +429,7 @@ mod test {
     use crate::revlog::RevlogEntry;
     use crate::revlog::RevlogReviewKind;
     use crate::scheduler::timing::SchedTimingToday;
+    use crate::search::SortMode;
 
     #[test]
     fn wellformed() -> Result<()> {
@@ -617,6 +618,57 @@ mod test {
         col.add_or_update_deck_config(&mut conf)?;
         deck.normal_mut().unwrap().config_id = conf.id.0;
         col.add_or_update_deck(deck)?;
+        Ok(())
+    }
+
+    #[test]
+    fn rwkv_deck_tree_review_count_matches_is_due_search_with_same_scores() -> Result<()> {
+        let mut col = Collection::new();
+        let mut deck = col.get_or_create_normal_deck("Default")?;
+        enable_rwkv_review_counts(&mut col, &mut deck, false)?;
+        let mut config = col
+            .get_deck_config(deck.config_id().unwrap(), false)?
+            .unwrap();
+        config.inner.rwkv_review_minimum_reviews_per_day = 0;
+        col.add_or_update_deck_config(&mut config)?;
+        let timing = col.timing_today()?;
+        let today = timing.days_elapsed as i32;
+        let blocked_by_target = add_review_card(&mut col, deck.id, today, 0.75, None)?;
+        let rwkv_due = add_review_card(&mut col, deck.id, today + 7, 0.75, None)?;
+        let not_due = add_review_card(&mut col, deck.id, today + 7, 0.75, None)?;
+        let unscored_due = add_review_card(&mut col, deck.id, today, 0.75, None)?;
+        let scores = [(blocked_by_target, 0.80), (rwkv_due, 0.70), (not_due, 0.90)];
+        col.set_rwkv_deck_count_scores(deck.id, HashMap::from(scores))?;
+        col.set_rwkv_stats_graph_score_entries(
+            "deck:Default is:due".into(),
+            scores
+                .into_iter()
+                .map(|(card_id, retrievability)| {
+                    (
+                        card_id,
+                        crate::collection::RwkvStatsGraphScoreEntry {
+                            retrievability,
+                            curve_retrievability: None,
+                            intervening_reviews: None,
+                            target_retention: None,
+                            curve_due: false,
+                        },
+                    )
+                })
+                .collect(),
+            true,
+        )?;
+
+        let review_count = get_deck_in_tree(col.deck_tree(Some(timing.now))?, deck.id)
+            .unwrap()
+            .review_count;
+        let mut due = col.search_cards("deck:Default is:due", SortMode::NoOrder)?;
+        due.sort();
+
+        let mut expected = vec![rwkv_due, unscored_due];
+        expected.sort();
+        assert_eq!(due, expected);
+        assert_eq!(review_count as usize, due.len());
         Ok(())
     }
 

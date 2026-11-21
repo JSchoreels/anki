@@ -776,9 +776,11 @@ fn broaden_retrievability_properties(node: Node, negated: bool) -> Node {
             kind: PropertyKind::RwkvRetrievability(_) | PropertyKind::RwkvCurveRetrievability(_),
             ..
         })
-        | Node::Search(SearchNode::State(StateKind::RwkvDue | StateKind::RwkvCurveDue)) => {
-            boolean_search_node(!negated)
-        }
+        // `is:due` can follow RWKV-Instant, so cards not yet due by date need
+        // scores too.
+        | Node::Search(SearchNode::State(
+            StateKind::Due | StateKind::RwkvDue | StateKind::RwkvCurveDue,
+        )) => boolean_search_node(!negated),
         other => other,
     }
 }
@@ -2023,6 +2025,41 @@ mod test {
         assert_eq!(response.rows.len(), 1);
         assert_eq!(response.rows[0].card_id, review_card.id.0);
 
+        Ok(())
+    }
+
+    #[test]
+    fn review_input_rows_for_search_score_cards_not_yet_due_for_is_due() -> Result<()> {
+        let mut col = Collection::new();
+        col.update_default_deck_config(|config| {
+            config.rwkv_review_instant_order_enabled = true;
+        });
+        let timing = col.timing_today()?;
+        let mut card = Card::new(NoteId(10), 0, DeckId(1), timing.days_elapsed as i32 + 10);
+        card.ctype = CardType::Review;
+        card.queue = CardQueue::Review;
+        card.interval = 30;
+        card.last_review_time = Some(timing.now.adding_secs(-20 * 86_400));
+        col.add_card(&mut card)?;
+        let searched = |col: &mut Collection, search: String| -> Result<u32> {
+            Ok(col
+                .rwkv_review_input_rows_for_search(RwkvReviewInputRowsForSearchRequest {
+                    search,
+                    include_suspended_review: false,
+                    include_disabled_decks: false,
+                    include_new_cards: false,
+                    include_comparison_data: false,
+                })?
+                .searched_cards)
+        };
+
+        // `is:due` may follow RWKV-Instant, so the card needs a score.
+        assert_eq!(searched(&mut col, format!("cid:{} is:due", card.id.0))?, 1);
+        assert_eq!(searched(&mut col, format!("cid:{} -is:due", card.id.0))?, 1);
+        assert_eq!(
+            searched(&mut col, format!("cid:{} is:fsrs:due", card.id.0))?,
+            0
+        );
         Ok(())
     }
 

@@ -1081,6 +1081,9 @@ message RwkvStatsGraphScoresRequest {
   }
   string search = 1;
   repeated Score scores = 2;
+  // The scores carry what RWKV-Instant eligibility needs (target retention and
+  // intervening reviews), so `is:due` and `is:rwkv:due` may use them.
+  bool instant_due = 3;
 }
 
 message RwkvCardInfoScoreRequest {

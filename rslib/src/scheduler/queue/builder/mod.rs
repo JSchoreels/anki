@@ -3882,7 +3882,7 @@ mod test {
                             HashMap::from([(card_id, 0.20)]),
                         )?;
                         col.set_rwkv_stats_graph_score_entries(
-                            "".into(),
+                            "is:rwkv:due".into(),
                             HashMap::from([(
                                 card_id,
                                 crate::collection::RwkvStatsGraphScoreEntry {
@@ -3893,6 +3893,7 @@ mod test {
                                     curve_due: false,
                                 },
                             )]),
+                            true,
                         )?;
 
                         let expected = if allow_same_day {

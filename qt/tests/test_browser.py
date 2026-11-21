@@ -109,6 +109,34 @@ def test_rwkv_browser_search_prepares_scores_before_searching(
     assert browser.table.searches == [query]
 
 
+def test_is_due_browser_search_prepares_scores_with_instant_presets(
+    monkeypatch: Any,
+) -> None:
+    from aqt.browser import browser as browser_module
+
+    browser = cast(Any, Browser.__new__(Browser))
+    browser.mw = object()
+    browser.table = TableSearchRecorder()
+    browser._lastSearchTxt = "deck:current is:due"
+    browser._rwkv_search_generation = 0
+    browser._closeEventHasCleanedUp = False
+    prepared: list[str] = []
+
+    monkeypatch.setattr(browser_module, "QueryOp", ImmediateQueryOp)
+    monkeypatch.setattr(aqt.rwkv_scheduler, "rwkv_instant_due_enabled", lambda _r: True)
+    monkeypatch.setattr(
+        aqt.rwkv_scheduler,
+        "prepare_browser_retrievability_scores",
+        lambda _mw, search: prepared.append(search),
+    )
+
+    browser.search()
+
+    assert prepared == ["deck:current is:due"]
+    # The search runs even when preparation did not finish.
+    assert browser.table.searches == ["deck:current is:due"]
+
+
 def test_non_rwkv_browser_search_runs_without_preparation(monkeypatch: Any) -> None:
     browser = cast(Any, Browser.__new__(Browser))
     browser.mw = object()

@@ -69,6 +69,14 @@ prediction error does not directly translate into the same percentage increase
 in retention.
 [Benchmark methodology](https://github.com/open-spaced-repetition/srs-benchmark#evaluation)
 
+**In the Browser, `is:due` selects review cards the way the deck list counts
+them.** For review cards whose preset uses RWKV-Instant, `is:due` uses the same
+eligibility; other cards use their due dates. The deck list can still show more
+reviews: it adds the preset's daily minimum of RWKV reviews, which `is:due`
+does not include. On a parent deck whose subdecks use other presets, the counts
+can also differ, because the deck list applies the parent's preset to every
+subdeck. To search by due dates only, use `is:fsrs:due`.
+
 Sources: [Q3](#q3--changing-due-counts-and-backlogs)
 and [Q6](#q6--interpreting-due-counts-and-workload).
 Details: [RWKV-Instant and RWKV-Curve](RWKV_FAQ.md#how-do-rwkv-instant-and-rwkv-curve-differ),

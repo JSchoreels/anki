@@ -200,6 +200,7 @@ fn write_state(kind: &StateKind) -> String {
             Review => "review",
             Learning => "learn",
             Due => "due",
+            FsrsDue => "fsrs:due",
             RwkvDue => "rwkv:due",
             RwkvCurveDue => "rwkv-curve:due",
             Buried => "buried",
@@ -284,6 +285,7 @@ mod test {
             "prop:rwkv-curve:r=0.7",
             normalize_search("prop:rwkv-curve:r=0.70").unwrap()
         );
+        assert_eq!("is:fsrs:due", normalize_search("is:fsrs:due").unwrap());
         assert_eq!(
             "Frequency>500",
             normalize_search("Frequency>500.0").unwrap()

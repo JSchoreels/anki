@@ -987,7 +987,7 @@ impl crate::services::SchedulerService for Collection {
                 },
             );
         }
-        self.set_rwkv_stats_graph_score_entries(input.search, scores)
+        self.set_rwkv_stats_graph_score_entries(input.search, scores, input.instant_due)
     }
 
     fn set_rwkv_card_info_score(&mut self, input: RwkvCardInfoScoreRequest) -> Result<()> {

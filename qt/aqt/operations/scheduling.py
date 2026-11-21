@@ -19,6 +19,7 @@ from anki.collection import (
     OpChanges,
     OpChangesWithCount,
     OpChangesWithId,
+    SearchNode,
 )
 from anki.decks import DeckId, FilteredDeckConfig
 from anki.notes import NoteId
@@ -563,12 +564,59 @@ def custom_study(
     *,
     parent: QWidget,
     request: CustomStudyRequest,
+    rwkv_policy: FilteredDeckRwkvPolicy = FilteredDeckRwkvPolicy.WARM_UP,
 ) -> CollectionOp[OpChanges]:
     return CollectionOp(
-        parent,
-        lambda col: _run_preserving_rwkv_state(
+        parent, lambda col: _custom_study(col, request, rwkv_policy=rwkv_policy)
+    )
+
+
+def custom_study_rwkv_config(
+    col: Collection, request: CustomStudyRequest
+) -> FilteredDeckConfig | None:
+    """Return the filter to prepare RWKV scores for, if the session uses `is:due`.
+
+    Only "Review due cards" (cram kind Due) searches `is:due`. The deck and
+    state are enough: tags only narrow the cards the build picks.
+    """
+
+    if (
+        request.WhichOneof("value") != "cram"
+        or request.cram.kind != CustomStudyRequest.Cram.CRAM_KIND_DUE
+    ):
+        return None
+    search = col.build_search_string(
+        SearchNode(card_state=SearchNode.CARD_STATE_DUE),
+        SearchNode(deck=col.decks.name(DeckId(request.deck_id))),
+    )
+    return FilteredDeckConfig(
+        search_terms=[
+            FilteredDeckConfig.SearchTerm(
+                search=search,
+                limit=request.cram.card_limit,
+                order=FilteredDeckConfig.SearchTerm.DUE,
+            )
+        ]
+    )
+
+
+def _custom_study(
+    col: Collection,
+    request: CustomStudyRequest,
+    *,
+    rwkv_policy: FilteredDeckRwkvPolicy = FilteredDeckRwkvPolicy.WARM_UP,
+) -> OpChanges:
+    config = custom_study_rwkv_config(col, request)
+    if config is not None and rwkv_policy is not FilteredDeckRwkvPolicy.SKIP:
+        _prepare_filtered_deck_retrievability_scores(
             col,
-            lambda: col.sched.custom_study(request),
-            require_no_preset_overlay=True,
-        ),
+            # The name only labels the preparation logs.
+            FilteredDeckForUpdate(id=DeckId(0), name="custom study", config=config),
+            operation="custom_study",
+            rwkv_policy=rwkv_policy,
+        )
+    return _run_preserving_rwkv_state(
+        col,
+        lambda: col.sched.custom_study(request),
+        require_no_preset_overlay=True,
     )

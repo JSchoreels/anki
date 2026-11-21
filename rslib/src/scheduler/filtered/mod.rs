@@ -112,11 +112,23 @@ impl Collection {
     }
 
     fn build_filtered_deck(&mut self, ctx: DeckFilterContext) -> Result<usize> {
+        // RWKV scores prepared for this build serve all its terms, and no
+        // later build.
+        let prepared_rwkv_scores = self.begin_rwkv_filtered_build_scores()?;
+        if !prepared_rwkv_scores {
+            tracing::debug!("no RWKV scores prepared for filtered deck build");
+        }
+        let result = self.build_filtered_deck_terms(&ctx);
+        self.finish_rwkv_filtered_build_scores();
+        result
+    }
+
+    fn build_filtered_deck_terms(&mut self, ctx: &DeckFilterContext) -> Result<usize> {
         let start = -100_000;
         let mut position = start;
         let fsrs_enabled = self.fsrs_enabled();
         for term in ctx.config.search_terms.iter().take(2) {
-            position = self.move_cards_matching_term(&ctx, term, position, fsrs_enabled)?;
+            position = self.move_cards_matching_term(ctx, term, position, fsrs_enabled)?;
         }
 
         Ok((position - start) as usize)
@@ -733,6 +745,132 @@ mod test {
             exact_retrievability_key_for_card(&col, &card, &preset, timing)?,
             0.42
         );
+        Ok(())
+    }
+
+    fn add_rwkv_instant_review_card(col: &mut Collection, due_in_days: i32) -> Result<CardId> {
+        let nt = col.get_notetype_by_name("Basic")?.unwrap();
+        let mut note = nt.new_note();
+        col.add_note(&mut note, DeckId(1))?;
+        let timing = col.timing_today()?;
+        let mut card = col.storage.get_card_by_ordinal(note.id, 0)?.unwrap();
+        card.ctype = CardType::Review;
+        card.queue = CardQueue::Review;
+        card.due = timing.days_elapsed as i32 + due_in_days;
+        card.interval = 30;
+        card.desired_retention = Some(0.8);
+        card.last_review_time = Some(timing.now.adding_secs(-20 * 86_400));
+        col.storage.update_card(&card)?;
+        Ok(card.id)
+    }
+
+    fn enable_rwkv_instant(col: &mut Collection) -> Result<()> {
+        let mut config = col.get_deck_config(DeckConfigId(1), false)?.unwrap();
+        config.inner.rwkv_review_instant_order_enabled = true;
+        config.inner.rwkv_review_min_intervening_reviews = 0;
+        config.inner.rwkv_review_min_elapsed_secs = 0;
+        col.add_or_update_deck_config(&mut config)
+    }
+
+    fn instant_scores(
+        scores: &[(CardId, f32)],
+    ) -> HashMap<CardId, crate::collection::RwkvStatsGraphScoreEntry> {
+        scores
+            .iter()
+            .map(|&(card_id, retrievability)| {
+                (
+                    card_id,
+                    crate::collection::RwkvStatsGraphScoreEntry {
+                        retrievability,
+                        curve_retrievability: None,
+                        intervening_reviews: None,
+                        target_retention: Some(0.8),
+                        curve_due: false,
+                    },
+                )
+            })
+            .collect()
+    }
+
+    fn sorted_deck_cards(col: &Collection, deck_id: DeckId) -> Result<Vec<CardId>> {
+        let mut cards = col.storage.all_cards_in_single_deck(deck_id)?;
+        cards.sort();
+        Ok(cards)
+    }
+
+    #[test]
+    fn filtered_build_uses_prepared_rwkv_scores_for_one_build() -> Result<()> {
+        let mut col = Collection::new();
+        enable_rwkv_instant(&mut col)?;
+        let first_rwkv_due = add_rwkv_instant_review_card(&mut col, 10)?;
+        let second_rwkv_due = add_rwkv_instant_review_card(&mut col, 10)?;
+        let date_due = add_rwkv_instant_review_card(&mut col, 0)?;
+        let scores = instant_scores(&[
+            (first_rwkv_due, 0.7),
+            (second_rwkv_due, 0.7),
+            (date_due, 0.95),
+        ]);
+        col.set_rwkv_stats_graph_score_entries(
+            crate::collection::RWKV_FILTERED_BUILD_SNAPSHOT_KEY.into(),
+            scores.clone(),
+            true,
+        )?;
+
+        let mut deck = col.get_or_create_filtered_deck(DeckId(0))?;
+        deck.config.search_terms[0].search = format!("is:due cid:{}", first_rwkv_due.0);
+        deck.config.search_terms[0].limit = 100;
+        deck.config.search_terms[1].search = "is:due".into();
+        deck.config.search_terms[1].limit = 100;
+        let filtered_did = col.add_or_update_filtered_deck(deck)?.output;
+        let mut expected = vec![first_rwkv_due, second_rwkv_due];
+        expected.sort();
+        // Both filters used the prepared scores.
+        assert_eq!(sorted_deck_cards(&col, filtered_did)?, expected);
+
+        // The prepared scores served that build only.
+        col.rebuild_filtered_deck(filtered_did)?;
+        assert_eq!(sorted_deck_cards(&col, filtered_did)?, vec![date_due]);
+
+        // A card in a filtered deck follows its home deck's preset.
+        col.set_rwkv_stats_graph_score_entries("is:due".into(), scores, true)?;
+        let mut due = col.search_cards("is:due", SortMode::NoOrder)?;
+        due.sort();
+        assert_eq!(due, expected);
+        assert!(col
+            .search_cards("is:fsrs:due", SortMode::NoOrder)?
+            .contains(&date_due));
+        Ok(())
+    }
+
+    #[test]
+    fn custom_study_due_cards_uses_prepared_rwkv_scores() -> Result<()> {
+        use anki_proto::scheduler::custom_study_request::cram::CramKind;
+        use anki_proto::scheduler::custom_study_request::Cram;
+        use anki_proto::scheduler::custom_study_request::Value;
+        use anki_proto::scheduler::CustomStudyRequest;
+
+        let mut col = Collection::new();
+        enable_rwkv_instant(&mut col)?;
+        let rwkv_due = add_rwkv_instant_review_card(&mut col, 10)?;
+        let date_due = add_rwkv_instant_review_card(&mut col, 0)?;
+        col.set_rwkv_stats_graph_score_entries(
+            crate::collection::RWKV_FILTERED_BUILD_SNAPSHOT_KEY.into(),
+            instant_scores(&[(rwkv_due, 0.7), (date_due, 0.95)]),
+            true,
+        )?;
+
+        col.custom_study(CustomStudyRequest {
+            deck_id: 1,
+            value: Some(Value::Cram(Cram {
+                kind: CramKind::Due as i32,
+                card_limit: 100,
+                ..Default::default()
+            })),
+        })?;
+
+        let session_name = col.tr.custom_study_custom_study_session().to_string();
+        let session = col.get_deck_id(&session_name)?.unwrap();
+        assert_eq!(sorted_deck_cards(&col, session)?, vec![rwkv_due]);
         Ok(())
     }
 }

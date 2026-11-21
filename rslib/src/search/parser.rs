@@ -156,7 +156,11 @@ pub enum StateKind {
     New,
     Review,
     Learning,
+    /// Review cards due by RWKV-Instant eligibility where the card's preset
+    /// uses RWKV-Instant and prepared scores exist; due dates otherwise.
     Due,
+    /// Due by stored due dates and review steps only.
+    FsrsDue,
     RwkvDue,
     RwkvCurveDue,
     Buried,
@@ -740,6 +744,7 @@ fn parse_state(s: &str) -> ParseResult<'_, SearchNode> {
         "review" => Review,
         "learn" => Learning,
         "due" => Due,
+        "fsrs:due" => FsrsDue,
         "rwkv:due" => RwkvDue,
         "rwkv-curve:due" => RwkvCurveDue,
         "buried" => Buried,
@@ -1178,6 +1183,10 @@ mod test {
             vec![Search(NoteIds("1237123712,2,3".into()))]
         );
         assert_eq!(parse("is:due")?, vec![Search(State(StateKind::Due))]);
+        assert_eq!(
+            parse("is:fsrs:due")?,
+            vec![Search(State(StateKind::FsrsDue))]
+        );
         assert_eq!(
             parse("is:rwkv:due")?,
             vec![Search(State(StateKind::RwkvDue))]

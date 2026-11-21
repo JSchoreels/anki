@@ -537,9 +537,17 @@ class Browser(QMainWindow):
 
         from aqt import rwkv_scheduler
 
-        if rwkv_scheduler.search_uses_rwkv_retrievability(search):
+        if rwkv_scheduler.search_needs_rwkv_scores(self.mw, search):
 
-            def prepared(_: object) -> None:
+            def prepared(status: object) -> None:
+                if status is not rwkv_scheduler.RwkvStatsPreparationStatus.READY:
+                    # The search still runs: is:due then uses due dates and
+                    # RWKV-only states match nothing.
+                    rwkv_scheduler.logger.info(
+                        "Browser RWKV scores not ready: status=%s search=%r",
+                        getattr(status, "value", status),
+                        search,
+                    )
                 if (
                     not self._closeEventHasCleanedUp
                     and generation == self._rwkv_search_generation
