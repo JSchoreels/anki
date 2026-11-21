@@ -88,7 +88,16 @@ def test_model_for_profile_defaults_to_sm72e25_and_preserves_explicit_choices(
 
 @pytest.mark.parametrize("model", [None, *RWKV_MODELS])
 @pytest.mark.parametrize(
-    "precision", [None, "f32", "int8", "int4", "cards_int4_notes_int8"]
+    "precision",
+    [
+        None,
+        "f32",
+        "int8",
+        "int4",
+        "cards_int4_notes_int8",
+        "compact_cards_int8",
+        "compact_cards_int4",
+    ],
 )
 def test_deck_options_loads_existing_profile_model_and_precision(
     monkeypatch, model, precision
@@ -118,9 +127,12 @@ def test_deck_options_loads_existing_profile_model_and_precision(
     assert result.rwkv_collection_counts.cards == 123
     assert result.rwkv_collection_counts.notes == 87
     assert result.rwkv_profile_settings.model == (model or "sm72e25")
-    # Full int4 was removed; a stored "int4" falls back to the default.
+    # Full int4 was removed and the former default overflowed on long cards:
+    # both fall back to the default.
     assert result.rwkv_profile_settings.state_precision == (
-        precision if precision not in (None, "int4") else "cards_int4_notes_int8"
+        precision
+        if precision not in (None, "int4", "cards_int4_notes_int8")
+        else "compact_cards_int8"
     )
 
 
@@ -151,12 +163,12 @@ def test_deck_options_applies_local_choices_only_after_a_successful_save(
     request = UpdateDeckConfigsRequest(mode=mode)
     if has_settings:
         request.rwkv_profile_settings.model = "legacy"
-        request.rwkv_profile_settings.state_precision = "cards_int4_notes_int8"
+        request.rwkv_profile_settings.state_precision = "compact_cards_int4"
         request.rwkv_profile_settings.single_model = True
     mediasrv._on_update_deck_configs_success(request, close_on_success=False)
     assert profile == {
         "rwkvModel": "legacy" if should_save else "sm36",
-        "rwkvStatePrecision": "cards_int4_notes_int8" if should_save else "int8",
+        "rwkvStatePrecision": "compact_cards_int4" if should_save else "int8",
         # A save stores the opt-out and drops the former opt-in toggle, whose
         # values meant the opposite.
         **(
@@ -300,6 +312,8 @@ def test_model_choice_waits_for_profile_reopen_and_keeps_precision_independent(
         ("int8", False),
         ("int4", True),
         ("cards_int4_notes_int8", True),
+        ("compact_cards_int8", True),
+        ("compact_cards_int4", True),
     ],
 )
 def test_profile_open_reuses_only_matching_model_and_precision(
@@ -340,7 +354,16 @@ def test_profile_open_reuses_only_matching_model_and_precision(
 
 @pytest.mark.parametrize("model", [None, *RWKV_MODELS])
 @pytest.mark.parametrize(
-    "precision", [None, "f32", "int8", "int4", "cards_int4_notes_int8"]
+    "precision",
+    [
+        None,
+        "f32",
+        "int8",
+        "int4",
+        "cards_int4_notes_int8",
+        "compact_cards_int8",
+        "compact_cards_int4",
+    ],
 )
 def test_profile_model_and_precision_reach_the_native_backend(
     monkeypatch, model, precision
@@ -372,7 +395,9 @@ def test_profile_model_and_precision_reach_the_native_backend(
     # No preset uses RWKV-Instant here: each size runs its two-head model.
     assert backend.model_name == curve_model_for_choice(model or "sm72e25")
     assert backend.state_precision == (
-        precision if precision not in (None, "int4") else "cards_int4_notes_int8"
+        precision
+        if precision not in (None, "int4", "cards_int4_notes_int8")
+        else "compact_cards_int8"
     )
 
 

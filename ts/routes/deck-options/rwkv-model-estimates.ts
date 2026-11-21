@@ -1,7 +1,13 @@
 // Copyright: Ankitects Pty Ltd and contributors
 // License: GNU AGPL, version 3 or later; http://www.gnu.org/licenses/agpl.html
 
-import { RWKV_MODEL_BIG, RWKV_MODEL_SMALL, RWKV_MODEL_TINY, type RwkvSchedulerUsage } from "./lib";
+import {
+    RWKV_DEFAULT_STATE_PRECISION,
+    RWKV_MODEL_BIG,
+    RWKV_MODEL_SMALL,
+    RWKV_MODEL_TINY,
+    type RwkvSchedulerUsage,
+} from "./lib";
 
 export type RwkvModelSize = typeof RWKV_MODEL_BIG | typeof RWKV_MODEL_SMALL | typeof RWKV_MODEL_TINY;
 export type RwkvModelLayout = "paired" | "shared" | "curve" | "instant";
@@ -16,26 +22,33 @@ export interface RwkvModelEstimate {
 }
 
 type StateSizes = { card: number; note: number };
-type Precision = "f32" | "int8" | "cards_int4_notes_int8";
+type Precision = "f32" | "int8" | "cards_int4_notes_int8" | "compact_cards_int8" | "compact_cards_int4";
 
 // Serialized card and note states, checked against the native codecs in
-// rwkv_state_precision_stored_sizes_of_the_small_and_tiny_models and
+// rwkv_state_precision_stored_sizes_of_the_small_and_tiny_models,
+// rwkv_state_precision_stored_sizes_of_the_big_model and
 // rwkv_big_pair_stores_two_big_states_per_card_and_note.
 const STATE_SIZES: Record<RwkvModelSize, Record<Precision, StateSizes>> = {
     [RWKV_MODEL_BIG]: {
         f32: { card: 52_278, note: 34_858 },
         int8: { card: 15_415, note: 10_283 },
         cards_int4_notes_int8: { card: 9_271, note: 10_283 },
+        compact_cards_int8: { card: 13_891, note: 9_267 },
+        compact_cards_int4: { card: 7_747, note: 9_267 },
     },
     [RWKV_MODEL_SMALL]: {
         f32: { card: 9_002, note: 4_638 },
         int8: { card: 2_987, note: 1_567 },
         cards_int4_notes_int8: { card: 1_963, note: 1_567 },
+        compact_cards_int8: { card: 2_545, note: 1_315 },
+        compact_cards_int4: { card: 1_521, note: 1_315 },
     },
     [RWKV_MODEL_TINY]: {
         f32: { card: 4_638, note: 4_638 },
         int8: { card: 1_567, note: 1_567 },
         cards_int4_notes_int8: { card: 1_055, note: 1_567 },
+        compact_cards_int8: { card: 1_315, note: 1_315 },
+        compact_cards_int4: { card: 803, note: 1_315 },
     },
 };
 
@@ -71,9 +84,9 @@ export function rwkvModelEstimates(
     counts: { cards: number; notes: number } | undefined,
 ): RwkvModelEstimate[] {
     const layout = rwkvModelLayout(usage, singleModel);
-    const precision: Precision = statePrecision === "f32" || statePrecision === "int8"
-        ? statePrecision
-        : "cards_int4_notes_int8";
+    const precision: Precision = statePrecision in STATE_SIZES[RWKV_MODEL_BIG]
+        ? statePrecision as Precision
+        : RWKV_DEFAULT_STATE_PRECISION;
     return ([RWKV_MODEL_BIG, RWKV_MODEL_SMALL, RWKV_MODEL_TINY] as const).map((size) => {
         let { card, note } = STATE_SIZES[size][precision];
         if (layout === "paired") {
@@ -89,7 +102,7 @@ export function rwkvModelEstimates(
             totalStateBytes: counts ? card * counts.cards + note * counts.notes : undefined,
             curveLoss: usage.curve ? losses.curve : undefined,
             instantLoss: usage.instant ? instantLoss : undefined,
-            replaySaving: precision === "cards_int4_notes_int8" ? REPLAY_SAVINGS[layout][size] : undefined,
+            replaySaving: precision === RWKV_DEFAULT_STATE_PRECISION ? REPLAY_SAVINGS[layout][size] : undefined,
         };
     });
 }

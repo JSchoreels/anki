@@ -51,6 +51,7 @@ Changes since [build 115](https://github.com/JSchoreels/anki/releases/tag/26.09.
 - **See which daily limit postponed a card.** Session Preview shows how many reviews, learning steps and new-card slots are queued. It identifies the limit that held a card back and keeps three-digit positions on one line.
 - **Keep RWKV due totals consistent when returning to the deck list.** The list waits for the reviewer’s background queue refresh before calculating how many reviews are due before daily limits.
 - **Keep RWKV counts available when scoring overlaps.** A busy scorer preserves installed queue scores. The deck overview shows an ellipsis while it waits for fresh counts, and its callbacks respect navigation into study.
+- **RWKV state stays valid on cards with thousands of reviews.** Card and note state is now stored as int8 rows with float16 scales for every model size. The earlier int4 card state could drift on very long card histories, stop predicting for that card, or crash the state build. The state is rebuilt once after updating. Per card and note with both models, Big stores 46.4 KB (was 39.1 KB), Small 7.8 KB (was 7.1 KB) and Tiny 5.3 KB (unchanged).
 - **Faster RWKV state builds.** On a collection with 226,546 reviews, the Small model pair rebuilt in 7.1 seconds, down from 8.7 seconds.
 - **Faster full-queue retrievability refreshes.** Refreshing all 7,533 cards in a deck with RWKV-Instant took 153 ms on repeated runs, down from 163 ms.
 
@@ -67,6 +68,8 @@ Changes since [build 115](https://github.com/JSchoreels/anki/releases/tag/26.09.
 - Workload simulations now start existing FSRS7 cards at their full memory state's 90% recall interval, within the range the simulator can represent. Later simulated reviews still use a single stability value.
 
 ### Technical details
+
+- **RWKV state format:** the default profile precision is `compact_cards_int8` (precision byte `0x18`: int8 rows with float16 row scales, int8 shift vectors with one float16 scale each); `compact_cards_int4` (`0x14` cards) is a non-default option. Saved `cards_int4_notes_int8` profiles move to the default, and the changed replay key and state-cache version 14 rebuild the cache once. A state that cannot be decoded now fails a replay with an error, which falls back to a full rebuild, instead of panicking. Long-card regression, scorer parity and sizes: [state format report](https://github.com/JSchoreels/anki/blob/main/docs/rwkv-rc-state-format-2026-11-21.MD). The bundled weights ship with `WEIGHTS-NOTICE.md`: they are not under the code's license.
 
 - Legacy SQL recall functions use the displayed Stability (S90) as the interval at which predicted recall reaches 90%.
 - The FSRS engine includes the training and simulation fixes and the updated FSRS-6 optimizer from [7.0.0](https://github.com/open-spaced-repetition/fsrs-rs/releases/tag/v7.0.0). Anki now uses the engine to reconstruct memory states from legacy add-on writes and truncated review histories. [fsrs-rs #485](https://github.com/open-spaced-repetition/fsrs-rs/pull/485)

@@ -104,6 +104,14 @@ fn build_generated_sources(build: &mut Build) -> Result<()> {
             output: "qt/_aqt/py.typed",
         },
     )?;
+    // The bundled RWKV weights are not under the code's license.
+    build.add_action(
+        "qt:aqt:rwkv_weights_notice",
+        CopyFile {
+            input: "qt/aqt/rwkv_inference/WEIGHTS-NOTICE.md".into(),
+            output: "qt/_aqt/rwkv_inference/WEIGHTS-NOTICE.md",
+        },
+    )?;
     build.add_action(
         "qt:aqt:rwkv_legacy",
         CopyFile {

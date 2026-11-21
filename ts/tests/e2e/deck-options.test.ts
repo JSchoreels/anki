@@ -482,7 +482,7 @@ test("RWKV estimates include schedulers used by other presets", async ({ page })
         );
         data.rwkvProfileSettings = new RwkvProfileSettings({
             model: "sm72e25",
-            statePrecision: "cards_int4_notes_int8",
+            statePrecision: "compact_cards_int8",
         });
         data.rwkvCollectionCounts = new RwkvCollectionCounts({ cards: 1_000n, notes: 500n });
         await route.fulfill({ response, body: Buffer.from(data.toBinary()) });
@@ -492,7 +492,7 @@ test("RWKV estimates include schedulers used by other presets", async ({ page })
     const group = page.getByRole("region", { name: "Prediction model", exact: true });
     const small = group.getByRole("radio", { name: "Small", exact: true });
     await expect(group).toContainText("Both schedulers · separate models");
-    await expect(small).toHaveAccessibleDescription(/7\.1 KB.*per card \+ note.*5\.5 MB/);
+    await expect(small).toHaveAccessibleDescription(/7\.8 KB.*per card \+ note.*6\.4 MB/);
     await expect(small).toHaveAccessibleDescription(/About .*77.*% less model replay time/);
     await group.getByRole("checkbox", { name: "Use one model for RWKV" }).check();
     await expect(group).toContainText("Both schedulers · one shared model");

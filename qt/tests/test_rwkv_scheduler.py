@@ -10697,7 +10697,9 @@ def test_reviewer_rwkv_cache_rebuilds_when_replay_semantics_change(
     assert rebuilt_runtime.answered_inputs[0].current_elapsed_seconds == -1
 
 
-@pytest.mark.parametrize("next_mode", ["f32", "cards_int4_notes_int8"])
+@pytest.mark.parametrize(
+    "next_mode", ["f32", "cards_int4_notes_int8", "compact_cards_int8"]
+)
 def test_reviewer_rwkv_precision_change_replays_history_instead_of_upcasting(
     monkeypatch, tmp_path, next_mode
 ) -> None:
@@ -12585,7 +12587,7 @@ def test_template_edit_then_answer_restores_rwkv_once(
         model = Path(__file__).parents[1] / "aqt/rwkv_inference/sm72e25/weights.f32.bin"
         backend = EmbeddedRwkvReviewerBackend(
             model_path=model,
-            state_precision="cards_int4_notes_int8",
+            state_precision="compact_cards_int8",
             model="sm72e25",
         )
         set_reviewer_backend(backend)
@@ -12617,7 +12619,7 @@ def test_template_edit_then_answer_restores_rwkv_once(
         after_answer = backend.cache_snapshot()
         rebuilt = EmbeddedRwkvReviewerBackend(
             model_path=model,
-            state_precision="cards_int4_notes_int8",
+            state_precision="compact_cards_int8",
             model="sm72e25",
         )
         set_reviewer_backend(rebuilt)
@@ -23509,7 +23511,7 @@ def test_card_info_configures_embedded_backend_for_rwkv_enabled_card(
             "model_path": model_path,
             "device": "cpu",
             "dtype": "float",
-            "state_precision": "cards_int4_notes_int8",
+            "state_precision": "compact_cards_int8",
             # Small without RWKV-Instant: its two-head model, the show-time
             # retrain (SM92), since the family wiring (SM114).
             "model": "sm92",
@@ -24678,7 +24680,7 @@ def test_configure_reviewer_backend_uses_embedded_default(
             "model_path": model_path,
             "device": "cpu",
             "dtype": "float",
-            "state_precision": "cards_int4_notes_int8",
+            "state_precision": "compact_cards_int8",
             # Small without RWKV-Instant: its two-head model, the show-time
             # retrain (SM92), since the family wiring (SM114).
             "model": "sm92",
@@ -24754,7 +24756,7 @@ def test_configure_reviewer_backend_uses_model_env_with_embedded_runner(
             "model_path": Path("/tmp/custom-rwkv.pth"),
             "device": "mps",
             "dtype": "bfloat16",
-            "state_precision": "cards_int4_notes_int8",
+            "state_precision": "compact_cards_int8",
             # A custom checkpoint replaces Small's two-head model, the show-time
             # retrain (SM92), since the family wiring (SM114).
             "model": "sm92",

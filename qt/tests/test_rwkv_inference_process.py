@@ -641,7 +641,16 @@ def _load_rsbridge_runtime(
         ("legacy+sm99", "RWKV_trained_on_5000_10000.bin"),
     ],
 )
-@pytest.mark.parametrize("state_precision", ["f32", "int8", "cards_int4_notes_int8"])
+@pytest.mark.parametrize(
+    "state_precision",
+    [
+        "f32",
+        "int8",
+        "cards_int4_notes_int8",
+        "compact_cards_int8",
+        "compact_cards_int4",
+    ],
+)
 def test_rsbridge_rwkv_checkpoint_is_readable_and_prunable_by_desktop(
     tmp_path, model_name, filename, state_precision
 ) -> None:
@@ -741,7 +750,16 @@ def test_rsbridge_rwkv_checkpoint_is_readable_and_prunable_by_desktop(
         ("sm92", "sm92/weights.f32.bin"),
     ],
 )
-@pytest.mark.parametrize("state_precision", ["f32", "int8", "cards_int4_notes_int8"])
+@pytest.mark.parametrize(
+    "state_precision",
+    [
+        "f32",
+        "int8",
+        "cards_int4_notes_int8",
+        "compact_cards_int8",
+        "compact_cards_int4",
+    ],
+)
 def test_rsbridge_rwkv_predictions_survive_state_and_workload_roundtrips(
     model_name, filename, state_precision
 ) -> None:
@@ -1250,7 +1268,16 @@ def test_rsbridge_rwkv_instant_model_serves_instant_and_release_keeps_curve(
 @pytest.mark.parametrize(
     "two_head,instant_model", [("sm92", "sm98"), ("sm106", "sm101")]
 )
-@pytest.mark.parametrize("state_precision", ["f32", "int8", "cards_int4_notes_int8"])
+@pytest.mark.parametrize(
+    "state_precision",
+    [
+        "f32",
+        "int8",
+        "cards_int4_notes_int8",
+        "compact_cards_int8",
+        "compact_cards_int4",
+    ],
+)
 def test_rsbridge_rwkv_family_pair_serves_instant_and_two_head_keeps_curve(
     two_head: str, instant_model: str, state_precision: str
 ) -> None:

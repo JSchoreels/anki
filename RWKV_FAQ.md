@@ -486,18 +486,21 @@ runtime. The repository does not define one fixed rebuild time for all users.
 
 ### Which model does the fork use, and what does leak-free mean?
 
+The bundled model weights are not covered by the code's license: see
+[WEIGHTS-NOTICE.md](qt/aqt/rwkv_inference/WEIGHTS-NOTICE.md).
+
 Deck Options → RWKV → Advanced offers three sizes:
 
 - **Small** (the default): the show-time retrain (SM92) for RWKV-Curve (since
   2026-11-13; the small model, leak-free, cool-down from epoch 25 (SM63) before),
   331,511 parameters, 8.3× fewer than the big model, beside the Small Instant-Only
-  model (SM98) for RWKV-Instant. Both have the same size: about 3.5 KB of state per
+  model (SM98) for RWKV-Instant. Both have the same size: about 3.9 KB of state per
   card and note each at the default storage precision. SM92's show-time Curve
   LogLoss on 722 held-out users is 0.300356 (SM63: 0.300414).
 - **Tiny**: the Tiny two-head model (SM106) for RWKV-Curve beside the Tiny
   Instant-Only model (SM101) for RWKV-Instant, both with one card layer instead of
   two: about 2.6 KB of state per card and note each at the default storage
-  precision (26% less than Small; 31% less at int8). Its Curve LogLoss is 0.11%
+  precision (32% less than Small; 31% less at plain int8). Its Curve LogLoss is 0.11%
   higher than Small's (0.300676) and its Instant LogLoss 0.19% higher (722
   held-out users, % of the big model (1 leak-free epoch)'s LogLoss). The Tiny
   two-head model (SM106) has no answer-time head, so Tiny shows no RWKV

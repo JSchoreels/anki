@@ -63,6 +63,11 @@ Older clients can use the saved whole-day due date.
 
 ## Bundled RWKV Models
 
+The bundled weights under `qt/aqt/rwkv_inference/` are not covered by the
+code's license: see [WEIGHTS-NOTICE.md](../qt/aqt/rwkv_inference/WEIGHTS-NOTICE.md)
+(the training data's research terms, open upstream question
+srs-benchmark#353). The build copies it beside the weights.
+
 Deck Options → RWKV → **Advanced** offers three model sizes for the entire
 local profile (since 2026-11-11, replacing the **Use Smaller Model** switch):
 
@@ -629,12 +634,18 @@ sequence.
 The persisted state cache is collection-wide; deck- or preset-scoped replay
 histories are transient and must not be written to the profile-local cache.
 Storage precision is a hidden setting for the whole local profile:
-`cards_int4_notes_int8` (default, INT4 cards + INT8 notes), `int8`
-(cards and notes), or `f32` (the original full-precision fallback). All models
-support all three modes. The profile key is `rwkvStatePrecision`; absent or
-unsupported values default to `cards_int4_notes_int8` in both new and existing
-profiles. The former full `int4` mode (cards and notes) was removed: it is no
-longer accepted, and a profile that still stores `int4` uses the default. On a
+`compact_cards_int8` (default since 2026-11-21: INT8 card and note rows with
+float16 row scales and INT8 shift vectors), `compact_cards_int4` (INT4 card
+rows, the same notes), `int8` (INT8 rows with f32 scales and f16 shifts), or
+`f32` (the original full-precision fallback). All models support every mode.
+The profile key is `rwkvStatePrecision`; absent or unsupported values default
+to `compact_cards_int8` in both new and existing profiles
+(`RWKV_STATE_PRECISION_DEFAULT` in `qt/aqt/rwkv_precision.py`). The former
+default `cards_int4_notes_int8` (INT4 cards with f32 row scales) overflowed on
+cards with thousands of answers; profiles that still store it, or the removed
+full `int4` mode, use the default, and the new value rebuilds the state cache
+once. See the [release-candidate state format](rwkv-rc-state-format-2026-11-21.MD)
+for the layout, the long-card test and the scorer parity. On a
 9,539-step note history from a held-out benchmark user, int4 note state grew to
 about 1e32 by step 6000 and overflowed to infinity at step 6843, while f32 stayed
 near 5 and int8 near 6.5. Cache identity includes the precision, so a state
@@ -650,10 +661,15 @@ canonical or fast startup validation. Returning to `f32` replays original
 reviews to recover full precision; it does not upcast previously truncated state.
 There is no parallel full-precision backup cache.
 
-Compact modes pack only card and note recurrent matrices: symmetric signed
-`int8` (−127…127) or packed `int4` (−7…7), with one f32 absolute-maximum scale
-per model head row (16 elements for SM40; 32 for the legacy model) and round-to-nearest-even codes. All compact modes store
-time/channel shift vectors as IEEE f16 using the `half` crate. Matrices are
+Compact modes pack only card and note recurrent state: symmetric signed
+`int8` (−127…127) or packed `int4` (−7…7) matrix codes with one
+absolute-maximum scale per model head row (16 elements for the small models; 32
+for the big ones) and round-to-nearest-even codes. The `compact_cards_*` modes
+store each row scale as float16 (clamped to 65,504, so a drifting long card
+saturates instead of overflowing) and the time/channel shift vectors as INT8
+codes with one float16 scale per vector. The plain `int8` and
+`cards_int4_notes_int8` layouts store f32 row scales and IEEE f16 shift vectors
+using the `half` crate; the decoder reads all four. Matrices are
 quantized after each answer's f32 output is calculated, before the next answer
 reads them. Queries, preview answers, undo, workload simulation, historical
 replay, and Memorised history use the same precision. Weights, activations,
