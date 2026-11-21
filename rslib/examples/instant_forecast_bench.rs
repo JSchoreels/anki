@@ -17,9 +17,9 @@
 //! cargo run -p anki --release --features bench --example instant_forecast_bench
 //! ```
 //!
-//! A scenario is `mode:variant:days`. Modes: `strat3` (three stratified
-//! paths) and `indepN` (N independent paths). Variants: `base`, `cand`
-//! (candidate refresh window 64), `ri4` (refresh every 4 answers),
+//! A scenario is `mode:variant:days`. Modes: `stratN` (N = 3, 5 or 7
+//! stratified paths) and `indepN` (N independent paths). Variants: `base`,
+//! `cand` (candidate refresh window 64), `ri4` (refresh every 4 answers),
 //! `noprecomp`, `scorenew` (retrievability new-card gather and a low review
 //! limit), and `fullN` (item 4: full refresh every N answers).
 
@@ -253,9 +253,9 @@ fn config(mode: &str, variant: &str, days: u32) -> RwkvInstantForecastConfig {
     } else {
         NewCardGatherPriority::Deck
     };
-    let stratified = mode == "strat3";
+    let stratified = mode.starts_with("strat");
     let paths = if stratified {
-        3
+        mode.trim_start_matches("strat").parse().unwrap()
     } else {
         mode.trim_start_matches("indep").parse().unwrap()
     };

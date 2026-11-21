@@ -6,17 +6,25 @@
 use super::simulation_unit_hash;
 
 pub(super) const PREVIEW_LIMIT: usize = 512;
+/// Path counts allowed for stratified answers: the outer strata stay at
+/// z = -1 and +1, with evenly spaced strata in between.
+pub(super) const STRATIFIED_PATH_COUNTS: [u32; 3] = [3, 5, 7];
 
-/// Draw shared day-to-day variation, conditioned approximately on a low,
-/// central, or high aggregate outcome over the whole forecast, and return the
-/// final per-day z targets (already scaled by `noise_scale`).
+/// Draw shared day-to-day variation, conditioned approximately on one of
+/// `strata` evenly spaced aggregate outcomes over the whole forecast, and
+/// return the final per-day z targets (already scaled by `noise_scale`).
+///
+/// `strata` is odd (3, 5 or 7). With `c = (strata - 1) / 2`, stratum `i`
+/// targets the aggregate deviation `z = (i - c) / c`, so the outer strata
+/// always sit at -1 and +1 and the others are evenly spaced in between
+/// (3 strata: -1, 0, +1; 5 strata: -1, -1/2, 0, +1/2, +1).
 ///
 /// Every day has the same weight. A simulated day lasts until the queue is
 /// empty or the limits are hit, so the length of the sampled historical
 /// session does not predict that day's answer count; weighting days by it
 /// (as an earlier version did) was therefore not justified. With equal
 /// weights the noise sums to exactly zero, and the aggregate shift is
-/// `(stratum - 1) * sqrt(noise_scale^2 + bias_kappa^2)` in units of the
+/// `z * sqrt(noise_scale^2 + bias_kappa^2)` in units of the
 /// model's aggregate sigma, i.e. one true aggregate standard deviation when the
 /// calibration is right.
 ///
@@ -31,6 +39,7 @@ pub(super) fn day_deviations(
     days: usize,
     seed: u32,
     stratum: usize,
+    strata: usize,
     noise_scale: f64,
     bias_kappa: f64,
 ) -> Vec<f64> {
@@ -48,7 +57,8 @@ pub(super) fn day_deviations(
             + bias_kappa * bias_kappa * (i * i) as f64 / days.max(1) as f64)
             .sqrt()
     };
-    let desired = stratum as f64 - 1.0;
+    let center = (strata.max(2) - 1) as f64 / 2.0;
+    let desired = (stratum as f64 - center) / center;
     z.into_iter()
         .enumerate()
         .map(|(day, z)| noise_scale * (z - mean) + desired * (envelope(day + 1) - envelope(day)))
@@ -143,7 +153,7 @@ mod tests {
         let days = 30;
         for (noise_scale, kappa) in [(1.0, 0.0), (0.8, 0.0), (1.2, 0.5), (0.0, 0.7)] {
             let paths = (0..3)
-                .map(|stratum| day_deviations(days, 42, stratum, noise_scale, kappa))
+                .map(|stratum| day_deviations(days, 42, stratum, 3, noise_scale, kappa))
                 .collect::<Vec<_>>();
             let sigma = (noise_scale * noise_scale + kappa * kappa).sqrt();
             for (stratum, path) in paths.iter().enumerate() {
@@ -154,21 +164,21 @@ mod tests {
                     "{noise_scale} {kappa} {stratum} {aggregate}"
                 );
             }
-            assert_eq!(paths[1], day_deviations(days, 42, 1, noise_scale, kappa));
+            assert_eq!(paths[1], day_deviations(days, 42, 1, 3, noise_scale, kappa));
             if noise_scale > 0.0 {
-                assert_ne!(paths[1], day_deviations(days, 43, 1, noise_scale, kappa));
+                assert_ne!(paths[1], day_deviations(days, 43, 1, 3, noise_scale, kappa));
             }
         }
-        let central = day_deviations(days, 42, 1, 1.0, 0.0);
+        let central = day_deviations(days, 42, 1, 3, 1.0, 0.0);
         assert!(central.iter().any(|z| *z < 0.0) && central.iter().any(|z| *z > 0.0));
     }
 
     #[test]
     fn strata_share_identical_noise() {
         let days = 20;
-        let low = day_deviations(days, 7, 0, 1.1, 0.3);
-        let central = day_deviations(days, 7, 1, 1.1, 0.3);
-        let high = day_deviations(days, 7, 2, 1.1, 0.3);
+        let low = day_deviations(days, 7, 0, 3, 1.1, 0.3);
+        let central = day_deviations(days, 7, 1, 3, 1.1, 0.3);
+        let high = day_deviations(days, 7, 2, 3, 1.1, 0.3);
         let envelope =
             |i: usize| (1.1_f64 * 1.1 * i as f64 + 0.3 * 0.3 * (i * i) as f64 / days as f64).sqrt();
         for day in 0..days {
@@ -179,10 +189,52 @@ mod tests {
     }
 
     #[test]
+    fn five_and_seven_strata_are_evenly_spaced_between_the_outer_targets() {
+        let days = 25;
+        for strata in [5, 7] {
+            let center = (strata - 1) as f64 / 2.0;
+            for (noise_scale, kappa) in [(1.0, 0.0), (1.2, 0.5), (0.0, 0.7)] {
+                let paths = (0..strata)
+                    .map(|stratum| day_deviations(days, 11, stratum, strata, noise_scale, kappa))
+                    .collect::<Vec<_>>();
+                let sigma = (noise_scale * noise_scale + kappa * kappa).sqrt();
+                let envelope = |i: usize| {
+                    (noise_scale * noise_scale * i as f64
+                        + kappa * kappa * (i * i) as f64 / days as f64)
+                        .sqrt()
+                };
+                for (stratum, path) in paths.iter().enumerate() {
+                    assert_eq!(path.len(), days);
+                    let z = (stratum as f64 - center) / center;
+                    let aggregate = path.iter().sum::<f64>() / (days as f64).sqrt();
+                    assert!(
+                        (aggregate - z * sigma).abs() < 1e-10,
+                        "{strata} {noise_scale} {kappa} {stratum} {aggregate}"
+                    );
+                }
+                // The outer strata and the centre match the three-stratum
+                // paths; adjacent strata differ by one step of the envelope
+                // divided by the half-width, on top of identical noise.
+                assert_eq!(paths[0], day_deviations(days, 11, 0, 3, noise_scale, kappa));
+                let middle = day_deviations(days, 11, 1, 3, noise_scale, kappa);
+                let outer = day_deviations(days, 11, 2, 3, noise_scale, kappa);
+                for day in 0..days {
+                    let step = (envelope(day + 1) - envelope(day)) / center;
+                    for pair in paths.windows(2) {
+                        assert!((pair[1][day] - pair[0][day] - step).abs() < 1e-12);
+                    }
+                    assert!((paths[center as usize][day] - middle[day]).abs() < 1e-12);
+                    assert!((paths[strata - 1][day] - outer[day]).abs() < 1e-12);
+                }
+            }
+        }
+    }
+
+    #[test]
     fn cumulative_shift_follows_the_pointwise_envelope() {
         let days = 40;
-        let central = day_deviations(days, 9, 1, 0.9, 0.0);
-        let high = day_deviations(days, 9, 2, 0.9, 0.0);
+        let central = day_deviations(days, 9, 1, 3, 0.9, 0.0);
+        let high = day_deviations(days, 9, 2, 3, 0.9, 0.0);
         let mut cumulative = 0.0;
         for t in 1..=days {
             cumulative += high[t - 1] - central[t - 1];
@@ -190,8 +242,8 @@ mod tests {
             assert!((cumulative - expected).abs() < 1e-10, "{t}");
         }
         // The bias term makes the final cumulative separation larger.
-        let biased = day_deviations(days, 9, 2, 0.9, 0.5);
-        let biased_central = day_deviations(days, 9, 1, 0.9, 0.5);
+        let biased = day_deviations(days, 9, 2, 3, 0.9, 0.5);
+        let biased_central = day_deviations(days, 9, 1, 3, 0.9, 0.5);
         let biased_total = biased
             .iter()
             .zip(&biased_central)

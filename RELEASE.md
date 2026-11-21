@@ -45,6 +45,7 @@ Changes since [build 115](https://github.com/JSchoreels/anki/releases/tag/26.09.
 - **Set Easy Days in 25% increments.** Seven weekday sliders let you target 0%, 25%, 50%, 75%, or 100% of a normal review load.
 
 - **Explore recall by answer time.** Card Info estimates the chance of answering within 2, 4, 6, 8, 10, 15, 20 and 30 seconds if you press Good. Its graph shows the chance of recalling within each time limit (Hard, Good or Easy), alongside the chances of Good or better and Easy. The estimates are available when the Small Curve model is active and the card was last reviewed on an earlier day.
+- **More RWKV-Instant workload scenarios.** Compatible add-ons such as Search Stats Extended can request five or seven answer-outcome scenarios instead of three. The lowest and highest stay one standard deviation from the central scenario, and the others are evenly spaced in between. Three scenarios give the same results as before.
 
 #### Fixes
 

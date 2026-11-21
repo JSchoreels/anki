@@ -184,6 +184,19 @@ def test_partial_forecast_waits_for_center_and_keeps_missing_bounds(
     assert result["scenario_daily"][1]["due"] == [None, 11, None]
 
 
+def test_partial_forecast_waits_for_center_of_five_stratified_paths() -> None:
+    partial = rwkv_scheduler._RwkvForecastPartial(
+        metadata={"days": 2, "paths": 5, "cards": 5, "scenario_kind": "stratified"},
+        rows={0: {1: (5, 4, 3, 2, 1)}},
+    )
+    assert rwkv_scheduler._rwkv_partial_forecast_result(partial)["daily"] == []
+    partial.rows[0][2] = (9, 8, 7, 6, 5)
+    partial.rows[0][4] = (12, 11, 10, 9, 8)
+    result = rwkv_scheduler._rwkv_partial_forecast_result(partial)
+    assert [entry["day"] for entry in result["daily"]] == [0]
+    assert result["scenario_daily"][0]["due"] == [None, 5, 9, None, 12]
+
+
 def test_partial_forecast_job_reports_days_while_still_running(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
@@ -747,6 +760,26 @@ def test_forecast_dispatches_instant_with_history_and_scheduler_settings(
     assert stratified["scenario_bias_sd"] == 0.03
     assert streamed[-1]["scenario_history_days"] == 40
     assert streamed[-1]["scenario_bias_sd"] == 0.03
+    # Five and seven paths are stratified too; other counts stay independent.
+    stratified = rwkv_scheduler.forecast_rwkv_workload(
+        mw=SimpleNamespace(col=col),
+        days=1,
+        paths=5,
+        partial_progress=lambda metadata, *_: streamed.append(metadata),
+    )
+    assert calls[-1]["paths"] == 5
+    assert calls[-1]["stratified_answers"] is True
+    assert calls[-1]["stratified_scale"] == 0.8
+    assert calls[-1]["stratified_bias_sd"] == 0.03
+    assert calls[-1]["stratified_review_variance"] == 0.2
+    assert stratified["scenario_kind"] == "stratified"
+    assert stratified["scenario_history_days"] == 40
+    assert streamed[-1]["scenario_kind"] == "stratified"
+    independent = rwkv_scheduler.forecast_rwkv_workload(
+        mw=SimpleNamespace(col=col), days=1, paths=4
+    )
+    assert "stratified_answers" not in calls[-1]
+    assert "scenario_kind" not in independent
 
     # A state change that lands after the backend forecast returned must still
     # surface as the readable InterruptedError, not the internal signal.
@@ -1227,6 +1260,20 @@ def test_instant_native_bridge_simulates_without_mutating_warm_state() -> None:
     assert sorted(path for path, _day, _values in stratified_events) == [0, 1, 2]
     for path, day, values in stratified_events:
         assert values == pytest.approx(stratified[4][path][day])
+    for path_count in (5, 7):
+        events: list[tuple[int, int, list[float]]] = []
+        wider = runtime.forecast_instant_workload(
+            **{**args, "paths": path_count},
+            stratified_answers=True,
+            day_progress=lambda path, day, values: events.append((path, day, values)),
+        )
+        assert len(wider) == 5
+        assert wider[0] == path_count
+        assert len(wider[4]) == path_count
+        assert all(len(path) == 1 for path in wider[4])
+        assert sorted(path for path, _day, _values in events) == list(range(path_count))
+        for path, day, values in events:
+            assert values == pytest.approx(wider[4][path][day])
 
     new_preset = deck_config_pb2.DeckConfig()
     new_preset.CopyFrom(preset)
@@ -1302,6 +1349,11 @@ def test_instant_native_bridge_simulates_without_mutating_warm_state() -> None:
         runtime.forecast_instant_workload(**args, scenario_sigma=0.3)
     with pytest.raises(Exception, match="stratified answers"):
         runtime.forecast_instant_workload(**args, stratified_answers=True)
+    for path_count in (4, 6):
+        with pytest.raises(Exception, match="stratified answers"):
+            runtime.forecast_instant_workload(
+                **{**args, "paths": path_count}, stratified_answers=True
+            )
     with pytest.raises(Exception, match="stratified answers"):
         runtime.forecast_instant_workload(
             **{**args, "paths": 3}, scenario_sigma=0.1, stratified_answers=True

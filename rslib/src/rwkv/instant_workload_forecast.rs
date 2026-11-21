@@ -17,6 +17,7 @@ use super::instant_forecast_queue::InstantReviewPolicy;
 use super::instant_forecast_sampling::day_deviations;
 use super::instant_forecast_sampling::AnswerStratum;
 use super::instant_forecast_sampling::PREVIEW_LIMIT;
+use super::instant_forecast_sampling::STRATIFIED_PATH_COUNTS;
 use super::workload_comparison::paired_grade;
 use super::workload_forecast::summarize_forecast;
 use super::workload_forecast::ForecastPath;
@@ -504,7 +505,7 @@ impl RwkvInference {
             ));
         }
         if config.stratified_answers
-            && (config.paths != 3
+            && (!STRATIFIED_PATH_COUNTS.contains(&config.paths)
                 || config.scenario_sigma.is_some()
                 || !config.stratified_scale.is_finite()
                 || config.stratified_scale < 0.0
@@ -515,7 +516,7 @@ impl RwkvInference {
         {
             return Err(io::Error::new(
                 io::ErrorKind::InvalidInput,
-                "stratified answers require three paths, no scenario sigma, and nonnegative finite scale, bias and variance",
+                "stratified answers require 3, 5 or 7 paths, no scenario sigma, and nonnegative finite scale, bias and variance",
             ));
         }
         if config
@@ -595,11 +596,17 @@ impl RwkvInference {
                                     break;
                                 }
                                 // Show the central scenario first when memory
-                                // limits the forecast to sequential paths.
+                                // limits the forecast to sequential paths, then
+                                // the others from low to high.
                                 let path = if config.scenario_sigma.is_some()
                                     || config.stratified_answers
                                 {
-                                    [1, 0, 2][slot as usize]
+                                    let center = (config.paths - 1) / 2;
+                                    match slot {
+                                        0 => center,
+                                        slot if slot <= center => slot - 1,
+                                        slot => slot,
+                                    }
                                 } else {
                                     slot
                                 };
@@ -802,6 +809,7 @@ impl RwkvInference {
                 days,
                 seed,
                 stratum,
+                config.paths as usize,
                 f64::from(config.stratified_scale),
                 kappa,
             )

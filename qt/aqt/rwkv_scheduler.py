@@ -15485,6 +15485,9 @@ _RWKV_FORECAST_SCHEDULER_NAMES = {
 }
 _RWKV_FORECAST_BAND_KEYS = ("mean", "p1", "p5", "p50", "p95", "p99")
 _RWKV_FORECAST_METRICS = ("due", "done", "new", "lapses", "seconds")
+# Instant path counts that run stratified answer outcomes: z = (i - c) / c
+# for path i and c = (paths - 1) / 2, so the outer paths stay at -1 and +1.
+_RWKV_FORECAST_STRATIFIED_PATHS = frozenset((3, 5, 7))
 # Sampled historical days: minimum answers (with a fallback of two when fewer
 # than the minimum number of days qualify) and shrinkage strengths.
 _RWKV_FORECAST_POOL_MIN_ANSWERS = 10
@@ -16094,7 +16097,7 @@ def _rwkv_forecast_prepare_review_time(
         sum(grade is not None for grade in model.grades) if model else 0,
     )
     calibration = None
-    if paths == 3:
+    if paths in _RWKV_FORECAST_STRATIFIED_PATHS:
         calibration_started = time.monotonic()
         calibration = _rwkv_forecast_calibration(
             backend, history, report_progress, paths, replayed
@@ -16447,7 +16450,7 @@ def forecast_rwkv_workload(
                         "cards": len(cards),
                         "model": "instant",
                     }
-                    if paths == 3:
+                    if paths in _RWKV_FORECAST_STRATIFIED_PATHS:
                         partial_metadata["scenario_kind"] = "stratified"
                         if calibration:
                             partial_metadata["scenario_history_days"] = calibration.days
@@ -16532,7 +16535,7 @@ def forecast_rwkv_workload(
                                     calibration.review_variance if calibration else 0.0
                                 ),
                             }
-                            if paths == 3
+                            if paths in _RWKV_FORECAST_STRATIFIED_PATHS
                             else {}
                         ),
                         **({"day_progress": report_day} if partial_progress else {}),
@@ -16567,7 +16570,7 @@ def forecast_rwkv_workload(
         )
         if review_time_model:
             result["review_time_samples"] = review_time_model.samples
-    if instant_used and paths == 3:
+    if instant_used and paths in _RWKV_FORECAST_STRATIFIED_PATHS:
         result["scenario_kind"] = "stratified"
         if calibration:
             result["scenario_history_days"] = calibration.days
@@ -16814,6 +16817,9 @@ def _rwkv_partial_forecast_result(partial: _RwkvForecastPartial) -> dict[str, ob
         "scenario_sigma" in partial.metadata
         or partial.metadata.get("scenario_kind") == "stratified"
     )
+    # Scenario paths run from low to high; the central one is reported first.
+    path_count = int(cast(int, partial.metadata.get("paths", 3)))
+    central = (path_count - 1) // 2
     daily: list[dict[str, object]] = []
     scenario_daily: list[dict[str, object]] = []
 
@@ -16836,7 +16842,7 @@ def _rwkv_partial_forecast_result(partial: _RwkvForecastPartial) -> dict[str, ob
         }
 
     for day, samples in sorted(partial.rows.items()):
-        if not samples or (is_scenario and 1 not in samples):
+        if not samples or (is_scenario and central not in samples):
             continue
         daily.append(
             {
@@ -16854,7 +16860,7 @@ def _rwkv_partial_forecast_result(partial: _RwkvForecastPartial) -> dict[str, ob
                     **{
                         metric: [
                             samples[path][index] if path in samples else None
-                            for path in range(3)
+                            for path in range(path_count)
                         ]
                         for index, metric in enumerate(_RWKV_FORECAST_METRICS)
                     },

@@ -2004,14 +2004,20 @@ so adjusted durations are estimates rather than a rescheduled timeline. The
 available and `"historical"` otherwise; `review_time_samples` counts the
 eligible fitted answers when a model is present.
 
-With exactly three Instant paths, the API runs lower, central and higher
-paths with the same historical sessions and the model's unmodified recall
-probabilities, and a different target for each path's daily answer outcomes.
+With three, five or seven Instant paths, the API runs stratified paths, from
+the lowest to the highest aggregate answer outcome, with the same historical
+sessions and the model's unmodified recall probabilities, and a different
+target for each path's daily answer outcomes.
 All days have the same weight: a simulated day lasts until the queue is empty
 or the limits are hit, so the length of the sampled historical session does not
 predict that day's answer count. Each path shares one set of daily noise, which
-sums to zero, plus a shift that separates the paths by one standard deviation of
-the aggregate answer outcome. The shift is allocated with a cumulative
+sums to zero, plus a shift toward the path's target deviation `z` of the
+aggregate answer outcome, in standard deviations. With `N` paths and
+`c = (N - 1) / 2`, path `i` targets `z = (i - c) / c`: -1, 0, +1 for three
+paths; -1, -1/2, 0, +1/2, +1 for five; and -1, -2/3, -1/3, 0, +1/3, +2/3, +1
+for seven. The outer paths stay one standard deviation from the central one
+whatever the count; more paths add evenly spaced scenarios in between. The
+shift is allocated with a cumulative
 envelope, `sqrt(scale^2 * t + kappa^2 * t^2 / days)` after `t` days, so the
 separation of the paths at any day equals the one-sigma spread of the
 cumulative residual up to that day. A linear allocation would make the bands
@@ -2047,14 +2053,17 @@ true aggregate standard deviation when the calibration is right.
 
 What the spread covers: answer-outcome randomness and systematic recall error.
 It does not cover the per-day range of `done`, `new`, `lapses` and `seconds`
-that comes from the queue, the limits and the sampled days; three paths are not
-enough to estimate that, and at least 100 independent paths are needed. It is an
+that comes from the queue, the limits and the sampled days; three to seven paths
+are not enough to estimate that, and at least 100 independent paths are needed. It is an
 approximation, not a calibrated probability interval for workload. In
 particular, the recurrent model and changing queues can make workload paths
 cross or produce a large spread.
 The API adds `scenario_kind: "stratified"`, `scenario_history_days` and
 `scenario_bias_sd` when calibration succeeds, and `scenario_daily`; each
-metric's array is in `[lower, central, higher]` answer-outcome order. `daily`
+metric's array has one value per path, ordered from the lowest to the highest
+answer outcome (`[lower, central, higher]` for three paths), and the central
+scenario is at index `(paths - 1) / 2`. In a partial result, a path that has not
+reported that day yet is `null`; a day appears once its central path reports. `daily`
 and `groups` retain their existing summary format; consumers should use the
 middle scenario for the central line rather than assume it is the median. If
 calibration is not available, `scenario_calibration` is `"insufficient_history"`.
