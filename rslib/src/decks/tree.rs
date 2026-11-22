@@ -151,6 +151,33 @@ impl AddAssign for NodeCountsV3 {
     }
 }
 
+impl NodeCountsV3 {
+    /// Review slots `remaining` still allows beyond these capped counts, or
+    /// None when the review limit is effectively unlimited. Limit-exempt
+    /// same-day cards use no slots.
+    fn review_headroom(&self, remaining: &RemainingLimits) -> Option<u32> {
+        if remaining.review_unlimited {
+            return None;
+        }
+        let limited_interday = self
+            .interday_learning
+            .saturating_sub(self.interday_learning_limit_exempt);
+        let limited_reviews = self.review.saturating_sub(self.review_limit_exempt);
+        let new_using_review_slots = if remaining.cap_new_to_review {
+            self.new
+        } else {
+            0
+        };
+        Some(
+            remaining
+                .review
+                .saturating_sub(limited_interday)
+                .saturating_sub(limited_reviews)
+                .saturating_sub(new_using_review_slots),
+        )
+    }
+}
+
 /// Adjust new, review and learning counts based on the daily limits.
 /// As part of this process, the separate interday and intraday learning
 /// counts are combined after the limits have been applied.
@@ -159,17 +186,25 @@ fn sum_counts_and_apply_limits_v3(
     limits: &HashMap<DeckId, RemainingLimits>,
     counts: &HashMap<DeckId, DueCounts>,
     scoped_counts: &ScopedDueCounts,
+    rwkv_instant_scopes: &HashSet<DeckId>,
     mut parent_limits: Option<RemainingLimits>,
 ) -> NodeCountsV3 {
     // Evaluate each study scope independently before updating its children's
     // displayed counts. A child can have a different repeat guard/history, and
     // its own study count must not replace its contribution to the parent queue.
     let scope = scoped_counts.get(&DeckId(node.deck_id));
+    let rwkv_instant_scope = scope.is_some() && rwkv_instant_scopes.contains(&DeckId(node.deck_id));
     let counts = scope.unwrap_or(counts);
     let own_scope = scope.map(|counts| {
         add_counts(node, counts);
-        let capped =
-            sum_counts_and_apply_limits_v3(node, limits, counts, &HashMap::new(), parent_limits);
+        let capped = sum_counts_and_apply_limits_v3(
+            node,
+            limits,
+            counts,
+            &HashMap::new(),
+            rwkv_instant_scopes,
+            parent_limits,
+        );
         let uncapped = node.review_uncapped_including_children;
         add_counts(node, counts);
         (capped, uncapped)
@@ -204,8 +239,14 @@ fn sum_counts_and_apply_limits_v3(
 
     // add capped child counts / uncapped total
     for child in &mut node.children {
-        this_node_uncapped +=
-            sum_counts_and_apply_limits_v3(child, limits, counts, scoped_counts, parent_limits);
+        this_node_uncapped += sum_counts_and_apply_limits_v3(
+            child,
+            limits,
+            counts,
+            scoped_counts,
+            rwkv_instant_scopes,
+            parent_limits,
+        );
         total_including_children += child.total_including_children;
         review_uncapped_including_children += child.review_uncapped_including_children;
     }
@@ -222,6 +263,10 @@ fn sum_counts_and_apply_limits_v3(
     node.learn_count = this_node_capped.intraday_learning + this_node_capped.interday_learning;
     node.total_including_children = total_including_children;
     node.review_uncapped_including_children = review_uncapped_including_children;
+    // Set after the own-scope recursion above, which clears it for this node.
+    node.rwkv_review_headroom = rwkv_instant_scope
+        .then(|| this_node_capped.review_headroom(&remaining))
+        .flatten();
 
     this_node_capped
 }
@@ -346,6 +391,17 @@ impl Collection {
             }
             let scoped_counts =
                 self.rwkv_review_queue_counts(&counts, &decks_map, &dconf, timing_at_stamp)?;
+            let rwkv_instant_scopes: HashSet<DeckId> = scoped_counts
+                .keys()
+                .copied()
+                .filter(|deck_id| {
+                    decks_map
+                        .get(deck_id)
+                        .and_then(Deck::config_id)
+                        .and_then(|config_id| dconf.get(&config_id))
+                        .is_some_and(|config| config.inner.rwkv_review_instant_order_enabled)
+                })
+                .collect();
             add_counts(&mut tree, &counts);
             let limits = remaining_limits_map(
                 decks_map.values(),
@@ -358,6 +414,7 @@ impl Collection {
                 &limits,
                 &counts,
                 &scoped_counts,
+                &rwkv_instant_scopes,
                 parent_limits,
             );
         }
@@ -687,6 +744,44 @@ mod test {
         let tree = col.deck_tree(Some(timing.now))?;
         assert_eq!(tree.children[0].review_count, 1);
         assert_eq!(tree.children[0].review_uncapped, 1);
+        Ok(())
+    }
+
+    #[test]
+    fn rwkv_deck_tree_reports_review_headroom_only_for_limited_rwkv_instant_scopes() -> Result<()> {
+        let mut col = Collection::new();
+        let mut deck = col.get_or_create_normal_deck("Default")?;
+        enable_rwkv_review_counts(&mut col, &mut deck, false)?;
+        let mut config = col
+            .get_deck_config(deck.config_id().unwrap(), false)?
+            .unwrap();
+        let timing = col.timing_today()?;
+        let today = timing.days_elapsed as i32;
+        let mut scores = HashMap::new();
+        for score in [0.20, 0.30, 0.95] {
+            scores.insert(
+                add_review_card(&mut col, deck.id, today, 0.75, None)?,
+                score,
+            );
+        }
+        col.set_rwkv_review_queue_scores(deck.id, scores)?;
+        let mut deck_tree_node = |col: &mut Collection, reviews_per_day, instant| {
+            config.inner.reviews_per_day = reviews_per_day;
+            config.inner.rwkv_review_instant_order_enabled = instant;
+            col.add_or_update_deck_config(&mut config)?;
+            Ok::<_, AnkiError>(get_deck_in_tree(col.deck_tree(Some(timing.now))?, deck.id).unwrap())
+        };
+
+        let limited = deck_tree_node(&mut col, 10, true)?;
+        assert_eq!(limited.review_count, 2);
+        assert_eq!(limited.rwkv_review_headroom, Some(8));
+        let unlimited = deck_tree_node(&mut col, 9999, true)?;
+        assert_eq!(unlimited.review_count, 2);
+        assert_eq!(unlimited.rwkv_review_headroom, None);
+        assert_eq!(
+            deck_tree_node(&mut col, 10, false)?.rwkv_review_headroom,
+            None
+        );
         Ok(())
     }
 

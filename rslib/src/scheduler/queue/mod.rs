@@ -51,7 +51,8 @@ pub(crate) struct CardQueues {
     new_cards_gathered_by_field: bool,
     deferred_rwkv_reviews: HashMap<CardId, DeferredRwkvReview>,
     /// Reviews the selected deck's daily limit still allowed when the queue
-    /// was built, beyond the queued cards. Only set for RWKV-Instant queues.
+    /// was built, beyond the queued cards. Only set for RWKV-Instant queues
+    /// whose daily review limit is not effectively unlimited (>= 9999).
     rwkv_review_headroom: Option<u32>,
     next_review_step_due: Option<TimestampSecs>,
     rwkv_learning_repeat_guards: Option<RwkvLearningRepeatGuards>,

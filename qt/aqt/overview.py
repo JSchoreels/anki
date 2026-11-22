@@ -5,13 +5,15 @@ from __future__ import annotations
 import html
 from collections.abc import Callable
 from dataclasses import dataclass
-from typing import Any
+from typing import Any, cast
 
 import aqt
 import aqt.operations
 import aqt.rwkv_scheduler
 from anki.collection import Collection, OpChanges
 from anki.scheduler import UnburyDeck
+from anki.scheduler.v3 import QueuedCards
+from anki.scheduler.v3 import Scheduler as V3Scheduler
 from aqt import gui_hooks
 from aqt.deckdescription import DeckDescriptionDialog
 from aqt.deckoptions import display_options_for_deck
@@ -21,6 +23,7 @@ from aqt.operations.scheduling import (
     rebuild_filtered_deck,
     unbury_deck,
 )
+from aqt.rwkv_review_potential import rwkv_review_potential_label
 from aqt.sound import av_player
 from aqt.toolbar import BottomBar
 from aqt.utils import askUserDialog, openLink, shortcut, tooltip, tr
@@ -287,13 +290,27 @@ class Overview:
         return f'<div class="descfont descmid description {dyn}">{desc}</div>'
 
     def _table(self) -> str:
-        new_count, learning_count, review_count = self.mw.col.sched.counts()
+        queued: QueuedCards | None = None
+        if self.mw.col.v3_scheduler():
+            # The same queue the reviewer shows, fetched once for counts and
+            # the RWKV-Instant review potential.
+            queued = cast(
+                V3Scheduler, self.mw.col.sched
+            ).get_queued_cards_without_states(fetch_limit=0)
+            new_count, learning_count, review_count = (
+                queued.new_count,
+                queued.learning_count,
+                queued.review_count,
+            )
+        else:
+            new_count, learning_count, review_count = self.mw.col.sched.counts()
         counts: list[int | str] = [new_count, learning_count, review_count]
         current_did = self.mw.col.decks.get_current_id()
         deck_node = self.mw.col.sched.deck_due_tree(current_did)
 
         but = self.mw.button
-        if self.mw.col.v3_scheduler():
+        review_limit = ""
+        if queued is not None:
             assert deck_node is not None
             buried_new = deck_node.new_count - new_count
             buried_learning = deck_node.learn_count - learning_count
@@ -302,6 +319,18 @@ class Overview:
                 buried_review = 0
             else:
                 buried_review = deck_node.review_count - review_count
+                if self.mw.col.conf["dueCounts"] and (
+                    label := rwkv_review_potential_label(
+                        review_count,
+                        queued.rwkv_review_headroom,
+                        queued.rwkv_waiting_review_count,
+                    )
+                ):
+                    text, title = label
+                    review_limit = (
+                        f'<span class=review-limit title="'
+                        f'{html.escape(title, quote=True)}">{text}</span>'
+                    )
         else:
             buried_new = buried_learning = buried_review = 0
         buried_label = tr.studying_counts_differ()
@@ -311,6 +340,7 @@ class Overview:
             klass: str,
             count: int | str,
             buried_count: int,
+            limit: str = "",
         ) -> str:
             buried = f"{buried_count:+}" if buried_count else ""
             return f"""
@@ -318,7 +348,7 @@ class Overview:
     <td>{title}:</td>
     <td>
         <b>
-            <span class={klass}>{count}</span>
+            <span class={klass}>{count}</span>{limit}
             <span class=bury-count title="{buried_label}">{buried}</span>
         </b>
     </td>
@@ -331,7 +361,7 @@ class Overview:
 <table cellspacing=5>
 {number_row(tr.actions_new(), "new-count", counts[0], buried_new)}
 {number_row(tr.scheduling_learning(), "learn-count", counts[1], buried_learning)}
-{number_row(tr.studying_to_review(), "review-count", counts[2], buried_review)}
+{number_row(tr.studying_to_review(), "review-count", counts[2], buried_review, review_limit)}
 </table>
 </td><td align=center>
 {but("study", tr.studying_study_now(), id="study", extra=" autofocus")}</td></tr></table>"""

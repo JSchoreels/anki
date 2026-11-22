@@ -20104,6 +20104,7 @@ def test_deck_browser_pending_rwkv_scopes_render_review_counts_as_ellipsis(
         review_count=8,
         review_uncapped=8,
         review_uncapped_including_children=8,
+        rwkv_review_headroom=0,
         children=[],
     )
     tree = SimpleNamespace(children=[pending_scope, ready_scope])
@@ -20236,7 +20237,14 @@ def test_overview_renders_pending_rwkv_review_count_as_ellipsis(
 
     monkeypatch.setattr(tr, "_translate", lambda *args, **kwargs: "")
     scheduler = SimpleNamespace(
-        counts=lambda: (1, 2, 4_000),
+        get_queued_cards_without_states=lambda *, fetch_limit: (
+            scheduler_pb2.QueuedCards(
+                new_count=1,
+                learning_count=2,
+                review_count=4_000,
+                rwkv_review_headroom=10,
+            )
+        ),
         deck_due_tree=lambda _deck_id: SimpleNamespace(
             new_count=1,
             learn_count=2,
@@ -20258,6 +20266,7 @@ def test_overview_renders_pending_rwkv_review_count_as_ellipsis(
 
     assert "<span class=review-count>…</span>" in table
     assert "4000" not in table
+    assert "review-limit" not in table
 
 
 def test_overview_renders_before_requesting_rwkv_recovery(

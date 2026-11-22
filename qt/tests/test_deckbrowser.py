@@ -75,6 +75,35 @@ def test_review_limit_only_shown_when_count_reduced(browser, count, total, expec
     assert browser._review_limit_labels(tree)[1][0] == expected
 
 
+def test_rwkv_review_potential_label_takes_priority_over_reduced_count(
+    browser, monkeypatch
+):
+    from aqt.utils import tr
+
+    monkeypatch.setattr(
+        tr,
+        "decks_rwkv_review_potential_tooltip",
+        lambda *, count, total: f"{count} due now; up to {total} today.",
+    )
+    limited = DeckTreeNode(
+        deck_id=1,
+        review_count=5,
+        review_uncapped_including_children=10,
+        rwkv_review_headroom=7,
+    )
+    unset = DeckTreeNode(
+        deck_id=2, review_count=5, review_uncapped_including_children=10
+    )
+    zero = DeckTreeNode(deck_id=3, review_count=5, rwkv_review_headroom=0)
+    tree = DeckTreeNode(children=[limited, unset, zero])
+
+    labels = browser._review_limit_labels(tree)
+
+    assert labels[1] == (" (≤12)", "5 due now; up to 12 today.")
+    assert labels[2][0] == " (/10)"
+    assert labels[3] == ("", "")
+
+
 def test_review_limit_refresh_clears_pending_and_unlimited_labels(browser):
     node = DeckTreeNode(
         deck_id=1, review_count=5, review_uncapped_including_children=10

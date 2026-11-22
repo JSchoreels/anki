@@ -1326,6 +1326,24 @@ count-only cache. This keeps startup responsive while allowing every displayed
 RWKV scope to converge to its RWKV eligibility counts before the reviewer is
 opened.
 
+RWKV-Instant review counts also show how many reviews the daily limit still
+allows today, for example `50 (≤100)`. The grey `(≤N)` label appears beside the
+review count in the reviewer's bottom bar, the deck overview and the deck list.
+N is the review count plus the review slots the deck's daily review limit still
+leaves after the cards studied today and, when new cards count toward the review
+limit, the new cards shown. In the deck list each RWKV-Instant row uses its own
+study scope and limits. The tooltip explains that more cards can become due as
+recall drops; in the reviewer and the overview it also says how many due reviews
+are waiting for spacing between reviews. The label takes the place of the `(/N)`
+total in the reviewer and the deck list. It is hidden when no slots remain,
+while the review count is pending, when due counts are turned off (reviewer and
+overview), and when the daily review limit is effectively unlimited: 9999 or
+more, the setting's maximum, including the limit of any parent deck that
+applies. Cards reviewed earlier today in a deck where same-day reviews ignore
+the review limit use no review slots, so more reviews than N can still happen. N
+is a ceiling set by the limit, not a forecast of how many cards will actually
+drop below their retention target.
+
 When the desktop Dynamic Desired Retention provider is available, RWKV review
 inputs are resolved before queue scoring or RWKV rescheduling predictions are
 made. Batches use its bulk API; single-card work uses its single-card API when

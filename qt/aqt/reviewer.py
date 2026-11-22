@@ -53,6 +53,7 @@ from aqt.operations.scheduling import (
 from aqt.operations.tag import add_tags_to_notes, remove_tags_from_notes
 from aqt.profiles import VideoDriver
 from aqt.qt import *
+from aqt.rwkv_review_potential import rwkv_review_potential_label
 from aqt.sound import av_player, play_clicked_audio, record_audio
 from aqt.theme import theme_manager
 from aqt.toolbar import BottomBar
@@ -2257,13 +2258,12 @@ timeboxReps = 0;
     ) -> tuple[str, str]:
         if not self.mw.col.conf["dueCounts"] or not isinstance(review_count, int):
             return "", ""
-        if headroom := queued.rwkv_review_headroom:
-            title = tr.decks_rwkv_review_potential_tooltip(
-                count=review_count, total=review_count + headroom
-            )
-            if waiting := queued.rwkv_waiting_review_count:
-                title += " " + tr.decks_rwkv_review_waiting_tooltip(count=waiting)
-            return f" (≤{review_count + headroom})", title
+        if label := rwkv_review_potential_label(
+            review_count,
+            queued.rwkv_review_headroom,
+            queued.rwkv_waiting_review_count,
+        ):
+            return label
         deck = self.mw.col.sched.deck_due_tree(self.mw.col.decks.get_current_id())
         if deck is None or deck.review_uncapped_including_children <= review_count:
             return "", ""

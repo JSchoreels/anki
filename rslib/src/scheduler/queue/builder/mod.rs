@@ -467,14 +467,18 @@ impl QueueBuilder {
     /// Reviews the selected deck's daily limit still allows beyond the queued
     /// cards, for RWKV-Instant queues. Filtered decks have no deck config, so
     /// their default sort options never use RWKV-Instant. The selected deck's
-    /// limits are already capped by its parents when they apply.
+    /// limits are already capped by its parents when they apply. None when
+    /// the daily review limit is effectively unlimited (>= 9999).
     fn rwkv_review_headroom(&self) -> Option<u32> {
-        if !self.context.uses_rwkv_review_order() {
+        let deck_id = self.context.root_deck.id;
+        if !self.context.uses_rwkv_review_order()
+            || self.limits.review_limit_unlimited(deck_id).unwrap_or(true)
+        {
             return None;
         }
         let remaining = self
             .limits
-            .remaining_limit(self.context.root_deck.id, LimitKind::Review)
+            .remaining_limit(deck_id, LimitKind::Review)
             .ok()?;
         // Gathering new cards only lowers the new limit, but answering them
         // will use review slots. A pinned new card has already reserved one.
@@ -3310,6 +3314,56 @@ mod test {
 
         assert_eq!(queued.review_count, 1);
         assert_eq!(queued.rwkv_review_potential, None);
+        Ok(())
+    }
+
+    #[test]
+    fn rwkv_review_potential_is_unset_when_daily_limit_is_unlimited() -> Result<()> {
+        let mut col = Collection::new();
+        let mut deck = col.get_or_create_normal_deck("Default")?;
+        col.set_deck_rwkv_review_order_with_desired_retention(
+            &mut deck,
+            ReviewCardOrder::RetrievabilityAscending,
+            0.75,
+        );
+        col.set_deck_review_limit(deck.id, 9999);
+        add_rwkv_scored_review_cards(&mut col, deck.id, &[0.20, 0.95])?;
+
+        let queued = col.get_queued_cards(1, false, true)?;
+
+        assert_eq!(queued.review_count, 1);
+        assert_eq!(queued.rwkv_review_potential, None);
+        Ok(())
+    }
+
+    #[test]
+    fn rwkv_review_potential_uses_limited_parent_of_unlimited_deck() -> Result<()> {
+        let mut col = Collection::new();
+        col.set_config_bool(BoolKey::ApplyAllParentLimits, true, false)?;
+        let mut parent = DeckAdder::new("Parent").add(&mut col);
+        let mut child = DeckAdder::new("Parent::Child").add(&mut col);
+        for deck in [&mut parent, &mut child] {
+            col.set_deck_rwkv_review_order_with_desired_retention(
+                deck,
+                ReviewCardOrder::RetrievabilityAscending,
+                0.75,
+            );
+        }
+        col.set_deck_review_limit(parent.id, 10);
+        col.set_deck_review_limit(child.id, 9999);
+        add_rwkv_scored_review_cards(&mut col, child.id, &[0.20, 0.95])?;
+        col.set_current_deck(child.id)?;
+
+        let queued = col.get_queued_cards(1, false, true)?;
+
+        assert_eq!(queued.review_count, 1);
+        assert_eq!(
+            queued.rwkv_review_potential,
+            Some(RwkvReviewPotential {
+                headroom: 9,
+                waiting: 0,
+            })
+        );
         Ok(())
     }
 

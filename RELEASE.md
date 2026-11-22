@@ -47,7 +47,7 @@ Changes since [build 115](https://github.com/JSchoreels/anki/releases/tag/26.09.
 
 - **Explore recall by answer time.** Card Info estimates the chance of answering within 2, 4, 6, 8, 10, 15, 20 and 30 seconds if you press Good. Its graph shows the chance of recalling within each time limit (Hard, Good or Easy), alongside the chances of Good or better and Easy. The estimates are available when the Small Curve model is active and the card was last reviewed on an earlier day.
 - **More RWKV-Instant workload scenarios.** Compatible add-ons such as Search Stats Extended can request five or seven answer-outcome scenarios instead of three. The lowest and highest stay one standard deviation from the central scenario, and the others are evenly spaced in between. Three scenarios give the same results as before.
-- **See how many RWKV-Instant reviews are still possible today.** When fewer reviews are due under RWKV-Instant than the daily limit allows, the reviewer shows the remaining allowance next to the review count, for example `50 (≤100)`. Its tooltip explains that more cards can become due as recall drops and how many due cards are waiting for spacing between reviews.
+- **See how many RWKV-Instant reviews are still possible today.** When fewer reviews are due under RWKV-Instant than the daily limit allows, the reviewer, the deck overview and the deck list show the remaining allowance next to the review count, for example `50 (≤100)`. Its tooltip explains that more cards can become due as recall drops and, in the reviewer and overview, how many due cards are waiting for spacing between reviews. The allowance is hidden when the daily review limit is 9999 (no limit).
 
 #### Fixes
 
