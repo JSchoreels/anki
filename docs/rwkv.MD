@@ -572,6 +572,7 @@ Desktop-only RWKV review settings are stored in deck config `other` under the
 `rwkv_review_min_elapsed_secs`, which defaults to `30`, and
 `rwkv_review_instant_order_enabled`, which defaults to `false`, and
 `rwkv_review_minimum_reviews_per_day`, which defaults to `0`, and
+`rwkv_review_new_cards_ignore_minimum_reviews`, which defaults to `false`, and
 `rwkv_review_candidate_refresh_enabled`, which defaults to `false`, and
 `rwkv_review_precompute_next_card`, which defaults to `true`, and
 `rwkv_review_dynamic_preset_replay`, which defaults to `false`, and
@@ -587,8 +588,13 @@ The former `rwkv_review_allow_same_day_review` field is retained for storage
 compatibility but no longer affects scheduling or hides the repeat-spacing
 fields. The two spacing minimums appear in one row with units inside the fields.
 
-The RWKV card keeps minimum daily reviews, repeat spacing, Curve intervals and
-maintenance actions visible. Its initially collapsed **Advanced** section contains
+With Instant enabled, **Daily Limits** shows **Minimum reviews per day**,
+**New cards ignore minimum reviews** and **Also honor subdeck minimums** in both
+layouts: inline in the modern layout, and right after **Maximum reviews/day** in
+the classic layout. **New cards ignore minimum reviews** is greyed out while the
+minimum is 0; its saved value is kept. Their help entries appear in the Daily
+Limits help only while Instant is enabled. The RWKV card keeps repeat spacing,
+Curve intervals and maintenance actions visible. Its initially collapsed **Advanced** section contains
 the profile-wide model switch and **Compare RWKV with FSRS**. With Instant enabled,
 it also contains **Precompute next card before this card answer**, **Use faster,
 approximate queue updates**, and **Update the RWKV queue every**; these settings
@@ -1176,6 +1182,31 @@ from the selected subtree in ascending retrievability, independently of the
 configured display order. Ordinary maximum review limits, sibling burying, and
 same-day/repeat-spacing guards still take precedence. Limit-exempt same-day
 repeats may bypass the maximum, but do not satisfy the minimum.
+
+Reviews pulled forward only to reach the minimum normally use the review limit
+before new cards are gathered. When the review limit also applies to new cards
+(**New cards ignore review limit** off), a minimum as large as the maximum can
+therefore leave no new cards. `rwkv_review_new_cards_ignore_minimum_reviews`
+(**New cards ignore minimum reviews**, off by default) reverses this for the
+selected deck's preset: new cards are gathered right after the reviews RWKV
+considers due, so they take their share of the daily limits first, and the
+minimum only fills the review capacity left after them. In the main queue those
+minimum reviews follow the new cards and the merged due reviews and interday
+learning, whichever new-card mix is selected; with **Mix with reviews**, new
+cards are spread only across the due reviews. New cards never count toward the
+minimum, and maximum limits still take precedence. Review counts in the
+reviewer still include the minimum reviews. Deck browser counts follow the
+same order: interday learning, due reviews, new cards, then minimum reviews in
+the review capacity that remains. The deck-options session preview uses the
+same queue builder. Instant workload forecasts follow the same rule: they select
+due reviews, then new cards, then minimum reviews, and queue the minimum reviews
+after the new-card mix. With **Show new cards before reviews**, the main queue is
+new cards, due reviews merged with interday learning, then minimum reviews.
+The split is recalculated at every queue rebuild. Reviews that become due during
+the session are due reviews, so they are placed before the remaining new cards
+when new cards are shown after reviews, and when the review limit also applies
+to new cards they can reduce the number of new cards. They never make the result
+worse than with the option off.
 
 The deck-specific **Also honor subdeck minimums** option is off by default.
 When enabled, the selected deck also enforces the minimum of each direct
@@ -1846,7 +1877,10 @@ including future-due cards and the daily minimum's pull-forward rule; the
 untrained Instant-only curve head is not used. The selected study deck's review
 minimum, its recursively enabled subdeck minimums, each deck's maximum, today's
 counts, and the new-card limit and **New cards ignore review limit** setting
-are applied through Anki's limit tree. A selected deck's ancestor maximums
+are applied through Anki's limit tree. When the study preset enables **New cards
+ignore minimum reviews**, new cards reserve their limits before the daily-minimum
+pass and the minimum reviews are queued after the new-card mix, as in the live
+queue. A selected deck's ancestor maximums
 participate when **Limits start from top** is enabled. A search spanning
 independent deck trees applies each tree's maximums separately. Cards in
 non-Instant trees retain normal due-date eligibility. For a search spanning

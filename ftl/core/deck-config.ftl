@@ -458,6 +458,12 @@ deck-config-rwkv-review-minimum-reviews-per-day-tooltip =
     lowest-retrievability review cards from this deck and its subdecks until the
     target is met. Reviews already completed today count toward the target. The
     normal maximum review limits and same-day repeat safeguards still apply.
+deck-config-rwkv-review-new-cards-ignore-minimum-reviews = New cards ignore minimum reviews
+deck-config-rwkv-review-new-cards-ignore-minimum-reviews-tooltip =
+    Only applies with RWKV-Instant. When the only reviews left are ones pulled
+    forward to reach the minimum reviews per day, still introduce new cards
+    first. New cards take their share of the daily limits before those reviews,
+    are shown before them, and do not count toward the minimum.
 deck-config-rwkv-review-respect-subdeck-minimums = Also honor subdeck minimums
 deck-config-rwkv-apply-respect-subdeck-minimums-to-children = Apply this setting to all subdecks on save
 deck-config-rwkv-review-respect-subdeck-minimums-tooltip =

@@ -12,7 +12,6 @@ License: GNU AGPL, version 3 or later; http://www.gnu.org/licenses/agpl.html
     import type Modal from "bootstrap/js/dist/modal";
 
     import DynamicallySlottable from "$lib/components/DynamicallySlottable.svelte";
-    import CheckBox from "$lib/components/CheckBox.svelte";
     import HelpModal from "$lib/components/HelpModal.svelte";
     import Item from "$lib/components/Item.svelte";
     import SettingTitle from "$lib/components/SettingTitle.svelte";
@@ -33,9 +32,6 @@ License: GNU AGPL, version 3 or later; http://www.gnu.org/licenses/agpl.html
 
     const config = state.currentConfig;
     const defaults = state.defaults;
-    const rwkvRespectSubdeckMinimums = state.rwkvRespectSubdeckMinimums;
-    const rwkvApplyRespectSubdeckMinimumsToChildren =
-        state.rwkvApplyRespectSubdeckMinimumsToChildren;
     const newCardsIgnoreReviewLimit = state.newCardsIgnoreReviewLimit;
     const reviewFuzzEnabled = state.reviewFuzzEnabled;
     const reviewFuzzBase = state.reviewFuzzBase;
@@ -55,14 +51,6 @@ License: GNU AGPL, version 3 or later; http://www.gnu.org/licenses/agpl.html
         rwkvEnforceGradeOrder: {
             title: tr.deckConfigRwkvReviewEnforceGradeOrder(),
             help: tr.deckConfigRwkvReviewEnforceGradeOrderTooltip(),
-        },
-        rwkvMinimumReviewsPerDay: {
-            title: tr.deckConfigRwkvReviewMinimumReviewsPerDay(),
-            help: tr.deckConfigRwkvReviewMinimumReviewsPerDayTooltip(),
-        },
-        rwkvRespectSubdeckMinimums: {
-            title: tr.deckConfigRwkvReviewRespectSubdeckMinimums(),
-            help: tr.deckConfigRwkvReviewRespectSubdeckMinimumsTooltip(),
         },
         rwkvCandidateRefresh: {
             title: tr.deckConfigRwkvReviewCandidateRefresh(),
@@ -184,40 +172,6 @@ License: GNU AGPL, version 3 or later; http://www.gnu.org/licenses/agpl.html
                 <p class="rwkv-description rwkv-instant-description">
                     {tr.deckConfigRwkvInstantDescription()}
                 </p>
-
-                {#if !study}<div class="rwkv-minimum-reviews">
-                        <SpinBoxFloatRow
-                            bind:value={$config.rwkvReviewMinimumReviewsPerDay}
-                            defaultValue={defaults.rwkvReviewMinimumReviewsPerDay}
-                            min={0}
-                            max={9999}
-                            step={1}
-                        >
-                            <SettingTitle
-                                on:click={() =>
-                                    openSettingHelp("rwkvMinimumReviewsPerDay")}
-                            >
-                                {tr.deckConfigRwkvReviewMinimumReviewsPerDay()}
-                            </SettingTitle>
-                        </SpinBoxFloatRow>
-                    </div>{/if}
-
-                <Item>
-                    <SwitchRow
-                        bind:value={$rwkvRespectSubdeckMinimums}
-                        defaultValue={false}
-                    >
-                        <SettingTitle
-                            on:click={() =>
-                                openSettingHelp("rwkvRespectSubdeckMinimums")}
-                        >
-                            {tr.deckConfigRwkvReviewRespectSubdeckMinimums()}
-                        </SettingTitle>
-                    </SwitchRow>
-                    <CheckBox bind:value={$rwkvApplyRespectSubdeckMinimumsToChildren}>
-                        {tr.deckConfigRwkvApplyRespectSubdeckMinimumsToChildren()}
-                    </CheckBox>
-                </Item>
 
                 <h2 class="rwkv-subheading">Same-Day Repeats</h2>
 
@@ -432,11 +386,6 @@ License: GNU AGPL, version 3 or later; http://www.gnu.org/licenses/agpl.html
         font-size: 0.875rem;
         font-weight: 600;
         margin: 1rem 0 0.25rem;
-    }
-
-    .rwkv-minimum-reviews {
-        --gutter-inline: 0;
-        margin-top: 0.75rem;
     }
 
     .rwkv-advanced {

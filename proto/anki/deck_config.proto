@@ -275,6 +275,9 @@ message DeckConfig {
     bool rwkv_review_first_review_elapsed_from_card_creation = 82;
     bool rwkv_review_enforce_grade_order = 83;
     uint32 rwkv_review_minimum_reviews_per_day = 84;
+    // When on, new cards are gathered and shown before reviews pulled only to
+    // reach rwkv_review_minimum_reviews_per_day.
+    bool rwkv_review_new_cards_ignore_minimum_reviews = 90;
     bool same_day_reviews_ignore_review_limit = 85;
     bool rwkv_review_precompute_next_card = 86;
 

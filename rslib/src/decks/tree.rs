@@ -94,7 +94,7 @@ fn add_counts(node: &mut DeckTreeNode, counts: &HashMap<DeckId, DueCounts>) {
     node.intraday_learning = direct.intraday_learning;
     node.interday_learning_uncapped = direct.interday_learning;
     node.new_uncapped = direct.new;
-    node.review_uncapped = direct.review;
+    node.review_uncapped = direct.review + direct.rwkv_minimum_review;
     node.total_in_deck = direct.total_cards;
     for child in &mut node.children {
         add_counts(child, counts);
@@ -107,6 +107,8 @@ struct NodeCountsV3 {
     new: u32,
     review: u32,
     review_limit_exempt: u32,
+    /// RWKV-Instant minimum pulls that only get capacity left after new cards.
+    rwkv_minimum_review: u32,
     intraday_learning: u32,
     interday_learning: u32,
     interday_learning_limit_exempt: u32,
@@ -131,11 +133,18 @@ impl NodeCountsV3 {
             .min(remaining_reviews);
         capped.review = limited_reviews.saturating_add(capped.review_limit_exempt);
         capped.new = capped.new.min(remaining.new);
+        remaining_reviews = remaining_reviews.saturating_sub(limited_reviews);
         if remaining.cap_new_to_review {
-            remaining_reviews = remaining_reviews.saturating_sub(limited_reviews);
             capped.new = capped.new.min(remaining_reviews);
+            remaining_reviews = remaining_reviews.saturating_sub(capped.new);
         }
+        // minimum pulls only fill what reviews and new cards left
+        capped.rwkv_minimum_review = capped.rwkv_minimum_review.min(remaining_reviews);
         capped
+    }
+
+    fn displayed_review(&self) -> u32 {
+        self.review + self.rwkv_minimum_review
     }
 }
 
@@ -144,6 +153,7 @@ impl AddAssign for NodeCountsV3 {
         self.new += rhs.new;
         self.review += rhs.review;
         self.review_limit_exempt += rhs.review_limit_exempt;
+        self.rwkv_minimum_review += rhs.rwkv_minimum_review;
         self.intraday_learning += rhs.intraday_learning;
         self.interday_learning += rhs.interday_learning;
         self.interday_learning_limit_exempt += rhs.interday_learning_limit_exempt;
@@ -191,6 +201,10 @@ fn sum_counts_and_apply_limits_v3(
             .get(&DeckId(node.deck_id))
             .map(|counts| counts.review_limit_exempt)
             .unwrap_or_default(),
+        rwkv_minimum_review: counts
+            .get(&DeckId(node.deck_id))
+            .map(|counts| counts.rwkv_minimum_review)
+            .unwrap_or_default(),
         intraday_learning: node.intraday_learning,
         interday_learning: node.interday_learning_uncapped,
         interday_learning_limit_exempt: counts
@@ -218,7 +232,7 @@ fn sum_counts_and_apply_limits_v3(
     });
 
     node.new_count = this_node_capped.new;
-    node.review_count = this_node_capped.review;
+    node.review_count = this_node_capped.displayed_review();
     node.learn_count = this_node_capped.intraday_learning + this_node_capped.interday_learning;
     node.total_including_children = total_including_children;
     node.review_uncapped_including_children = review_uncapped_including_children;
@@ -824,6 +838,60 @@ mod test {
         let tree = col.deck_tree(Some(timing.now))?;
         assert_eq!(tree.children[0].review_count, 2);
         assert_eq!(tree.children[0].review_uncapped, 2);
+        Ok(())
+    }
+
+    #[test]
+    fn rwkv_deck_tree_minimum_leaves_review_limit_to_new_cards_when_new_cards_ignore_minimum(
+    ) -> Result<()> {
+        // (option, new count, review count): three blocked reviews, a minimum
+        // of 2, a limit of 3 reviews, and 2 new cards counted toward it
+        for (ignore, expected_new, expected_review) in [(false, 1, 2), (true, 2, 1)] {
+            let mut col = Collection::new();
+            let mut deck = col.get_or_create_normal_deck("Default")?;
+            enable_rwkv_review_counts(&mut col, &mut deck, false)?;
+            let mut config = col
+                .get_deck_config(deck.config_id().unwrap(), false)?
+                .unwrap();
+            config.inner.rwkv_review_minimum_reviews_per_day = 2;
+            config.inner.rwkv_review_new_cards_ignore_minimum_reviews = ignore;
+            config.inner.reviews_per_day = 3;
+            config.inner.new_per_day = 2;
+            col.add_or_update_deck_config(&mut config)?;
+            let timing = col.timing_today()?;
+            let mut scores = HashMap::new();
+            for score in [0.80, 0.90, 0.95] {
+                let card_id = add_review_card(
+                    &mut col,
+                    deck.id,
+                    timing.days_elapsed as i32 + 7,
+                    0.75,
+                    None,
+                )?;
+                scores.insert(card_id, score);
+            }
+            let nt = col.get_notetype_by_name("Basic")?.unwrap();
+            for _ in 0..2 {
+                let mut note = nt.new_note();
+                note.set_field(0, "new")?;
+                col.add_note(&mut note, deck.id)?;
+            }
+            col.set_rwkv_review_queue_scores(deck.id, scores.clone())?;
+
+            let node = get_deck_in_tree(col.deck_tree(Some(timing.now))?, deck.id).unwrap();
+            assert_eq!(
+                (node.new_count, node.review_count, node.review_uncapped),
+                (expected_new, expected_review, 2),
+                "ignore {ignore}"
+            );
+            col.set_rwkv_review_queue_scores(deck.id, scores)?;
+            let counts = col.build_queues(deck.id)?.counts();
+            assert_eq!(
+                (counts.new, counts.review),
+                (expected_new as usize, expected_review as usize),
+                "queue, ignore {ignore}"
+            );
+        }
         Ok(())
     }
 

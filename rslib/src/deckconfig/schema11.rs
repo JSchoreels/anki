@@ -172,6 +172,8 @@ pub struct DeckConfSchema11 {
     rwkv_review_enforce_grade_order: bool,
     #[serde(default, skip_serializing_if = "is_zero_u32")]
     rwkv_review_minimum_reviews_per_day: u32,
+    #[serde(default, skip_serializing_if = "is_false")]
+    rwkv_review_new_cards_ignore_minimum_reviews: bool,
     #[serde(default)]
     easy_days_percentages: Vec<f32>,
     #[serde(default)]
@@ -527,6 +529,7 @@ impl Default for DeckConfSchema11 {
                 DEFAULT_RWKV_REVIEW_FIRST_REVIEW_ELAPSED_FROM_CARD_CREATION,
             rwkv_review_enforce_grade_order: DEFAULT_RWKV_REVIEW_ENFORCE_GRADE_ORDER,
             rwkv_review_minimum_reviews_per_day: 0,
+            rwkv_review_new_cards_ignore_minimum_reviews: false,
             easy_days_percentages: vec![1.0; 7],
         }
     }
@@ -605,6 +608,8 @@ impl From<DeckConfSchema11> for DeckConfig {
                 .rwkv_review_first_review_elapsed_from_card_creation,
             rwkv_review_enforce_grade_order: c.rwkv_review_enforce_grade_order,
             rwkv_review_minimum_reviews_per_day: c.rwkv_review_minimum_reviews_per_day,
+            rwkv_review_new_cards_ignore_minimum_reviews: c
+                .rwkv_review_new_cards_ignore_minimum_reviews,
             disable_autoplay: !c.autoplay,
             cap_answer_time_to_secs: c.max_taken.max(0) as u32,
             show_timer: c.timer != 0,
@@ -669,6 +674,8 @@ impl From<DeckConfig> for DeckConfSchema11 {
         let same_day_reviews_ignore_review_limit = c.inner.same_day_reviews_ignore_review_limit;
         let rwkv_review_enforce_grade_order = c.inner.rwkv_review_enforce_grade_order;
         let rwkv_review_minimum_reviews_per_day = c.inner.rwkv_review_minimum_reviews_per_day;
+        let rwkv_review_new_cards_ignore_minimum_reviews =
+            c.inner.rwkv_review_new_cards_ignore_minimum_reviews;
         let i = deck_config_inner_for_storage(&c.inner);
         // split extra json up
         let mut top_other: HashMap<String, Value>;
@@ -807,6 +814,7 @@ impl From<DeckConfig> for DeckConfSchema11 {
                 .rwkv_review_first_review_elapsed_from_card_creation,
             rwkv_review_enforce_grade_order,
             rwkv_review_minimum_reviews_per_day,
+            rwkv_review_new_cards_ignore_minimum_reviews,
             easy_days_percentages: i.easy_days_percentages,
         }
     }
@@ -864,6 +872,7 @@ static RESERVED_DECKCONF_KEYS: Set<&'static str> = phf_set! {
     "rwkvReviewCandidateRefreshEnabled",
     "rwkvReviewEnforceGradeOrder",
     "rwkvReviewMinimumReviewsPerDay",
+    "rwkvReviewNewCardsIgnoreMinimumReviews",
     "rwkvReviewPresetTagStateEnabled",
     "rwkvReviewJapaneseFeatureStateEnabled",
     "rwkvReviewJapaneseKanjiField",
@@ -1162,6 +1171,27 @@ mod test {
 
         let serialized = serde_json::to_value(config)?;
         assert_eq!(serialized["rwkvReviewMinimumReviewsPerDay"], json!(42));
+
+        Ok(())
+    }
+
+    #[test]
+    fn rwkv_new_cards_ignore_minimum_reviews_omits_default_and_serializes_enabled() -> Result<()> {
+        let serialized = serde_json::to_value(DeckConfSchema11::default())?;
+        assert!(serialized
+            .get("rwkvReviewNewCardsIgnoreMinimumReviews")
+            .is_none());
+
+        let mut config = DeckConfig::default();
+        config.inner.rwkv_review_new_cards_ignore_minimum_reviews = true;
+        let schema11 = DeckConfSchema11::from(config);
+        let serialized = serde_json::to_value(&schema11)?;
+        assert_eq!(
+            serialized["rwkvReviewNewCardsIgnoreMinimumReviews"],
+            json!(true)
+        );
+        let restored = DeckConfig::from(schema11);
+        assert!(restored.inner.rwkv_review_new_cards_ignore_minimum_reviews);
 
         Ok(())
     }

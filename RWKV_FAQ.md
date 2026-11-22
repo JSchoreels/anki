@@ -351,6 +351,16 @@ is deck-specific and can be applied to all subdecks when saving. Same-day-review
 exemptions and the option that lets new cards ignore the review limit can also
 make the final count differ from a simple cap.
 
+Reviews pulled forward to reach the minimum use the review limit before new
+cards do. When the review limit also applies to new cards, a minimum equal to
+the maximum reviews can leave no new cards. Turn on **New cards ignore minimum
+reviews** in Daily Limits to gather and show new cards first; the minimum then
+only fills the review capacity left after them, and new cards do not count
+toward it. With Instant enabled, these settings and **Also honor subdeck
+minimums** appear in Daily Limits in either layout; **New cards ignore minimum
+reviews** is greyed out while the minimum is 0. Instant workload forecasts follow
+the same order.
+
 ### Can RWKV-Instant repeat a card when same-day reviews are disabled?
 
 Turning off **Allow same day review for (re)learning steps** blocks ordinary

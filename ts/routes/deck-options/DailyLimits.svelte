@@ -8,6 +8,7 @@
     import type Carousel from "bootstrap/js/dist/carousel";
     import type Modal from "bootstrap/js/dist/modal";
 
+    import CheckBox from "$lib/components/CheckBox.svelte";
     import DynamicallySlottable from "$lib/components/DynamicallySlottable.svelte";
     import EnumSelectorRow from "$lib/components/EnumSelectorRow.svelte";
     import HelpModal from "$lib/components/HelpModal.svelte";
@@ -52,6 +53,9 @@
     const defaults = state.defaults;
     const newCardsIgnoreReviewLimit = state.newCardsIgnoreReviewLimit;
     const applyAllParentLimits = state.applyAllParentLimits;
+    const rwkvRespectSubdeckMinimums = state.rwkvRespectSubdeckMinimums;
+    const rwkvApplyRespectSubdeckMinimumsToChildren =
+        state.rwkvApplyRespectSubdeckMinimumsToChildren;
 
     const v3Extra =
         "\n\n" + tr.deckConfigLimitDeckV3() + "\n\n" + tr.deckConfigTabDescription();
@@ -135,6 +139,18 @@
             help: tr.deckConfigReviewLimitTooltip() + reviewV3Extra,
             url: HelpPage.DeckOptions.maximumReviewsday,
         },
+        rwkvMinimumReviewsPerDay: {
+            title: tr.deckConfigRwkvReviewMinimumReviewsPerDay(),
+            help: tr.deckConfigRwkvReviewMinimumReviewsPerDayTooltip(),
+        },
+        rwkvNewCardsIgnoreMinimumReviews: {
+            title: tr.deckConfigRwkvReviewNewCardsIgnoreMinimumReviews(),
+            help: tr.deckConfigRwkvReviewNewCardsIgnoreMinimumReviewsTooltip(),
+        },
+        rwkvRespectSubdeckMinimums: {
+            title: tr.deckConfigRwkvReviewRespectSubdeckMinimums(),
+            help: tr.deckConfigRwkvReviewRespectSubdeckMinimumsTooltip(),
+        },
         includeSuspendedCards: {
             title: tr.deckConfigIncludeSuspendedCardsInLearnablePool(),
             help: tr.deckConfigIncludeSuspendedCardsInLearnablePoolTooltip(),
@@ -163,7 +179,19 @@
             global: true,
         },
     };
-    const helpSections: HelpItem[] = Object.values(settings);
+    const rwkvSettingKeys = [
+        "rwkvMinimumReviewsPerDay",
+        "rwkvNewCardsIgnoreMinimumReviews",
+        "rwkvRespectSubdeckMinimums",
+    ];
+    // The RWKV entries are only listed while RWKV-Instant is on, so help
+    // indices are always computed from the filtered keys.
+    $: settingKeys = Object.keys(settings).filter(
+        (key) =>
+            $config.rwkvReviewInstantOrderEnabled || !rwkvSettingKeys.includes(key),
+    );
+    $: helpSections = settingKeys.map((key) => settings[key]) as HelpItem[];
+    $: minimumIsZero = !$config.rwkvReviewMinimumReviewsPerDay;
 
     let modal: Modal;
     let carousel: Carousel;
@@ -235,6 +263,34 @@
                         />
                         {settings.newCardsIgnoreReviewLimit.title}
                     </label>
+                    {#if $config.rwkvReviewInstantOrderEnabled}
+                        <label title={settings.rwkvNewCardsIgnoreMinimumReviews.help}>
+                            <input
+                                type="checkbox"
+                                disabled={minimumIsZero}
+                                bind:checked={
+                                    $config.rwkvReviewNewCardsIgnoreMinimumReviews
+                                }
+                            />
+                            {settings.rwkvNewCardsIgnoreMinimumReviews.title}
+                        </label>
+                        <label title={settings.rwkvRespectSubdeckMinimums.help}>
+                            <input
+                                type="checkbox"
+                                bind:checked={$rwkvRespectSubdeckMinimums}
+                            />
+                            {settings.rwkvRespectSubdeckMinimums.title}
+                        </label>
+                        <label>
+                            <input
+                                type="checkbox"
+                                bind:checked={
+                                    $rwkvApplyRespectSubdeckMinimumsToChildren
+                                }
+                            />
+                            {tr.deckConfigRwkvApplyRespectSubdeckMinimumsToChildren()}
+                        </label>
+                    {/if}
                     <label title={settings.sameDayReviewsIgnoreReviewLimit.help}>
                         <input
                             type="checkbox"
@@ -254,8 +310,7 @@
                 <SpinBoxRow bind:value={newValue} defaultValue={defaults.newPerDay}>
                     <TabbedValue slot="tabs" tabs={newTabs} bind:value={newValue} />
                     <SettingTitle
-                        on:click={() =>
-                            openHelpModal(Object.keys(settings).indexOf("newLimit"))}
+                        on:click={() => openHelpModal(settingKeys.indexOf("newLimit"))}
                     >
                         {settings.newLimit.title}
                     </SettingTitle>
@@ -274,12 +329,68 @@
                     />
                     <SettingTitle
                         on:click={() =>
-                            openHelpModal(Object.keys(settings).indexOf("reviewLimit"))}
+                            openHelpModal(settingKeys.indexOf("reviewLimit"))}
                     >
                         {settings.reviewLimit.title}
                     </SettingTitle>
                 </SpinBoxRow>
             </Item>
+
+            {#if $config.rwkvReviewInstantOrderEnabled}
+                <Item>
+                    <SpinBoxRow
+                        bind:value={$config.rwkvReviewMinimumReviewsPerDay}
+                        defaultValue={defaults.rwkvReviewMinimumReviewsPerDay}
+                    >
+                        <SettingTitle
+                            on:click={() =>
+                                openHelpModal(
+                                    settingKeys.indexOf("rwkvMinimumReviewsPerDay"),
+                                )}
+                        >
+                            {settings.rwkvMinimumReviewsPerDay.title}
+                        </SettingTitle>
+                    </SpinBoxRow>
+                </Item>
+
+                <Item>
+                    <SwitchRow
+                        bind:value={$config.rwkvReviewNewCardsIgnoreMinimumReviews}
+                        defaultValue={defaults.rwkvReviewNewCardsIgnoreMinimumReviews}
+                        disabled={minimumIsZero}
+                    >
+                        <SettingTitle
+                            on:click={() =>
+                                openHelpModal(
+                                    settingKeys.indexOf(
+                                        "rwkvNewCardsIgnoreMinimumReviews",
+                                    ),
+                                )}
+                        >
+                            {settings.rwkvNewCardsIgnoreMinimumReviews.title}
+                        </SettingTitle>
+                    </SwitchRow>
+                </Item>
+
+                <Item>
+                    <SwitchRow
+                        bind:value={$rwkvRespectSubdeckMinimums}
+                        defaultValue={false}
+                    >
+                        <SettingTitle
+                            on:click={() =>
+                                openHelpModal(
+                                    settingKeys.indexOf("rwkvRespectSubdeckMinimums"),
+                                )}
+                        >
+                            {settings.rwkvRespectSubdeckMinimums.title}
+                        </SettingTitle>
+                    </SwitchRow>
+                    <CheckBox bind:value={$rwkvApplyRespectSubdeckMinimumsToChildren}>
+                        {tr.deckConfigRwkvApplyRespectSubdeckMinimumsToChildren()}
+                    </CheckBox>
+                </Item>
+            {/if}
 
             <Item>
                 <Warning warning={reviewsTooLow} />
@@ -292,9 +403,7 @@
                 >
                     <SettingTitle
                         on:click={() =>
-                            openHelpModal(
-                                Object.keys(settings).indexOf("includeSuspendedCards"),
-                            )}
+                            openHelpModal(settingKeys.indexOf("includeSuspendedCards"))}
                     >
                         {settings.includeSuspendedCards.title}
                     </SettingTitle>
@@ -311,7 +420,7 @@
                         <SettingTitle
                             on:click={() =>
                                 openHelpModal(
-                                    Object.keys(settings).indexOf("suspendedCardOrder"),
+                                    settingKeys.indexOf("suspendedCardOrder"),
                                 )}
                         >
                             {settings.suspendedCardOrder.title}
@@ -328,9 +437,7 @@
                     <SettingTitle
                         on:click={() =>
                             openHelpModal(
-                                Object.keys(settings).indexOf(
-                                    "sameDayReviewsIgnoreReviewLimit",
-                                ),
+                                settingKeys.indexOf("sameDayReviewsIgnoreReviewLimit"),
                             )}
                     >
                         {settings.sameDayReviewsIgnoreReviewLimit.title}
@@ -343,9 +450,7 @@
                     <SettingTitle
                         on:click={() =>
                             openHelpModal(
-                                Object.keys(settings).indexOf(
-                                    "newCardsIgnoreReviewLimit",
-                                ),
+                                settingKeys.indexOf("newCardsIgnoreReviewLimit"),
                             )}
                     >
                         <GlobalLabel title={settings.newCardsIgnoreReviewLimit.title} />
@@ -357,9 +462,7 @@
                 <SwitchRow bind:value={$applyAllParentLimits} defaultValue={false}>
                     <SettingTitle
                         on:click={() =>
-                            openHelpModal(
-                                Object.keys(settings).indexOf("applyAllParentLimits"),
-                            )}
+                            openHelpModal(settingKeys.indexOf("applyAllParentLimits"))}
                     >
                         <GlobalLabel title={settings.applyAllParentLimits.title} />
                     </SettingTitle>

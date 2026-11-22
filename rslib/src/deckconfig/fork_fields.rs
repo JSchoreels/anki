@@ -230,6 +230,8 @@ struct RwkvDeckConfigFields {
     rwkv_review_enforce_grade_order: Option<bool>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     rwkv_review_minimum_reviews_per_day: Option<u32>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    rwkv_review_new_cards_ignore_minimum_reviews: Option<bool>,
 }
 
 impl RwkvDeckConfigFields {
@@ -278,6 +280,9 @@ impl RwkvDeckConfigFields {
                 config.rwkv_review_minimum_reviews_per_day,
                 0,
             ),
+            rwkv_review_new_cards_ignore_minimum_reviews: true_only(
+                config.rwkv_review_new_cards_ignore_minimum_reviews,
+            ),
         }
     }
 
@@ -323,6 +328,9 @@ impl RwkvDeckConfigFields {
         }
         if let Some(value) = self.rwkv_review_minimum_reviews_per_day {
             config.rwkv_review_minimum_reviews_per_day = value;
+        }
+        if let Some(value) = self.rwkv_review_new_cards_ignore_minimum_reviews {
+            config.rwkv_review_new_cards_ignore_minimum_reviews = value;
         }
     }
 
@@ -525,6 +533,7 @@ fn clear_numbered_fork_fields(config: &mut DeckConfigInner) {
     config.rwkv_review_first_review_elapsed_from_card_creation = false;
     config.rwkv_review_enforce_grade_order = false;
     config.rwkv_review_minimum_reviews_per_day = 0;
+    config.rwkv_review_new_cards_ignore_minimum_reviews = false;
 }
 
 fn non_empty_vec(values: &[f32]) -> Option<Vec<f32>> {
@@ -590,6 +599,7 @@ mod tests {
             rwkv_review_first_review_elapsed_from_card_creation: false,
             rwkv_review_enforce_grade_order: false,
             rwkv_review_minimum_reviews_per_day: 42,
+            rwkv_review_new_cards_ignore_minimum_reviews: true,
             ..Default::default()
         }
     }
@@ -628,6 +638,7 @@ mod tests {
         assert!(!storage_config.rwkv_review_first_review_elapsed_from_card_creation);
         assert!(!storage_config.rwkv_review_enforce_grade_order);
         assert_eq!(storage_config.rwkv_review_minimum_reviews_per_day, 0);
+        assert!(!storage_config.rwkv_review_new_cards_ignore_minimum_reviews);
 
         let other: Value = serde_json::from_slice(&storage_config.other).unwrap();
         let fsrs_other = other.get(FSRS_FORK_FIELDS_KEY).unwrap();
@@ -677,6 +688,7 @@ mod tests {
                 "rwkv_review_first_review_elapsed_from_card_creation": false,
                 "rwkv_review_enforce_grade_order": false,
                 "rwkv_review_minimum_reviews_per_day": 42,
+                "rwkv_review_new_cards_ignore_minimum_reviews": true,
             }))
         );
     }
@@ -764,6 +776,27 @@ mod tests {
             decoded.rwkv_review_minimum_reviews_per_day,
             config.rwkv_review_minimum_reviews_per_day
         );
+        assert_eq!(
+            decoded.rwkv_review_new_cards_ignore_minimum_reviews,
+            config.rwkv_review_new_cards_ignore_minimum_reviews
+        );
+    }
+
+    #[test]
+    fn new_cards_ignore_minimum_reviews_is_omitted_from_storage_when_off() {
+        let config = DeckConfigInner {
+            rwkv_review_minimum_reviews_per_day: 5,
+            ..Default::default()
+        };
+        let storage = deck_config_inner_for_storage(&config);
+        let other: Value = serde_json::from_slice(&storage.other).unwrap();
+        assert!(other[RWKV_FORK_FIELDS_KEY]
+            .get("rwkv_review_new_cards_ignore_minimum_reviews")
+            .is_none());
+
+        let mut decoded = DeckConfigInner::decode(storage.encode_to_vec().as_slice()).unwrap();
+        restore_fork_fields_from_other(&mut decoded);
+        assert!(!decoded.rwkv_review_new_cards_ignore_minimum_reviews);
     }
 
     #[test]

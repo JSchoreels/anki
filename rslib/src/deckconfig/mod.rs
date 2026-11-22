@@ -104,6 +104,7 @@ const DEFAULT_DECK_CONFIG_INNER: DeckConfigInner = DeckConfigInner {
         DEFAULT_RWKV_REVIEW_FIRST_REVIEW_ELAPSED_FROM_CARD_CREATION,
     rwkv_review_enforce_grade_order: DEFAULT_RWKV_REVIEW_ENFORCE_GRADE_ORDER,
     rwkv_review_minimum_reviews_per_day: 0,
+    rwkv_review_new_cards_ignore_minimum_reviews: false,
     disable_autoplay: false,
     cap_answer_time_to_secs: 60,
     show_timer: false,

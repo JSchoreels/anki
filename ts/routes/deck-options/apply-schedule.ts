@@ -47,6 +47,7 @@ const modelSettingFields = [
     "fsrsDynamicDesiredRetentionFixedTargetDrs",
     "rwkvReviewEnforceGradeOrder",
     "rwkvReviewMinimumReviewsPerDay",
+    "rwkvReviewNewCardsIgnoreMinimumReviews",
     "rwkvReviewCandidateRefreshEnabled",
     "rwkvReviewPrecomputeNextCard",
     "rwkvReviewRefreshInterval",

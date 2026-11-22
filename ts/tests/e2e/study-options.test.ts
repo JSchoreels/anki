@@ -2,7 +2,7 @@
 // License: GNU AGPL, version 3 or later; http://www.gnu.org/licenses/agpl.html
 
 import { OpChanges } from "@generated/anki/collection_pb";
-import { UpdateDeckConfigsRequest } from "@generated/anki/deck_config_pb";
+import { DeckConfigsForUpdate, UpdateDeckConfigsRequest } from "@generated/anki/deck_config_pb";
 import { SetSettingJsonRequest } from "@generated/anki/frontend_pb";
 import { Json, String as GenericString } from "@generated/anki/generic_pb";
 
@@ -142,4 +142,47 @@ test("a numeric field orders the whole mixed pool or each priority group", async
     await expect(pool).toHaveText(["S01", "N002", "N003", "N001"]);
     await choose("Cards to select", "New before Suspended");
     await expect(pool).toHaveText(["N002", "N003", "N001", "S01"]);
+});
+
+test("RWKV-Instant study layout saves new cards ignoring the minimum from Daily Limits", async ({ page }) => {
+    await page.route("**/_anki/getDeckConfigsForUpdate", async (route) => {
+        const response = await route.fetch();
+        const data = DeckConfigsForUpdate.fromBinary(await response.body());
+        const config = data.allConfig.find((entry) => entry.config!.id === data.currentDeck!.configId)!.config!.config!;
+        config.rwkvReviewInstantOrderEnabled = true;
+        config.rwkvReviewMinimumReviewsPerDay = 0;
+        await route.fulfill({ response, body: Buffer.from(data.toBinary()) });
+    });
+    let saved: UpdateDeckConfigsRequest | undefined;
+    await page.route("**/_anki/updateDeckConfigsAndClose", async (route) => {
+        saved = decodeRequestBody(route.request(), UpdateDeckConfigsRequest);
+        await route.fulfill({ body: Buffer.from(new OpChanges().toBinary()) });
+    });
+    await page.goto("/deck-options/1");
+    const limits = page.getByRole("heading", { name: "Daily Limits", exact: true }).locator("../..");
+    const rwkvCard = page.getByRole("heading", { name: "RWKV", exact: true }).locator("../..");
+    const ignore = limits.getByRole("checkbox", { name: "New cards ignore minimum reviews", exact: true });
+    await expect(limits.getByRole("checkbox", { name: "Also honor subdeck minimums", exact: true })).toBeEnabled();
+    await expect(rwkvCard.getByRole("checkbox", { name: "Also honor subdeck minimums", exact: true }))
+        .toHaveCount(0);
+    await expect(ignore).toBeDisabled();
+    await limits.getByRole("spinbutton", { name: "Minimum reviews per day", exact: true }).fill("5");
+    await expect(ignore).toBeEnabled();
+    await expect(ignore).not.toBeChecked();
+    await ignore.check();
+    await page.getByRole("button", { name: "Save", exact: true }).click();
+    await expect.poll(() => saved?.configs.at(-1)?.config?.rwkvReviewNewCardsIgnoreMinimumReviews).toBe(true);
+});
+
+test("study layout Daily Limits help hides the RWKV entries while RWKV-Instant is off", async ({ page }) => {
+    await page.goto("/deck-options/1");
+    const limits = page.getByRole("heading", { name: "Daily Limits", exact: true }).locator("../..");
+    await expect(limits.locator("nav button", { hasText: /^Maximum reviews\/day$/ })).toHaveCount(1);
+    await expect(limits.getByRole("checkbox", { name: "New cards ignore minimum reviews", exact: true }))
+        .toHaveCount(0);
+    for (
+        const title of ["Minimum reviews per day", "New cards ignore minimum reviews", "Also honor subdeck minimums"]
+    ) {
+        await expect(limits.locator("nav button", { hasText: new RegExp(`^${title}$`) })).toHaveCount(0);
+    }
 });

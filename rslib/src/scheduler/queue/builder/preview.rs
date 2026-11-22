@@ -3,7 +3,6 @@
 
 use std::collections::BTreeSet;
 use std::collections::HashMap;
-use std::collections::HashSet;
 
 use anki_proto::deck_config::preview_study_session_request::Source;
 use anki_proto::deck_config::study_session_preview::Card as PreviewCard;
@@ -34,7 +33,6 @@ pub(super) struct PreviewTrace {
     pub(super) new_limit_card: Option<(CardId, LimitKind)>,
     pub(super) review_limit_card: Option<CardId>,
     pub(super) sibling: Option<CardId>,
-    pub(super) minimum_reviews: HashSet<CardId>,
 }
 
 pub(super) fn apply_draft(
@@ -117,6 +115,7 @@ impl Collection {
             .update_active_decks(&builder.context.root_deck)?;
         builder.gather_cards(self)?;
         let trace = builder.preview.take().unwrap_or_default();
+        let minimum_reviews = builder.minimum_review_ids.clone();
         let timing = builder.context.timing;
         let field = builder.context.sort_options.new_gather_field.clone();
         let scores = builder.context.rwkv_review_queue_scores.clone();
@@ -154,7 +153,7 @@ impl Collection {
         preview.cards.reserve(indices.len() + 1);
         for i in indices {
             let id = entries[i].card_id();
-            let reason = if trace.minimum_reviews.contains(&id) {
+            let reason = if minimum_reviews.contains(&id) {
                 Reason::Minimum
             } else {
                 Reason::Scheduled
@@ -480,6 +479,57 @@ mod tests {
             (held.id, held.position, held.daily_limit),
             (last.0, 0, Some(DailyLimit::Reviews as i32))
         );
+        Ok(())
+    }
+
+    #[test]
+    fn preview_puts_minimum_reviews_after_new_cards_when_new_cards_ignore_minimum() -> Result<()> {
+        let mut col = Collection::new();
+        let due = CardAdder::new().due_dates(["0"]).add(&mut col)[0].id;
+        let minimum = CardAdder::new().due_dates(["5"]).add(&mut col)[0].id;
+        let new = CardAdder::new().add(&mut col)[0].id;
+        let mut preset = col.get_deck_config(DeckConfigId(1), false)?.unwrap();
+        preset.inner.rwkv_review_instant_order_enabled = true;
+        preset.inner.rwkv_review_min_intervening_reviews = 0;
+        preset.inner.rwkv_review_min_elapsed_secs = 0;
+        preset.inner.rwkv_review_minimum_reviews_per_day = 2;
+        preset.inner.rwkv_review_new_cards_ignore_minimum_reviews = true;
+        preset.inner.new_mix = ReviewMix::AfterReviews as i32;
+        col.add_or_update_deck_config(&mut preset)?;
+        let scores = HashMap::from([(due, 0.1), (minimum, 0.95)]);
+        col.set_rwkv_review_queue_scores(DeckId(1), scores.clone())?;
+
+        let preview = col.study_session_preview(PreviewStudySessionRequest {
+            options: Some(Options {
+                target_deck_id: 1,
+                configs: vec![preset.into()],
+                ..Default::default()
+            }),
+            source: Source::Deck as i32,
+        })?;
+
+        let shown: Vec<_> = preview
+            .cards
+            .iter()
+            .filter(|card| card.position > 0)
+            .map(|card| (card.position, card.id, card.reason()))
+            .collect();
+        assert_eq!(
+            shown,
+            [
+                (1, due.0, Reason::Scheduled),
+                (2, new.0, Reason::Scheduled),
+                (3, minimum.0, Reason::Minimum)
+            ]
+        );
+        col.set_rwkv_review_queue_scores(DeckId(1), scores)?;
+        let reviewer: Vec<_> = col
+            .get_queued_cards(3, false, true)?
+            .cards
+            .iter()
+            .map(|card| card.card.id)
+            .collect();
+        assert_eq!(reviewer, [due, new, minimum]);
         Ok(())
     }
 

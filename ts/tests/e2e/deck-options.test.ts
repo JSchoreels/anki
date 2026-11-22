@@ -63,6 +63,74 @@ test("Daily Limits saves suspended card inclusion and order", async ({ page }) =
     expect(saved?.suspendedCardOrder).toBe(SuspendedCardOrder.SUSPENDED_BEFORE_NEW);
 });
 
+test("Daily Limits holds the RWKV-Instant minimum and saves new cards ignoring it", async ({ page }) => {
+    await page.route("**/_anki/getDeckConfigsForUpdate", async (route) => {
+        const response = await route.fetch();
+        const data = DeckConfigsForUpdate.fromBinary(await response.body());
+        const config = data.allConfig.find((entry) => entry.config!.id === data.currentDeck!.configId)!.config!.config!;
+        config.rwkvReviewInstantOrderEnabled = true;
+        config.rwkvReviewMinimumReviewsPerDay = 30;
+        await route.fulfill({ response, body: Buffer.from(data.toBinary()) });
+    });
+    let saved: DeckConfig_Config | undefined;
+    await page.route("**/_anki/updateDeckConfigsAndClose", async (route) => {
+        saved = decodeRequestBody(route.request(), UpdateDeckConfigsRequest).configs.at(-1)?.config;
+        await route.fulfill({ body: Buffer.from(new OpChanges().toBinary()) });
+    });
+    await page.goto("/deck-options/1");
+    const limits = page.getByRole("heading", { name: "Daily Limits", exact: true }).locator("../..");
+    const rwkvCard = page.getByRole("heading", { name: "RWKV", exact: true }).locator("../..");
+    const minimumTitle = (container: typeof limits) =>
+        container.locator(".setting-title").filter({ hasText: /^Minimum reviews per day$/ });
+    await expect(minimumTitle(limits)).toBeVisible();
+    await expect(minimumTitle(rwkvCard)).toHaveCount(0);
+    await expect(rwkvCard.getByText("Minimum reviews per day", { exact: true })).toHaveCount(0);
+    await expect(rwkvCard.getByRole("checkbox", { name: "Also honor subdeck minimums", exact: true }))
+        .toHaveCount(0);
+    await expect(limits.getByRole("checkbox", { name: "Also honor subdeck minimums", exact: true })).toBeVisible();
+    await expect(limits.locator("nav button", { hasText: /^Also honor subdeck minimums$/ })).toHaveCount(1);
+    const ignore = limits.getByRole("checkbox", { name: "New cards ignore minimum reviews", exact: true });
+    await expect(ignore).toBeEnabled();
+    await expect(ignore).not.toBeChecked();
+    await ignore.check();
+    await page.getByRole("button", { name: "Save", exact: true }).click();
+    await expect.poll(() => saved?.rwkvReviewNewCardsIgnoreMinimumReviews).toBe(true);
+    expect(saved?.rwkvReviewMinimumReviewsPerDay).toBe(30);
+});
+
+test("Daily Limits disables new cards ignoring the minimum while the minimum is 0", async ({ page }) => {
+    await page.route("**/_anki/getDeckConfigsForUpdate", async (route) => {
+        const response = await route.fetch();
+        const data = DeckConfigsForUpdate.fromBinary(await response.body());
+        const config = data.allConfig.find((entry) => entry.config!.id === data.currentDeck!.configId)!.config!.config!;
+        config.rwkvReviewInstantOrderEnabled = true;
+        config.rwkvReviewMinimumReviewsPerDay = 0;
+        config.rwkvReviewNewCardsIgnoreMinimumReviews = true;
+        await route.fulfill({ response, body: Buffer.from(data.toBinary()) });
+    });
+    await page.goto("/deck-options/1");
+    const limits = page.getByRole("heading", { name: "Daily Limits", exact: true }).locator("../..");
+    const ignore = limits.getByRole("checkbox", { name: "New cards ignore minimum reviews", exact: true });
+    await expect(ignore).toBeDisabled();
+    await expect(ignore).toBeChecked();
+    await expect(limits.getByRole("checkbox", { name: "Also honor subdeck minimums", exact: true })).toBeEnabled();
+    const minimum = limits.locator(".row").filter({ hasText: /^Minimum reviews per day/ }).getByRole("spinbutton");
+    await minimum.fill("5");
+    await minimum.blur();
+    await expect(ignore).toBeEnabled();
+});
+
+test("Daily Limits help hides the RWKV entries while RWKV-Instant is off", async ({ page }) => {
+    await page.goto("/deck-options/1");
+    const limits = page.getByRole("heading", { name: "Daily Limits", exact: true }).locator("../..");
+    await expect(limits.locator("nav button", { hasText: /^Maximum reviews\/day$/ })).toHaveCount(1);
+    for (
+        const title of ["Minimum reviews per day", "New cards ignore minimum reviews", "Also honor subdeck minimums"]
+    ) {
+        await expect(limits.locator("nav button", { hasText: new RegExp(`^${title}$`) })).toHaveCount(0);
+    }
+});
+
 test("Display Order saves the selected note field and gather direction", async ({ page }) => {
     let saved: DeckConfig_Config | undefined;
     await page.route("**/_anki/updateDeckConfigsAndClose", async (route) => {

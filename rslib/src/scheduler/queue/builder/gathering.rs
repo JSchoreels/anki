@@ -4,6 +4,7 @@
 use std::collections::HashMap;
 use std::collections::HashSet;
 use std::hash::Hasher;
+use std::sync::Arc;
 use std::time::Instant;
 
 use fnv::FnvHasher;
@@ -27,6 +28,7 @@ use crate::scheduler::rwkv::rwkv_review_candidate_metadata;
 use crate::scheduler::rwkv::rwkv_review_relative_overdueness;
 use crate::scheduler::rwkv::rwkv_review_score_eligibility;
 use crate::scheduler::rwkv::rwkv_review_score_eligibility_ignoring_retention;
+use crate::scheduler::rwkv::RwkvReviewCandidateMetadata;
 use crate::scheduler::rwkv::RwkvReviewScoreEligibility;
 use crate::scheduler::timing::SchedTimingToday;
 use crate::storage::card::learnable::learnable_suspended_filter;
@@ -41,17 +43,42 @@ struct DueCardForRetrievabilitySort {
 
 pub(super) const RWKV_REVIEW_GATHER_MIN_CHUNK_SIZE: usize = 256;
 
+/// The part of an RWKV-Instant review gather that can run after new cards:
+/// the daily-minimum pass and the final review sort.
+enum RwkvReviewGatherTail {
+    Priority {
+        ranked_scores: Vec<(CardId, RwkvReviewQueueScoreEntry)>,
+        priorities: HashMap<CardId, f32>,
+    },
+    ConfiguredOrder {
+        scores: Arc<HashMap<CardId, RwkvReviewQueueScoreEntry>>,
+        cards: Vec<(DueCard, bool)>,
+        metadata: HashMap<CardId, RwkvReviewCandidateMetadata>,
+        eligibility_by_card: HashMap<CardId, RwkvReviewScoreEligibility>,
+    },
+}
+
 impl QueueBuilder {
     pub(super) fn gather_cards(&mut self, col: &mut Collection) -> Result<()> {
         if self.context.sort_options.uses_rwkv_review_order() {
             self.gather_intraday_learning_cards(col)?;
             self.gather_due_cards(col, DueCardKind::Learning)?;
-            if self.context.uses_rwkv_review_order() {
-                self.gather_review_cards_with_rwkv_scores(col)?;
+            let tail = if self.context.uses_rwkv_review_order() {
+                self.gather_review_cards_with_rwkv_scores(col)?
             } else {
                 self.gather_due_cards(col, DueCardKind::Review)?;
+                None
+            };
+            // With the option on, new cards take their share of the daily
+            // limits before reviews pulled only to reach the minimum.
+            let new_first = self.context.sort_options.new_cards_ignore_minimum_reviews();
+            if new_first {
+                self.gather_new_cards(col)?;
             }
-            self.gather_new_cards(col)?;
+            self.finish_rwkv_review_gather(col, tail)?;
+            if !new_first {
+                self.gather_new_cards(col)?;
+            }
             return Ok(());
         }
 
@@ -69,7 +96,10 @@ impl QueueBuilder {
         Ok(())
     }
 
-    fn gather_review_cards_with_rwkv_scores(&mut self, col: &mut Collection) -> Result<()> {
+    fn gather_review_cards_with_rwkv_scores(
+        &mut self,
+        col: &mut Collection,
+    ) -> Result<Option<RwkvReviewGatherTail>> {
         if matches!(
             self.context.sort_options.review_order,
             ReviewCardOrder::RetrievabilityAscending
@@ -82,9 +112,12 @@ impl QueueBuilder {
         }
     }
 
-    fn gather_review_cards_by_rwkv_priority(&mut self, col: &mut Collection) -> Result<()> {
+    fn gather_review_cards_by_rwkv_priority(
+        &mut self,
+        col: &mut Collection,
+    ) -> Result<Option<RwkvReviewGatherTail>> {
         if self.review_gather_finished() {
-            return Ok(());
+            return Ok(None);
         }
 
         let scores = self.context.rwkv_review_queue_scores.clone().unwrap();
@@ -198,16 +231,18 @@ impl QueueBuilder {
 
         let scored_card_ids = ranked_scores.iter().map(|(card_id, _)| *card_id).collect();
         self.gather_due_review_cards_without_rwkv_scores(col, &scored_card_ids)?;
-        if !self.review_limit_stops_gathering() && self.limits.any_rwkv_review_minimum_remaining() {
-            self.gather_rwkv_review_minimum_cards(col, &ranked_scores)?;
-        }
-        self.sort_review_cards_by_rwkv_priority(&priorities);
-        Ok(())
+        Ok(Some(RwkvReviewGatherTail::Priority {
+            ranked_scores,
+            priorities,
+        }))
     }
 
-    fn gather_review_cards_by_configured_order(&mut self, col: &mut Collection) -> Result<()> {
+    fn gather_review_cards_by_configured_order(
+        &mut self,
+        col: &mut Collection,
+    ) -> Result<Option<RwkvReviewGatherTail>> {
         if self.review_gather_finished() {
-            return Ok(());
+            return Ok(None);
         }
 
         let scores = self.context.rwkv_review_queue_scores.clone().unwrap();
@@ -276,89 +311,140 @@ impl QueueBuilder {
             }
         }
 
-        if self.limits.any_rwkv_review_minimum_remaining() {
-            let mut pull_candidates = cards.iter().map(|(card, _)| *card).collect::<Vec<_>>();
-            pull_candidates.sort_by(|card_a, card_b| {
-                let score_a = scores
-                    .get(&card_a.id)
-                    .map(|score| score.retrievability)
-                    .filter(|score| score.is_finite());
-                let score_b = scores
-                    .get(&card_b.id)
-                    .map(|score| score.retrievability)
-                    .filter(|score| score.is_finite());
-                match (score_a, score_b) {
-                    (Some(score_a), Some(score_b)) => score_a
-                        .total_cmp(&score_b)
-                        .then_with(|| card_a.id.cmp(&card_b.id)),
-                    (Some(_), None) => std::cmp::Ordering::Less,
-                    (None, Some(_)) => std::cmp::Ordering::Greater,
-                    (None, None) => std::cmp::Ordering::Equal,
+        Ok(Some(RwkvReviewGatherTail::ConfiguredOrder {
+            scores,
+            cards,
+            metadata,
+            eligibility_by_card,
+        }))
+    }
+
+    /// Runs the daily-minimum pass and the final review sort of an RWKV-Instant
+    /// review gather.
+    fn finish_rwkv_review_gather(
+        &mut self,
+        col: &mut Collection,
+        tail: Option<RwkvReviewGatherTail>,
+    ) -> Result<()> {
+        match tail {
+            None => {}
+            Some(RwkvReviewGatherTail::Priority {
+                ranked_scores,
+                priorities,
+            }) => {
+                if !self.review_limit_stops_gathering()
+                    && self.limits.any_rwkv_review_minimum_remaining()
+                {
+                    self.gather_rwkv_review_minimum_cards(col, &ranked_scores)?;
                 }
-            });
-            let mut attempted = HashSet::new();
-            for depth in self.limits.rwkv_review_minimum_depths() {
-                for card in pull_candidates.iter().copied() {
-                    if !self.limits.any_rwkv_review_minimum_remaining()
-                        || self.review_limit_stops_gathering()
-                    {
-                        break;
-                    }
-                    if attempted.contains(&card.id)
-                        || !self
-                            .limits
-                            .rwkv_review_minimum_remaining_at_depth(card.current_deck_id, depth)?
-                        || !matches!(
-                            eligibility_by_card.get(&card.id),
-                            Some(RwkvReviewScoreEligibility::Blocked)
-                        )
-                        || self.card_ignores_review_limit(card)
-                    {
-                        continue;
-                    }
-                    let score = scores.get(&card.id).or_not_found(card.id)?;
-                    let metadata = metadata.get(&card.id).or_not_found(card.id)?;
-                    let eligibility = rwkv_review_score_eligibility_ignoring_retention(
-                        score.retrievability,
-                        metadata,
-                        self.context
-                            .sort_options
-                            .rwkv_review_min_intervening_reviews,
-                        self.context.sort_options.rwkv_review_min_elapsed_secs,
-                        score.intervening_reviews,
-                    );
-                    match eligibility {
-                        RwkvReviewScoreEligibility::Eligible => {}
-                        RwkvReviewScoreEligibility::Deferred { .. } => {
-                            self.deferred_rwkv_reviews.insert(
-                                card.id,
-                                DeferredRwkvReview::from_eligibility(
-                                    eligibility,
-                                    self.context.timing.now,
-                                )
-                                .unwrap(),
-                            );
-                            continue;
-                        }
-                        RwkvReviewScoreEligibility::Blocked => continue,
-                    }
-                    self.add_minimum_review(card)?;
-                    attempted.insert(card.id);
+                self.sort_review_cards_by_rwkv_priority(&priorities);
+            }
+            Some(RwkvReviewGatherTail::ConfiguredOrder {
+                scores,
+                cards,
+                metadata,
+                eligibility_by_card,
+            }) => {
+                if self.limits.any_rwkv_review_minimum_remaining() {
+                    self.gather_rwkv_review_minimum_cards_in_configured_order(
+                        &scores,
+                        &cards,
+                        &metadata,
+                        &eligibility_by_card,
+                    )?;
                 }
+                let configured_position: HashMap<_, _> = cards
+                    .iter()
+                    .enumerate()
+                    .map(|(position, (card, _))| (card.id, position))
+                    .collect();
+                self.review.sort_by_key(|card| {
+                    configured_position
+                        .get(&card.id)
+                        .copied()
+                        .unwrap_or(usize::MAX)
+                });
             }
         }
+        Ok(())
+    }
 
-        let configured_position: HashMap<_, _> = cards
-            .iter()
-            .enumerate()
-            .map(|(position, (card, _))| (card.id, position))
-            .collect();
-        self.review.sort_by_key(|card| {
-            configured_position
-                .get(&card.id)
-                .copied()
-                .unwrap_or(usize::MAX)
+    fn gather_rwkv_review_minimum_cards_in_configured_order(
+        &mut self,
+        scores: &HashMap<CardId, RwkvReviewQueueScoreEntry>,
+        cards: &[(DueCard, bool)],
+        metadata: &HashMap<CardId, RwkvReviewCandidateMetadata>,
+        eligibility_by_card: &HashMap<CardId, RwkvReviewScoreEligibility>,
+    ) -> Result<()> {
+        let mut pull_candidates = cards.iter().map(|(card, _)| *card).collect::<Vec<_>>();
+        pull_candidates.sort_by(|card_a, card_b| {
+            let score_a = scores
+                .get(&card_a.id)
+                .map(|score| score.retrievability)
+                .filter(|score| score.is_finite());
+            let score_b = scores
+                .get(&card_b.id)
+                .map(|score| score.retrievability)
+                .filter(|score| score.is_finite());
+            match (score_a, score_b) {
+                (Some(score_a), Some(score_b)) => score_a
+                    .total_cmp(&score_b)
+                    .then_with(|| card_a.id.cmp(&card_b.id)),
+                (Some(_), None) => std::cmp::Ordering::Less,
+                (None, Some(_)) => std::cmp::Ordering::Greater,
+                (None, None) => std::cmp::Ordering::Equal,
+            }
         });
+        let mut attempted = HashSet::new();
+        for depth in self.limits.rwkv_review_minimum_depths() {
+            for card in pull_candidates.iter().copied() {
+                if !self.limits.any_rwkv_review_minimum_remaining()
+                    || self.review_limit_stops_gathering()
+                {
+                    break;
+                }
+                if attempted.contains(&card.id)
+                    || !self
+                        .limits
+                        .rwkv_review_minimum_remaining_at_depth(card.current_deck_id, depth)?
+                    || !matches!(
+                        eligibility_by_card.get(&card.id),
+                        Some(RwkvReviewScoreEligibility::Blocked)
+                    )
+                    || self.card_ignores_review_limit(card)
+                {
+                    continue;
+                }
+                let score = scores.get(&card.id).or_not_found(card.id)?;
+                let metadata = metadata.get(&card.id).or_not_found(card.id)?;
+                let eligibility = rwkv_review_score_eligibility_ignoring_retention(
+                    score.retrievability,
+                    metadata,
+                    self.context
+                        .sort_options
+                        .rwkv_review_min_intervening_reviews,
+                    self.context.sort_options.rwkv_review_min_elapsed_secs,
+                    score.intervening_reviews,
+                );
+                match eligibility {
+                    RwkvReviewScoreEligibility::Eligible => {}
+                    RwkvReviewScoreEligibility::Deferred { .. } => {
+                        self.deferred_rwkv_reviews.insert(
+                            card.id,
+                            DeferredRwkvReview::from_eligibility(
+                                eligibility,
+                                self.context.timing.now,
+                            )
+                            .unwrap(),
+                        );
+                        continue;
+                    }
+                    RwkvReviewScoreEligibility::Blocked => continue,
+                }
+                self.add_minimum_review(card)?;
+                attempted.insert(card.id);
+            }
+        }
         Ok(())
     }
 
@@ -473,14 +559,13 @@ impl QueueBuilder {
                 .is_none_or(|trace| trace.review_limit_card.is_some())
     }
 
-    fn add_rwkv_review_card(&mut self, card: DueCard) -> Result<()> {
+    fn add_rwkv_review_card(&mut self, card: DueCard) -> Result<bool> {
         self.add_due_card_respecting_review_limit(card)
     }
 
     fn add_minimum_review(&mut self, card: DueCard) -> Result<()> {
-        self.add_rwkv_review_card(card)?;
-        if let Some(trace) = &mut self.preview {
-            trace.minimum_reviews.insert(card.id);
+        if self.add_rwkv_review_card(card)? {
+            self.minimum_review_ids.insert(card.id);
         }
         Ok(())
     }
@@ -498,7 +583,8 @@ impl QueueBuilder {
             .is_some_and(|config| config.inner.same_day_reviews_ignore_review_limit)
     }
 
-    fn add_due_card_respecting_review_limit(&mut self, card: DueCard) -> Result<()> {
+    /// True if the card was added to the queue.
+    fn add_due_card_respecting_review_limit(&mut self, card: DueCard) -> Result<bool> {
         let ignore_limit = self.card_ignores_review_limit(card);
         if !ignore_limit
             && self
@@ -508,13 +594,14 @@ impl QueueBuilder {
             if let Some(trace) = &mut self.preview {
                 trace.review_limit_card.get_or_insert(card.id);
             }
-            return Ok(());
+            return Ok(false);
         }
-        if self.add_due_card(card) && !ignore_limit {
+        let added = self.add_due_card(card);
+        if added && !ignore_limit {
             self.limits
                 .reserve_review(card.current_deck_id, card.original_deck_id)?;
         }
-        Ok(())
+        Ok(added)
     }
 
     fn sort_review_cards_by_rwkv_priority(&mut self, priorities: &HashMap<CardId, f32>) {
@@ -850,8 +937,14 @@ impl QueueBuilder {
             }
             return Ok(false);
         }
-        self.limits
-            .decrement_deck_and_parent_limits(deck, LimitKind::New)?;
+        if self.context.sort_options.new_cards_ignore_minimum_reviews() {
+            // Minimum pulls are gathered after new cards, so they must only use
+            // the review capacity that new cards leave.
+            self.limits.reserve_new_card(deck)?;
+        } else {
+            self.limits
+                .decrement_deck_and_parent_limits(deck, LimitKind::New)?;
+        }
         Ok(true)
     }
 

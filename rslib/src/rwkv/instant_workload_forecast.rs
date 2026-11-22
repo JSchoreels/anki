@@ -763,6 +763,11 @@ impl RwkvInference {
                     "forecast study deck has no preset",
                 )
             })?;
+        // Mirrors QueueSortOptions::new_cards_ignore_minimum_reviews.
+        let new_cards_ignore_minimum_reviews = study_preset.inner.rwkv_review_instant_order_enabled
+            && study_preset
+                .inner
+                .rwkv_review_new_cards_ignore_minimum_reviews;
         let score_new = matches!(
             study_preset.inner.new_card_gather_priority(),
             NewCardGatherPriority::AscendingRetrievability
@@ -957,6 +962,7 @@ impl RwkvInference {
                 review_candidates.extend(queue_members[2].iter().map(|&index| candidate(index)));
                 let policy = InstantReviewPolicy {
                     study_deck_id: DeckId(config.study_deck_id),
+                    new_cards_ignore_minimum_reviews,
                     same_day_allowed: config.same_day_allowed,
                     min_intervening: config.min_intervening_reviews,
                     min_elapsed_seconds: config.min_elapsed_secs,
@@ -1096,21 +1102,24 @@ impl RwkvInference {
                     .into_iter()
                     .map(|index| reviews[index])
                     .collect::<Vec<_>>();
+                let minimum_queue = queues
+                    .minimum_review
+                    .into_iter()
+                    .map(|index| reviews[index])
+                    .collect::<Vec<_>>();
                 let new_queue = queues
                     .new
                     .into_iter()
                     .map(|index| new[index])
                     .collect::<Vec<_>>();
-                let main = mix_queues(
-                    review_queue,
-                    day_queue,
+                let main = main_queue(
+                    MainQueueParts {
+                        due: review_queue,
+                        minimum: minimum_queue,
+                        day_learning: day_queue,
+                        new: new_queue,
+                    },
                     study_preset.inner.interday_learning_mix(),
-                    0,
-                    0,
-                );
-                let main = mix_queues(
-                    main,
-                    new_queue,
                     study_preset.inner.new_mix(),
                     main_answered,
                     new_answered,
@@ -1419,6 +1428,33 @@ fn queue_slot(queue: i32) -> Option<usize> {
     usize::try_from(queue).ok().filter(|queue| *queue < 4)
 }
 
+/// Queue entries before the intraday-learning mix.
+struct MainQueueParts {
+    /// Due reviews, plus minimum reviews unless new cards ignore the minimum.
+    due: Vec<usize>,
+    /// Reviews pulled only to reach the daily minimum when new cards ignore it.
+    minimum: Vec<usize>,
+    day_learning: Vec<usize>,
+    new: Vec<usize>,
+}
+
+/// Mirrors the live builder: interday learning mixed into due reviews, new
+/// cards mixed into that (resuming the session's mix progress), then the
+/// reviews pulled only for the daily minimum. Mix progress counts every
+/// answered review and interday-learning card, as the live queue does.
+fn main_queue(
+    parts: MainQueueParts,
+    interday_mix: ReviewMix,
+    new_mix: ReviewMix,
+    main_answered: usize,
+    new_answered: usize,
+) -> Vec<usize> {
+    let main = mix_queues(parts.due, parts.day_learning, interday_mix, 0, 0);
+    let mut main = mix_queues(main, parts.new, new_mix, main_answered, new_answered);
+    main.extend(parts.minimum);
+    main
+}
+
 fn mix_queues(
     first: Vec<usize>,
     second: Vec<usize>,
@@ -1620,6 +1656,76 @@ mod tests {
                 assert!(learning.memory_state.is_some())
             }
             _ => panic!("expected a learning card"),
+        }
+    }
+
+    #[test]
+    fn minimum_reviews_follow_new_cards_whatever_the_new_mix() {
+        // 1, 2 = due reviews; 10 = interday learning; 20, 21 = new cards;
+        // 30, 31 = reviews pulled only for the daily minimum.
+        let queue = |new_mix| {
+            main_queue(
+                MainQueueParts {
+                    due: vec![1, 2],
+                    minimum: vec![30, 31],
+                    day_learning: vec![10],
+                    new: vec![20, 21],
+                },
+                ReviewMix::AfterReviews,
+                new_mix,
+                0,
+                0,
+            )
+        };
+        assert_eq!(
+            queue(ReviewMix::BeforeReviews),
+            vec![20, 21, 1, 2, 10, 30, 31]
+        );
+        assert_eq!(
+            queue(ReviewMix::AfterReviews),
+            vec![1, 2, 10, 20, 21, 30, 31]
+        );
+        // New cards spread over due reviews and interday learning only.
+        let mixed = queue(ReviewMix::MixWithReviews);
+        assert_eq!(
+            mixed,
+            Intersperser::new(vec![1, 2, 10].into_iter(), vec![20, 21].into_iter())
+                .chain([30, 31])
+                .collect::<Vec<_>>()
+        );
+        assert_eq!(&mixed[5..], &[30, 31]);
+    }
+
+    #[test]
+    fn main_queue_without_minimum_reviews_matches_the_previous_mix() {
+        for new_mix in [
+            ReviewMix::BeforeReviews,
+            ReviewMix::AfterReviews,
+            ReviewMix::MixWithReviews,
+        ] {
+            let parts = || MainQueueParts {
+                due: vec![1, 2, 3, 4],
+                minimum: Vec::new(),
+                day_learning: vec![10],
+                new: vec![20, 21],
+            };
+            let previous = mix_queues(
+                mix_queues(
+                    parts().due,
+                    parts().day_learning,
+                    ReviewMix::MixWithReviews,
+                    0,
+                    0,
+                ),
+                parts().new,
+                new_mix,
+                2,
+                1,
+            );
+            assert_eq!(
+                main_queue(parts(), ReviewMix::MixWithReviews, new_mix, 2, 1),
+                previous
+            );
         }
     }
 
