@@ -63,6 +63,38 @@ test("Daily Limits saves suspended card inclusion and order", async ({ page }) =
     expect(saved?.suspendedCardOrder).toBe(SuspendedCardOrder.SUSPENDED_BEFORE_NEW);
 });
 
+test("Daily Limits holds the RWKV-Instant minimum and saves new cards ignoring it", async ({ page }) => {
+    await page.route("**/_anki/getDeckConfigsForUpdate", async (route) => {
+        const response = await route.fetch();
+        const data = DeckConfigsForUpdate.fromBinary(await response.body());
+        const config = data.allConfig.find((entry) => entry.config!.id === data.currentDeck!.configId)!.config!.config!;
+        config.rwkvReviewInstantOrderEnabled = true;
+        config.rwkvReviewMinimumReviewsPerDay = 30;
+        await route.fulfill({ response, body: Buffer.from(data.toBinary()) });
+    });
+    let saved: DeckConfig_Config | undefined;
+    await page.route("**/_anki/updateDeckConfigsAndClose", async (route) => {
+        saved = decodeRequestBody(route.request(), UpdateDeckConfigsRequest).configs.at(-1)?.config;
+        await route.fulfill({ body: Buffer.from(new OpChanges().toBinary()) });
+    });
+    await page.goto("/deck-options/1");
+    const limits = page.getByRole("heading", { name: "Daily Limits", exact: true }).locator("../..");
+    const rwkvCard = page.getByRole("heading", { name: "RWKV", exact: true }).locator("../..");
+    const minimumTitle = (container: typeof limits) =>
+        container.locator(".setting-title").filter({ hasText: /^Minimum reviews per day$/ });
+    await expect(minimumTitle(limits)).toBeVisible();
+    await expect(minimumTitle(rwkvCard)).toHaveCount(0);
+    await expect(rwkvCard.getByText("Minimum reviews per day", { exact: true })).toHaveCount(0);
+    await expect(rwkvCard.getByRole("checkbox", { name: "Also honor subdeck minimums", exact: true }))
+        .toBeVisible();
+    const ignore = limits.getByRole("checkbox", { name: "New cards ignore minimum reviews", exact: true });
+    await expect(ignore).not.toBeChecked();
+    await ignore.check();
+    await page.getByRole("button", { name: "Save", exact: true }).click();
+    await expect.poll(() => saved?.rwkvReviewNewCardsIgnoreMinimumReviews).toBe(true);
+    expect(saved?.rwkvReviewMinimumReviewsPerDay).toBe(30);
+});
+
 test("Display Order saves the selected note field and gather direction", async ({ page }) => {
     let saved: DeckConfig_Config | undefined;
     await page.route("**/_anki/updateDeckConfigsAndClose", async (route) => {

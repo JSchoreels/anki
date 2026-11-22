@@ -19,6 +19,9 @@ pub(crate) struct DueCounts {
     pub new: u32,
     pub review: u32,
     pub review_limit_exempt: u32,
+    /// RWKV-Instant reviews pulled only to reach the daily minimum, counted
+    /// apart from `review` when new cards ignore the minimum.
+    pub rwkv_minimum_review: u32,
     /// interday+intraday
     pub learning: u32,
 
@@ -154,8 +157,11 @@ impl Collection {
             .iter()
             .filter_map(|deck_id| counts.get(deck_id).map(|counts| (*deck_id, counts.clone())))
             .collect();
-        let Some((min_intervening_reviews, min_elapsed_secs)) =
-            rwkv_scope_order_settings(context, score_deck_id)
+        let Some(RwkvScopeOrderSettings {
+            min_intervening_reviews,
+            min_elapsed_secs,
+            new_cards_ignore_minimum_reviews,
+        }) = rwkv_scope_order_settings(context, score_deck_id)
         else {
             return Ok(counts);
         };
@@ -273,7 +279,11 @@ impl Collection {
                     if minimums.reserve_counted_rwkv_reviews(deck_id, 1)? == 0 {
                         continue;
                     }
-                    counts.review = counts.review.saturating_add(1);
+                    if new_cards_ignore_minimum_reviews {
+                        counts.rwkv_minimum_review = counts.rwkv_minimum_review.saturating_add(1);
+                    } else {
+                        counts.review = counts.review.saturating_add(1);
+                    }
                     selected.insert(card_id);
                 }
             }
@@ -296,22 +306,29 @@ impl Collection {
     }
 }
 
-/// The scope deck's RWKV repeat-spacing settings, or None when instant RWKV
+struct RwkvScopeOrderSettings {
+    min_intervening_reviews: u32,
+    min_elapsed_secs: u32,
+    new_cards_ignore_minimum_reviews: bool,
+}
+
+/// The scope deck's RWKV ordering settings, or None when instant RWKV
 /// ordering is off and the FSRS counts stand.
 fn rwkv_scope_order_settings(
     context: &RwkvReviewCountContext<'_>,
     score_deck_id: DeckId,
-) -> Option<(u32, u32)> {
+) -> Option<RwkvScopeOrderSettings> {
     context
         .decks
         .get(&score_deck_id)
         .and_then(|deck| deck.config_id())
         .and_then(|config_id| context.configs.get(&config_id))
         .filter(|config| config.inner.rwkv_review_instant_order_enabled)
-        .map(|config| {
-            (
-                config.inner.rwkv_review_min_intervening_reviews,
-                config.inner.rwkv_review_min_elapsed_secs,
-            )
+        .map(|config| RwkvScopeOrderSettings {
+            min_intervening_reviews: config.inner.rwkv_review_min_intervening_reviews,
+            min_elapsed_secs: config.inner.rwkv_review_min_elapsed_secs,
+            new_cards_ignore_minimum_reviews: config
+                .inner
+                .rwkv_review_new_cards_ignore_minimum_reviews,
         })
 }

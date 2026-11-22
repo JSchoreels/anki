@@ -135,6 +135,14 @@
             help: tr.deckConfigReviewLimitTooltip() + reviewV3Extra,
             url: HelpPage.DeckOptions.maximumReviewsday,
         },
+        rwkvMinimumReviewsPerDay: {
+            title: tr.deckConfigRwkvReviewMinimumReviewsPerDay(),
+            help: tr.deckConfigRwkvReviewMinimumReviewsPerDayTooltip(),
+        },
+        rwkvNewCardsIgnoreMinimumReviews: {
+            title: tr.deckConfigRwkvReviewNewCardsIgnoreMinimumReviews(),
+            help: tr.deckConfigRwkvReviewNewCardsIgnoreMinimumReviewsTooltip(),
+        },
         includeSuspendedCards: {
             title: tr.deckConfigIncludeSuspendedCardsInLearnablePool(),
             help: tr.deckConfigIncludeSuspendedCardsInLearnablePoolTooltip(),
@@ -235,6 +243,17 @@
                         />
                         {settings.newCardsIgnoreReviewLimit.title}
                     </label>
+                    {#if $config.rwkvReviewInstantOrderEnabled}
+                        <label title={settings.rwkvNewCardsIgnoreMinimumReviews.help}>
+                            <input
+                                type="checkbox"
+                                bind:checked={
+                                    $config.rwkvReviewNewCardsIgnoreMinimumReviews
+                                }
+                            />
+                            {settings.rwkvNewCardsIgnoreMinimumReviews.title}
+                        </label>
+                    {/if}
                     <label title={settings.sameDayReviewsIgnoreReviewLimit.help}>
                         <input
                             type="checkbox"
@@ -280,6 +299,44 @@
                     </SettingTitle>
                 </SpinBoxRow>
             </Item>
+
+            {#if $config.rwkvReviewInstantOrderEnabled}
+                <Item>
+                    <SpinBoxRow
+                        bind:value={$config.rwkvReviewMinimumReviewsPerDay}
+                        defaultValue={defaults.rwkvReviewMinimumReviewsPerDay}
+                    >
+                        <SettingTitle
+                            on:click={() =>
+                                openHelpModal(
+                                    Object.keys(settings).indexOf(
+                                        "rwkvMinimumReviewsPerDay",
+                                    ),
+                                )}
+                        >
+                            {settings.rwkvMinimumReviewsPerDay.title}
+                        </SettingTitle>
+                    </SpinBoxRow>
+                </Item>
+
+                <Item>
+                    <SwitchRow
+                        bind:value={$config.rwkvReviewNewCardsIgnoreMinimumReviews}
+                        defaultValue={defaults.rwkvReviewNewCardsIgnoreMinimumReviews}
+                    >
+                        <SettingTitle
+                            on:click={() =>
+                                openHelpModal(
+                                    Object.keys(settings).indexOf(
+                                        "rwkvNewCardsIgnoreMinimumReviews",
+                                    ),
+                                )}
+                        >
+                            {settings.rwkvNewCardsIgnoreMinimumReviews.title}
+                        </SettingTitle>
+                    </SwitchRow>
+                </Item>
+            {/if}
 
             <Item>
                 <Warning warning={reviewsTooLow} />

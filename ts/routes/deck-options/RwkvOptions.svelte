@@ -56,10 +56,6 @@ License: GNU AGPL, version 3 or later; http://www.gnu.org/licenses/agpl.html
             title: tr.deckConfigRwkvReviewEnforceGradeOrder(),
             help: tr.deckConfigRwkvReviewEnforceGradeOrderTooltip(),
         },
-        rwkvMinimumReviewsPerDay: {
-            title: tr.deckConfigRwkvReviewMinimumReviewsPerDay(),
-            help: tr.deckConfigRwkvReviewMinimumReviewsPerDayTooltip(),
-        },
         rwkvRespectSubdeckMinimums: {
             title: tr.deckConfigRwkvReviewRespectSubdeckMinimums(),
             help: tr.deckConfigRwkvReviewRespectSubdeckMinimumsTooltip(),
@@ -184,23 +180,6 @@ License: GNU AGPL, version 3 or later; http://www.gnu.org/licenses/agpl.html
                 <p class="rwkv-description rwkv-instant-description">
                     {tr.deckConfigRwkvInstantDescription()}
                 </p>
-
-                {#if !study}<div class="rwkv-minimum-reviews">
-                        <SpinBoxFloatRow
-                            bind:value={$config.rwkvReviewMinimumReviewsPerDay}
-                            defaultValue={defaults.rwkvReviewMinimumReviewsPerDay}
-                            min={0}
-                            max={9999}
-                            step={1}
-                        >
-                            <SettingTitle
-                                on:click={() =>
-                                    openSettingHelp("rwkvMinimumReviewsPerDay")}
-                            >
-                                {tr.deckConfigRwkvReviewMinimumReviewsPerDay()}
-                            </SettingTitle>
-                        </SpinBoxFloatRow>
-                    </div>{/if}
 
                 <Item>
                     <SwitchRow
@@ -432,11 +411,6 @@ License: GNU AGPL, version 3 or later; http://www.gnu.org/licenses/agpl.html
         font-size: 0.875rem;
         font-weight: 600;
         margin: 1rem 0 0.25rem;
-    }
-
-    .rwkv-minimum-reviews {
-        --gutter-inline: 0;
-        margin-top: 0.75rem;
     }
 
     .rwkv-advanced {

@@ -572,6 +572,7 @@ Desktop-only RWKV review settings are stored in deck config `other` under the
 `rwkv_review_min_elapsed_secs`, which defaults to `30`, and
 `rwkv_review_instant_order_enabled`, which defaults to `false`, and
 `rwkv_review_minimum_reviews_per_day`, which defaults to `0`, and
+`rwkv_review_new_cards_ignore_minimum_reviews`, which defaults to `false`, and
 `rwkv_review_candidate_refresh_enabled`, which defaults to `false`, and
 `rwkv_review_precompute_next_card`, which defaults to `true`, and
 `rwkv_review_dynamic_preset_replay`, which defaults to `false`, and
@@ -587,7 +588,10 @@ The former `rwkv_review_allow_same_day_review` field is retained for storage
 compatibility but no longer affects scheduling or hides the repeat-spacing
 fields. The two spacing minimums appear in one row with units inside the fields.
 
-The RWKV card keeps minimum daily reviews, repeat spacing, Curve intervals and
+With Instant enabled, **Daily Limits** shows **Minimum reviews per day** and
+**New cards ignore minimum reviews** in both layouts: inline in the modern
+layout, and right after **Maximum reviews/day** in the classic layout. The RWKV
+card keeps **Also honor subdeck minimums**, repeat spacing, Curve intervals and
 maintenance actions visible. Its initially collapsed **Advanced** section contains
 the profile-wide model switch and **Compare RWKV with FSRS**. With Instant enabled,
 it also contains **Precompute next card before this card answer**, **Use faster,
@@ -1176,6 +1180,28 @@ from the selected subtree in ascending retrievability, independently of the
 configured display order. Ordinary maximum review limits, sibling burying, and
 same-day/repeat-spacing guards still take precedence. Limit-exempt same-day
 repeats may bypass the maximum, but do not satisfy the minimum.
+
+Reviews pulled forward only to reach the minimum normally use the review limit
+before new cards are gathered. When the review limit also applies to new cards
+(**New cards ignore review limit** off), a minimum as large as the maximum can
+therefore leave no new cards. `rwkv_review_new_cards_ignore_minimum_reviews`
+(**New cards ignore minimum reviews**, off by default) reverses this for the
+selected deck's preset: new cards are gathered right after the reviews RWKV
+considers due, so they take their share of the daily limits first, and the
+minimum only fills the review capacity left after them. In the main queue those
+minimum reviews follow the new cards and the merged due reviews and interday
+learning, whichever new-card mix is selected; with **Mix with reviews**, new
+cards are spread only across the due reviews. New cards never count toward the
+minimum, and maximum limits still take precedence. Review counts in the
+reviewer still include the minimum reviews. Deck browser counts follow the
+same order: interday learning, due reviews, new cards, then minimum reviews in
+the review capacity that remains. The deck-options session preview uses the
+same queue builder. Instant workload forecasts do not model this option yet.
+The split is recalculated at every queue rebuild. Reviews that become due during
+the session are due reviews, so they are placed before the remaining new cards
+when new cards are shown after reviews, and when the review limit also applies
+to new cards they can reduce the number of new cards. They never make the result
+worse than with the option off.
 
 The deck-specific **Also honor subdeck minimums** option is off by default.
 When enabled, the selected deck also enforces the minimum of each direct
