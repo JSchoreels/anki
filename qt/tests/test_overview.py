@@ -55,7 +55,9 @@ def overview_table(
 
 def test_overview_shows_rwkv_review_potential_with_tooltip() -> None:
     table = overview_table(
-        QueuedCards(review_count=50, rwkv_review_headroom=30, rwkv_waiting_review_count=2)
+        QueuedCards(
+            review_count=50, rwkv_review_headroom=30, rwkv_waiting_review_count=2
+        )
     )
 
     assert (
