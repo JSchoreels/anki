@@ -163,8 +163,8 @@ impl AddAssign for NodeCountsV3 {
 
 impl NodeCountsV3 {
     /// Review slots `remaining` still allows beyond these capped counts, or
-    /// None when the review limit is effectively unlimited. Limit-exempt
-    /// same-day cards use no slots.
+    /// None when the review limit is effectively unlimited. RWKV minimum
+    /// pulls use slots too; limit-exempt same-day cards use none.
     fn review_headroom(&self, remaining: &RemainingLimits) -> Option<u32> {
         if remaining.review_unlimited {
             return None;
@@ -172,7 +172,9 @@ impl NodeCountsV3 {
         let limited_interday = self
             .interday_learning
             .saturating_sub(self.interday_learning_limit_exempt);
-        let limited_reviews = self.review.saturating_sub(self.review_limit_exempt);
+        let limited_reviews = self
+            .displayed_review()
+            .saturating_sub(self.review_limit_exempt);
         let new_using_review_slots = if remaining.cap_new_to_review {
             self.new
         } else {
@@ -986,6 +988,59 @@ mod test {
                 (expected_new as usize, expected_review as usize),
                 "queue, ignore {ignore}"
             );
+        }
+        Ok(())
+    }
+
+    #[test]
+    fn rwkv_deck_tree_review_headroom_matches_queue_with_minimum_pulls() -> Result<()> {
+        // limit 10 reviews: 1 due + 1 minimum pull + 2 new cards use 4 slots
+        for ignore in [false, true] {
+            let mut col = Collection::new();
+            let mut deck = col.get_or_create_normal_deck("Default")?;
+            enable_rwkv_review_counts(&mut col, &mut deck, false)?;
+            let mut config = col
+                .get_deck_config(deck.config_id().unwrap(), false)?
+                .unwrap();
+            config.inner.rwkv_review_minimum_reviews_per_day = 2;
+            config.inner.rwkv_review_new_cards_ignore_minimum_reviews = ignore;
+            config.inner.reviews_per_day = 10;
+            config.inner.new_per_day = 2;
+            col.add_or_update_deck_config(&mut config)?;
+            let timing = col.timing_today()?;
+            let mut scores = HashMap::new();
+            for score in [0.20, 0.80, 0.90, 0.95] {
+                let card_id = add_review_card(
+                    &mut col,
+                    deck.id,
+                    timing.days_elapsed as i32 + 7,
+                    0.75,
+                    None,
+                )?;
+                scores.insert(card_id, score);
+            }
+            let nt = col.get_notetype_by_name("Basic")?.unwrap();
+            for _ in 0..2 {
+                let mut note = nt.new_note();
+                note.set_field(0, "new")?;
+                col.add_note(&mut note, deck.id)?;
+            }
+            col.set_rwkv_review_queue_scores(deck.id, scores.clone())?;
+
+            let node = get_deck_in_tree(col.deck_tree(Some(timing.now))?, deck.id).unwrap();
+            let expected = 6;
+            assert_eq!(
+                node.rwkv_review_headroom,
+                Some(expected),
+                "tree, ignore {ignore}"
+            );
+            col.set_rwkv_review_queue_scores(deck.id, scores)?;
+            col.set_current_deck(deck.id)?;
+            let queue_headroom = col
+                .get_queued_cards(1, false, true)?
+                .rwkv_review_potential
+                .map(|p| p.headroom);
+            assert_eq!(queue_headroom, Some(expected), "queue, ignore {ignore}");
         }
         Ok(())
     }

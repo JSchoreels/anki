@@ -486,7 +486,11 @@ impl QueueBuilder {
             .ok()?;
         // Gathering new cards only lowers the new limit, but answering them
         // will use review slots. A pinned new card has already reserved one.
-        let new_cards_using_review_slots = if self.limits.new_cards_count_toward_review_limit() {
+        // When new cards ignore minimum reviews, gathering reserves a review
+        // slot for every new card, so they are already subtracted.
+        let new_cards_using_review_slots = if self.limits.new_cards_count_toward_review_limit()
+            && !self.context.sort_options.new_cards_ignore_minimum_reviews()
+        {
             self.new
                 .iter()
                 .filter(|card| !self.card_is_pinned(card.id))
@@ -3274,34 +3278,45 @@ mod test {
     #[test]
     fn rwkv_review_potential_reports_daily_limit_left_after_queued_and_studied_cards() -> Result<()>
     {
-        let mut col = Collection::new();
-        let mut deck = col.get_or_create_normal_deck("Default")?;
-        col.set_deck_rwkv_review_order_with_desired_retention(
-            &mut deck,
-            ReviewCardOrder::RetrievabilityAscending,
-            0.75,
-        );
-        col.set_deck_review_limit(deck.id, 10);
-        deck.common.last_day_studied = col.timing_today()?.days_elapsed;
-        deck.common.review_studied = 2;
-        col.add_or_update_deck(&mut deck)?;
-        let nt = col.get_notetype_by_name("Basic")?.unwrap();
-        let mut new_note = nt.new_note();
-        new_note.set_field(0, "new")?;
-        col.add_note(&mut new_note, deck.id)?;
-        add_rwkv_scored_review_cards(&mut col, deck.id, &[0.20, 0.30, 0.50, 0.95])?;
+        // With "new cards ignore minimum reviews", gathering already reserves
+        // the new card's review slot; it must not be subtracted twice.
+        for new_cards_ignore_minimum_reviews in [false, true] {
+            let mut col = Collection::new();
+            let mut deck = col.get_or_create_normal_deck("Default")?;
+            col.set_deck_rwkv_review_order_with_desired_retention(
+                &mut deck,
+                ReviewCardOrder::RetrievabilityAscending,
+                0.75,
+            );
+            col.set_deck_review_limit(deck.id, 10);
+            let mut config = col
+                .get_deck_config(deck.config_id().unwrap(), false)?
+                .unwrap();
+            config.inner.rwkv_review_new_cards_ignore_minimum_reviews =
+                new_cards_ignore_minimum_reviews;
+            col.add_or_update_deck_config(&mut config)?;
+            deck.common.last_day_studied = col.timing_today()?.days_elapsed;
+            deck.common.review_studied = 2;
+            col.add_or_update_deck(&mut deck)?;
+            let nt = col.get_notetype_by_name("Basic")?.unwrap();
+            let mut new_note = nt.new_note();
+            new_note.set_field(0, "new")?;
+            col.add_note(&mut new_note, deck.id)?;
+            add_rwkv_scored_review_cards(&mut col, deck.id, &[0.20, 0.30, 0.50, 0.95])?;
 
-        let queued = col.get_queued_cards(1, false, true)?;
+            let queued = col.get_queued_cards(1, false, true)?;
 
-        assert_eq!((queued.new_count, queued.review_count), (1, 3));
-        // 10 - 2 studied today - 3 queued reviews - 1 queued new card
-        assert_eq!(
-            queued.rwkv_review_potential,
-            Some(RwkvReviewPotential {
-                headroom: 4,
-                waiting: 0,
-            })
-        );
+            assert_eq!((queued.new_count, queued.review_count), (1, 3));
+            // 10 - 2 studied today - 3 queued reviews - 1 queued new card
+            assert_eq!(
+                queued.rwkv_review_potential,
+                Some(RwkvReviewPotential {
+                    headroom: 4,
+                    waiting: 0,
+                }),
+                "new_cards_ignore_minimum_reviews = {new_cards_ignore_minimum_reviews}"
+            );
+        }
         Ok(())
     }
 
