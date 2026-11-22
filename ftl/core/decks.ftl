@@ -18,6 +18,18 @@ decks-learn-header = Learn
 decks-review-header = Due
 # Shown beside a review count reduced by daily limits, including subdeck limits.
 decks-review-limit-tooltip = { $total } review cards are due. Daily review limits allow { $count } to be shown.
+# Shown beside an RWKV-Instant review count when the daily review limit allows more reviews today.
+decks-rwkv-review-potential-tooltip =
+    { $count ->
+        [one] { $count } review is due now under RWKV-Instant.
+       *[other] { $count } reviews are due now under RWKV-Instant.
+    } More can become due as recall drops: your daily review limit allows up to { $total } today.
+# Appended to the RWKV-Instant review potential tooltip when due reviews are held back for spacing.
+decks-rwkv-review-waiting-tooltip =
+    { $count ->
+        [one] { $count } more is due but waiting for spacing between reviews.
+       *[other] { $count } more are due but waiting for spacing between reviews.
+    }
 decks-rwkv = RWKV
 decks-reschedule-with-rwkv-curve = Reschedule With RWKV-Curve
 decks-rwkv-count-unavailable-tooltip = The RWKV review count is unavailable. Due-date count: { $count }

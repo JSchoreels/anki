@@ -257,6 +257,14 @@ message QueuedCards {
   uint32 new_count = 2;
   uint32 learning_count = 3;
   uint32 review_count = 4;
+  // RWKV-Instant only: reviews the selected deck's daily limit still allows
+  // beyond review_count. Unset when the queue does not use RWKV-Instant
+  // eligibility, the deck is filtered, or the daily review limit is
+  // effectively unlimited (>= 9999).
+  optional uint32 rwkv_review_headroom = 5;
+  // RWKV-Instant only: eligible reviews held back for spacing, capped at the
+  // headroom; they return during the session.
+  uint32 rwkv_waiting_review_count = 6;
 }
 
 message GetQueuedCardsRequest {

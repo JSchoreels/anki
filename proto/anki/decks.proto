@@ -179,6 +179,11 @@ message DeckTreeNode {
 
   bool filtered = 16;
 
+  // RWKV-Instant study scopes only: review slots this deck's daily limit
+  // still allows beyond the displayed counts. Unset for other decks or when
+  // the limit is effectively unlimited (>= 9999).
+  optional uint32 rwkv_review_headroom = 18;
+
   // low index so key can be packed into a byte, but at bottom
   // to make debug output easier to read
   repeated DeckTreeNode children = 3;

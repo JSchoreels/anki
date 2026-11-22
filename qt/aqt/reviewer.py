@@ -53,6 +53,7 @@ from aqt.operations.scheduling import (
 from aqt.operations.tag import add_tags_to_notes, remove_tags_from_notes
 from aqt.profiles import VideoDriver
 from aqt.qt import *
+from aqt.rwkv_review_potential import rwkv_review_potential_label
 from aqt.sound import av_player, play_clicked_audio, record_audio
 from aqt.theme import theme_manager
 from aqt.toolbar import BottomBar
@@ -158,7 +159,8 @@ class V3CardInfo:
             return CardAnswer.EASY
 
 
-_RwkvQueueRefreshCounts = tuple[int, int, int] | None
+# Counts from the rebuilt queue; its cards list is empty.
+_RwkvQueueRefreshCounts = QueuedCards | None
 _RwkvQueueRefreshFinisher = Callable[
     [bool | None, _RwkvQueueRefreshCounts],
     None,
@@ -234,9 +236,9 @@ class Reviewer:
         self._review_answer_actions_blocked = False
         self._review_answer_actions_block_id = 0
         self._review_card_generation = 0
-        self._rwkv_remaining_count_override: (
-            tuple[int, tuple[int, int, int] | None] | None
-        ) = None
+        self._rwkv_remaining_count_override: tuple[int, QueuedCards | None] | None = (
+            None
+        )
         self._rwkv_deferred_queue_refresh: _RwkvDeferredQueueRefresh | None = None
         self._deferred_deck_count_refresh: Callable[[], None] | None = None
         self._rwkv_empty_queue_refresh: _RwkvDeferredQueueRefresh | None = None
@@ -1516,7 +1518,7 @@ class Reviewer:
                     finish(installed=False)
                     return
 
-                def install() -> tuple[bool, tuple[int, int, int] | None]:
+                def install() -> tuple[bool, _RwkvQueueRefreshCounts]:
                     installed = (
                         aqt.rwkv_scheduler.install_reviewer_queue_order_async_result(
                             self, result, wait_for_backend=request.wait_for_backend
@@ -1526,16 +1528,11 @@ class Reviewer:
                         return installed, None
 
                     try:
-                        queued = cast(
+                        counts: _RwkvQueueRefreshCounts = cast(
                             V3Scheduler,
                             self.mw.col.sched,
                         ).rebuild_queued_cards_preserving_current_card(
                             remaining_count_card_id
-                        )
-                        counts = (
-                            queued.new_count,
-                            queued.learning_count,
-                            queued.review_count,
                         )
                     except Exception:
                         logger.exception("RWKV reviewer remaining-count refresh failed")
@@ -1543,7 +1540,7 @@ class Reviewer:
                     return installed, counts
 
                 def install_done(
-                    install_future: Future[tuple[bool, tuple[int, int, int] | None]],
+                    install_future: Future[tuple[bool, _RwkvQueueRefreshCounts]],
                 ) -> None:
                     nonlocal stale_retry_available
                     try:
@@ -1593,7 +1590,7 @@ class Reviewer:
         *,
         card_id: CardId,
         generation: int,
-        counts: tuple[int, int, int] | None,
+        counts: _RwkvQueueRefreshCounts,
     ) -> None:
         if generation != getattr(self, "_review_card_generation", 0):
             return
@@ -1606,19 +1603,18 @@ class Reviewer:
         if self.state != "question":
             return
 
-        if counts is None:
+        queued = counts
+        if queued is None:
             v3 = getattr(self, "_v3", None)
             if v3 is None:
                 return
             queued = v3.queued_cards
-            counts = (
-                queued.new_count,
-                queued.learning_count,
-                queued.review_count,
-            )
-        review_limit, review_limit_title = self._review_limit_label(counts[2])
+        review_limit, review_limit_title = self._review_limit_label(
+            queued.review_count, queued
+        )
         self.bottom.web.eval(
-            f"setRemainingCounts({counts[0]}, {counts[1]}, {counts[2]}, "
+            f"setRemainingCounts({queued.new_count}, {queued.learning_count}, "
+            f"{queued.review_count}, "
             f"{json.dumps(review_limit)}, {json.dumps(review_limit_title)});"
         )
 
@@ -2234,6 +2230,7 @@ timeboxReps = 0;
         counts: list[int | str]
         idx, counts_ = self._v3.counts()
         counts = cast(list[Union[int, str]], counts_)
+        queued = self._v3.queued_cards
         count_override = getattr(self, "_rwkv_remaining_count_override", None)
         if count_override is not None and count_override[0] == getattr(
             self, "_review_card_generation", 0
@@ -2241,8 +2238,13 @@ timeboxReps = 0;
             if count_override[1] is None:
                 counts[2] = "…"
             else:
-                counts[:] = count_override[1]
-        review_limit, review_limit_title = self._review_limit_label(counts[2])
+                queued = count_override[1]
+                counts[:] = [
+                    queued.new_count,
+                    queued.learning_count,
+                    queued.review_count,
+                ]
+        review_limit, review_limit_title = self._review_limit_label(counts[2], queued)
         counts[idx] = f"<u>{counts[idx]}</u>"
 
         return f"""
@@ -2251,9 +2253,17 @@ timeboxReps = 0;
 <span class=review-count>{counts[2]}</span><span class=review-limit title="{escape(review_limit_title, quote=True)}">{review_limit}</span>
 """
 
-    def _review_limit_label(self, review_count: int | str) -> tuple[str, str]:
+    def _review_limit_label(
+        self, review_count: int | str, queued: QueuedCards
+    ) -> tuple[str, str]:
         if not self.mw.col.conf["dueCounts"] or not isinstance(review_count, int):
             return "", ""
+        if label := rwkv_review_potential_label(
+            review_count,
+            queued.rwkv_review_headroom,
+            queued.rwkv_waiting_review_count,
+        ):
+            return label
         deck = self.mw.col.sched.deck_due_tree(self.mw.col.decks.get_current_id())
         if deck is None or deck.review_uncapped_including_children <= review_count:
             return "", ""

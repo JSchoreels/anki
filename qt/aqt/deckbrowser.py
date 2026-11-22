@@ -28,6 +28,7 @@ from aqt.operations.deck import (
     set_deck_collapsed,
 )
 from aqt.qt import *
+from aqt.rwkv_review_potential import rwkv_review_potential_label
 from aqt.sound import av_player
 from aqt.toolbar import BottomBar
 from aqt.utils import getOnlyText, openLink, shortcut, showInfo, tr
@@ -335,11 +336,18 @@ class DeckBrowser:
 
         def collect(node: DeckTreeNode) -> None:
             total = node.review_uncapped_including_children
-            if (
+            available = (
                 node.deck_id not in self._rwkv_pending_deck_ids
                 and node.deck_id not in self._rwkv_unavailable_deck_ids
-                and total > node.review_count
+            )
+            # An unset headroom reads as 0, which shows no potential label.
+            if available and (
+                potential := rwkv_review_potential_label(
+                    node.review_count, node.rwkv_review_headroom
+                )
             ):
+                labels[node.deck_id] = potential
+            elif available and total > node.review_count:
                 labels[node.deck_id] = (
                     f" (/{total})",
                     tr.decks_review_limit_tooltip(total=total, count=node.review_count),

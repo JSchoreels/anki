@@ -50,6 +50,10 @@ pub(crate) struct CardQueues {
     non_news_sorted_by_retrievability: bool,
     new_cards_gathered_by_field: bool,
     deferred_rwkv_reviews: HashMap<CardId, DeferredRwkvReview>,
+    /// Reviews the selected deck's daily limit still allowed when the queue
+    /// was built, beyond the queued cards. Only set for RWKV-Instant queues
+    /// whose daily review limit is not effectively unlimited (>= 9999).
+    rwkv_review_headroom: Option<u32>,
     next_review_step_due: Option<TimestampSecs>,
     rwkv_learning_repeat_guards: Option<RwkvLearningRepeatGuards>,
     blocked_rwkv_learning_cards: HashSet<CardId>,
@@ -118,6 +122,16 @@ impl Counts {
     }
 }
 
+/// How many more reviews an RWKV-Instant queue could still show today.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct RwkvReviewPotential {
+    /// Reviews the selected deck's daily limit still allows beyond the
+    /// review count.
+    pub headroom: u32,
+    /// Eligible reviews held back for spacing, capped at the headroom.
+    pub waiting: u32,
+}
+
 #[derive(Debug, Clone)]
 pub struct QueuedCard {
     pub card: Card,
@@ -132,6 +146,7 @@ pub struct QueuedCards {
     pub new_count: usize,
     pub learning_count: usize,
     pub review_count: usize,
+    pub rwkv_review_potential: Option<RwkvReviewPotential>,
 }
 
 /// When we encounter a card with new or review burying enabled, all future
@@ -157,6 +172,7 @@ impl Collection {
     ) -> Result<QueuedCards> {
         let queues = self.get_queues()?;
         let counts = queues.counts();
+        let rwkv_review_potential = queues.rwkv_review_potential();
         let entries: Vec<_> = if intraday_learning_only && queues.non_news_sorted_by_retrievability
         {
             // Due intraday cards are mixed into the main queue in this mode.
@@ -211,6 +227,7 @@ impl Collection {
             new_count: counts.new,
             learning_count: counts.learning,
             review_count: counts.review,
+            rwkv_review_potential,
         })
     }
 }
@@ -235,6 +252,14 @@ impl CardQueues {
                     .map_or(due, |current| current.min(due)),
             );
         }
+    }
+
+    pub(crate) fn rwkv_review_potential(&self) -> Option<RwkvReviewPotential> {
+        self.rwkv_review_headroom
+            .map(|headroom| RwkvReviewPotential {
+                headroom,
+                waiting: (self.deferred_rwkv_reviews.len() as u32).min(headroom),
+            })
     }
 
     pub(crate) fn main_contains(&self, card_id: CardId) -> bool {
@@ -394,12 +419,14 @@ impl Collection {
         self.state.card_queues = Some(queues);
         self.state.pending_new_review_mix = None;
         self.refresh_rwkv_learning_repeat_guards(&deck)?;
-        let counts = self.state.card_queues.as_mut().unwrap().counts();
+        let queues = self.state.card_queues.as_mut().unwrap();
+        let counts = queues.counts();
         Ok(QueuedCards {
             cards: vec![],
             new_count: counts.new,
             learning_count: counts.learning,
             review_count: counts.review,
+            rwkv_review_potential: queues.rwkv_review_potential(),
         })
     }
 
