@@ -356,8 +356,10 @@ cards do. When the review limit also applies to new cards, a minimum equal to
 the maximum reviews can leave no new cards. Turn on **New cards ignore minimum
 reviews** in Daily Limits to gather and show new cards first; the minimum then
 only fills the review capacity left after them, and new cards do not count
-toward it. With Instant enabled, both settings appear in Daily Limits in either
-layout.
+toward it. With Instant enabled, these settings and **Also honor subdeck
+minimums** appear in Daily Limits in either layout; **New cards ignore minimum
+reviews** is greyed out while the minimum is 0. Instant workload forecasts follow
+the same order.
 
 ### Can RWKV-Instant repeat a card when same-day reviews are disabled?
 

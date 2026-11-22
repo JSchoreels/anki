@@ -12,7 +12,6 @@ License: GNU AGPL, version 3 or later; http://www.gnu.org/licenses/agpl.html
     import type Modal from "bootstrap/js/dist/modal";
 
     import DynamicallySlottable from "$lib/components/DynamicallySlottable.svelte";
-    import CheckBox from "$lib/components/CheckBox.svelte";
     import HelpModal from "$lib/components/HelpModal.svelte";
     import Item from "$lib/components/Item.svelte";
     import SettingTitle from "$lib/components/SettingTitle.svelte";
@@ -33,9 +32,6 @@ License: GNU AGPL, version 3 or later; http://www.gnu.org/licenses/agpl.html
 
     const config = state.currentConfig;
     const defaults = state.defaults;
-    const rwkvRespectSubdeckMinimums = state.rwkvRespectSubdeckMinimums;
-    const rwkvApplyRespectSubdeckMinimumsToChildren =
-        state.rwkvApplyRespectSubdeckMinimumsToChildren;
     const newCardsIgnoreReviewLimit = state.newCardsIgnoreReviewLimit;
     const reviewFuzzEnabled = state.reviewFuzzEnabled;
     const reviewFuzzBase = state.reviewFuzzBase;
@@ -55,10 +51,6 @@ License: GNU AGPL, version 3 or later; http://www.gnu.org/licenses/agpl.html
         rwkvEnforceGradeOrder: {
             title: tr.deckConfigRwkvReviewEnforceGradeOrder(),
             help: tr.deckConfigRwkvReviewEnforceGradeOrderTooltip(),
-        },
-        rwkvRespectSubdeckMinimums: {
-            title: tr.deckConfigRwkvReviewRespectSubdeckMinimums(),
-            help: tr.deckConfigRwkvReviewRespectSubdeckMinimumsTooltip(),
         },
         rwkvCandidateRefresh: {
             title: tr.deckConfigRwkvReviewCandidateRefresh(),
@@ -180,23 +172,6 @@ License: GNU AGPL, version 3 or later; http://www.gnu.org/licenses/agpl.html
                 <p class="rwkv-description rwkv-instant-description">
                     {tr.deckConfigRwkvInstantDescription()}
                 </p>
-
-                <Item>
-                    <SwitchRow
-                        bind:value={$rwkvRespectSubdeckMinimums}
-                        defaultValue={false}
-                    >
-                        <SettingTitle
-                            on:click={() =>
-                                openSettingHelp("rwkvRespectSubdeckMinimums")}
-                        >
-                            {tr.deckConfigRwkvReviewRespectSubdeckMinimums()}
-                        </SettingTitle>
-                    </SwitchRow>
-                    <CheckBox bind:value={$rwkvApplyRespectSubdeckMinimumsToChildren}>
-                        {tr.deckConfigRwkvApplyRespectSubdeckMinimumsToChildren()}
-                    </CheckBox>
-                </Item>
 
                 <h2 class="rwkv-subheading">Same-Day Repeats</h2>
 

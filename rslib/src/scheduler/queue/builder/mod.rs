@@ -4755,4 +4755,28 @@ mod test {
         }
         Ok(())
     }
+
+    #[test]
+    fn rwkv_minimum_reviews_follow_new_cards_shown_before_reviews_when_new_cards_ignore_minimum(
+    ) -> Result<()> {
+        for review_order in [
+            ReviewCardOrder::RetrievabilityAscending,
+            ReviewCardOrder::Day,
+        ] {
+            let (queue, counts) = MinimumAndNewCards {
+                review_order,
+                new_mix: ReviewMix::BeforeReviews,
+                reviews_per_day: 100,
+                minimum: 8,
+                due_reviews: 4,
+                blocked_reviews: 4,
+                new_cards: 2,
+                new_cards_ignore_minimum_reviews: true,
+            }
+            .queue()?;
+            assert_eq!(queue, "NNDDDDMMMM", "{review_order:?}");
+            assert_eq!(counts, [2, 0, 8], "{review_order:?}");
+        }
+        Ok(())
+    }
 }
