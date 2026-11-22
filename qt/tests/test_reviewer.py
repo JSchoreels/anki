@@ -16,6 +16,7 @@ import aqt.rwkv_scheduler
 from anki.collection import Collection, OpChanges
 from anki.consts import QUEUE_TYPE_NEW, QUEUE_TYPE_REV
 from anki.deck_config_pb2 import DeckConfig
+from anki.scheduler.v3 import QueuedCards
 from aqt.reviewer import RefreshNeeded, Reviewer, SchedulingStates
 
 
@@ -81,6 +82,162 @@ def test_remaining_counts_include_selected_deck_uncapped_reviews(
         assert reviewer._remaining() == ""
     finally:
         col.close()
+
+
+def stub_rwkv_review_potential_translations(monkeypatch: pytest.MonkeyPatch) -> None:
+    monkeypatch.setattr(
+        reviewer_module.tr,
+        "decks_rwkv_review_potential_tooltip",
+        lambda *, count, total: f"{count} due now; limit allows {total}.",
+    )
+    monkeypatch.setattr(
+        reviewer_module.tr,
+        "decks_rwkv_review_waiting_tooltip",
+        lambda *, count: f"{count} waiting.",
+    )
+    monkeypatch.setattr(
+        reviewer_module.tr,
+        "decks_review_limit_tooltip",
+        lambda *, total, count: f"{total} due; limit allows {count}.",
+    )
+
+
+def reviewer_showing_review_card(
+    queued: QueuedCards, *, uncapped_reviews: int, due_counts: bool = True
+) -> Reviewer:
+    queued.cards.add(queue=QueuedCards.REVIEW)
+    reviewer = Reviewer.__new__(Reviewer)
+    reviewer._v3 = reviewer_module.V3CardInfo.from_queue_without_states(queued)
+    reviewer.mw = SimpleNamespace(
+        col=SimpleNamespace(
+            conf={"dueCounts": due_counts},
+            decks=SimpleNamespace(get_current_id=lambda: 1),
+            sched=SimpleNamespace(
+                deck_due_tree=lambda _deck_id: SimpleNamespace(
+                    review_uncapped_including_children=uncapped_reviews
+                )
+            ),
+        )
+    )
+    return reviewer
+
+
+@pytest.mark.parametrize(
+    ("waiting", "expected_title"),
+    [
+        (0, "50 due now; limit allows 100."),
+        (3, "50 due now; limit allows 100. 3 waiting."),
+    ],
+)
+def test_remaining_shows_rwkv_review_potential_when_daily_limit_allows_more(
+    monkeypatch: pytest.MonkeyPatch, waiting: int, expected_title: str
+) -> None:
+    stub_rwkv_review_potential_translations(monkeypatch)
+    reviewer = reviewer_showing_review_card(
+        QueuedCards(
+            new_count=0,
+            learning_count=2,
+            review_count=50,
+            rwkv_review_headroom=50,
+            rwkv_waiting_review_count=waiting,
+        ),
+        uncapped_reviews=60,
+    )
+
+    remaining = reviewer._remaining()
+
+    assert "<span class=review-count><u>50</u></span>" in remaining
+    assert (
+        f'<span class=review-limit title="{expected_title}"> (≤100)</span>' in remaining
+    )
+
+
+@pytest.mark.parametrize("headroom", [None, 0])
+def test_remaining_keeps_review_limit_label_without_rwkv_headroom(
+    monkeypatch: pytest.MonkeyPatch, headroom: int | None
+) -> None:
+    stub_rwkv_review_potential_translations(monkeypatch)
+    reviewer = reviewer_showing_review_card(
+        QueuedCards(
+            new_count=0,
+            learning_count=0,
+            review_count=50,
+            rwkv_review_headroom=headroom,
+        ),
+        uncapped_reviews=60,
+    )
+
+    remaining = reviewer._remaining()
+
+    assert (
+        '<span class=review-limit title="60 due; limit allows 50."> (/60)</span>'
+        in remaining
+    )
+
+
+def test_rwkv_count_refresh_shows_potential_from_rebuilt_queue(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    stub_rwkv_review_potential_translations(monkeypatch)
+    scripts: list[str] = []
+    reviewer = reviewer_showing_review_card(
+        QueuedCards(new_count=1, learning_count=2, review_count=9),
+        uncapped_reviews=9,
+    )
+    reviewer.card = SimpleNamespace(id=333)
+    reviewer.state = "question"
+    reviewer._review_card_generation = 5
+    reviewer.bottom = SimpleNamespace(
+        web=SimpleNamespace(eval=lambda script: scripts.append(script))
+    )
+
+    reviewer._finish_rwkv_remaining_count_refresh(
+        card_id=333,
+        generation=5,
+        counts=QueuedCards(
+            new_count=5,
+            learning_count=4,
+            review_count=7,
+            rwkv_review_headroom=13,
+            rwkv_waiting_review_count=2,
+        ),
+    )
+
+    assert scripts == [
+        'setRemainingCounts(5, 4, 7, " (\\u226420)", '
+        '"7 due now; limit allows 20. 2 waiting.");'
+    ]
+    remaining = reviewer._remaining()
+    assert "<span class=review-count><u>7</u></span>" in remaining
+    assert "> (≤20)</span>" in remaining
+
+
+def test_rwkv_count_refresh_shows_no_limit_label_when_due_counts_are_off(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    stub_rwkv_review_potential_translations(monkeypatch)
+    scripts: list[str] = []
+    reviewer = reviewer_showing_review_card(
+        QueuedCards(new_count=1, learning_count=2, review_count=9),
+        uncapped_reviews=9,
+        due_counts=False,
+    )
+    reviewer.card = SimpleNamespace(id=333)
+    reviewer.state = "question"
+    reviewer._review_card_generation = 5
+    reviewer.bottom = SimpleNamespace(
+        web=SimpleNamespace(eval=lambda script: scripts.append(script))
+    )
+
+    reviewer._finish_rwkv_remaining_count_refresh(
+        card_id=333,
+        generation=5,
+        counts=QueuedCards(
+            new_count=5, learning_count=4, review_count=7, rwkv_review_headroom=13
+        ),
+    )
+
+    assert scripts == ['setRemainingCounts(5, 4, 7, "", "");']
 
 
 def test_timebox_elapsed_secs_uses_collection_start_time(
@@ -1455,7 +1612,7 @@ def test_after_answering_interval_refresh_prefetches_during_next_question(
     bottom_scripts: list[str] = []
     work = object()
     result = SimpleNamespace(deck_id=123)
-    queued_cards = SimpleNamespace(
+    queued_cards = QueuedCards(
         new_count=2,
         learning_count=1,
         review_count=9,
@@ -1490,7 +1647,7 @@ def test_after_answering_interval_refresh_prefetches_during_next_question(
         ) -> object:
             assert current_card_id == 333
             calls.append("counts")
-            return SimpleNamespace(
+            return QueuedCards(
                 new_count=5,
                 learning_count=4,
                 review_count=7,
@@ -1616,7 +1773,7 @@ def test_after_answering_interval_refresh_prefetches_during_next_question(
 
 def test_deferred_rwkv_count_update_ignores_stale_card_generation() -> None:
     scripts: list[str] = []
-    queued_cards = SimpleNamespace(
+    queued_cards = QueuedCards(
         new_count=1,
         learning_count=2,
         review_count=9,
@@ -1634,7 +1791,7 @@ def test_deferred_rwkv_count_update_ignores_stale_card_generation() -> None:
     reviewer._finish_rwkv_remaining_count_refresh(
         card_id=333,
         generation=5,
-        counts=(3, 4, 7),
+        counts=QueuedCards(new_count=3, learning_count=4, review_count=7),
     )
 
     assert (
@@ -1647,7 +1804,7 @@ def test_deferred_rwkv_count_update_ignores_stale_card_generation() -> None:
 
 def test_failed_deferred_rwkv_count_refresh_restores_queued_count() -> None:
     scripts: list[str] = []
-    queued_cards = SimpleNamespace(
+    queued_cards = QueuedCards(
         new_count=1,
         learning_count=2,
         review_count=9,

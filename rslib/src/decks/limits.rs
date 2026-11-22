@@ -387,6 +387,10 @@ impl LimitTreeMap {
         self.get_root_limits().get(kind)
     }
 
+    pub(crate) fn remaining_limit(&self, deck_id: DeckId, kind: LimitKind) -> Result<u32> {
+        Ok(self.get_deck_limits(deck_id)?.get(kind))
+    }
+
     pub(crate) fn limit_reached(&self, deck_id: DeckId, kind: LimitKind) -> Result<bool> {
         Ok(self.get_deck_limits(deck_id)?.get(kind) == 0)
     }
@@ -497,8 +501,12 @@ impl LimitTreeMap {
         })
     }
 
+    pub(crate) fn new_cards_count_toward_review_limit(&self) -> bool {
+        self.get_root_limits().cap_new_to_review
+    }
+
     pub(crate) fn reserve_new_card(&mut self, deck_id: DeckId) -> Result<()> {
-        let new_counts_towards_review_limit = self.get_root_limits().cap_new_to_review;
+        let new_counts_towards_review_limit = self.new_cards_count_toward_review_limit();
         self.decrement_deck_and_parent_limits(deck_id, LimitKind::New)?;
         if new_counts_towards_review_limit {
             self.decrement_deck_and_parent_limits(deck_id, LimitKind::Review)?;

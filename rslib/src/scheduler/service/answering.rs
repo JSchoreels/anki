@@ -70,6 +70,12 @@ impl From<QueuedCards> for anki_proto::scheduler::QueuedCards {
             new_count: queued_cards.new_count as u32,
             learning_count: queued_cards.learning_count as u32,
             review_count: queued_cards.review_count as u32,
+            rwkv_review_headroom: queued_cards
+                .rwkv_review_potential
+                .map(|potential| potential.headroom),
+            rwkv_waiting_review_count: queued_cards
+                .rwkv_review_potential
+                .map_or(0, |potential| potential.waiting),
         }
     }
 }
