@@ -103,6 +103,7 @@ def test_model_for_profile_defaults_to_sm72e25_and_preserves_explicit_choices(
         "cards_int4_notes_int8",
         "compact_cards_int8",
         "compact_cards_int4",
+        "compact_lowrank_int8",
     ],
 )
 def test_deck_options_loads_existing_profile_model_and_precision(
@@ -133,12 +134,14 @@ def test_deck_options_loads_existing_profile_model_and_precision(
     assert result.rwkv_collection_counts.cards == 123
     assert result.rwkv_collection_counts.notes == 87
     assert result.rwkv_profile_settings.model == (model or "sm72e25")
-    # Full int4 was removed and the former default overflowed on long cards:
-    # both fall back to the default.
+    # Full int4 was removed, the int4 default overflowed on long cards and
+    # the int8 rows gave way to the low-rank state: all fall back to the
+    # default.
     assert result.rwkv_profile_settings.state_precision == (
         precision
-        if precision not in (None, "int4", "cards_int4_notes_int8")
-        else "compact_cards_int8"
+        if precision
+        not in (None, "int4", "cards_int4_notes_int8", "compact_cards_int8")
+        else "compact_lowrank_int8"
     )
 
 
@@ -321,6 +324,7 @@ def test_model_choice_waits_for_profile_reopen_and_keeps_precision_independent(
         ("cards_int4_notes_int8", True),
         ("compact_cards_int8", True),
         ("compact_cards_int4", True),
+        ("compact_lowrank_int8", True),
     ],
 )
 def test_profile_open_reuses_only_matching_model_and_precision(
@@ -370,6 +374,7 @@ def test_profile_open_reuses_only_matching_model_and_precision(
         "cards_int4_notes_int8",
         "compact_cards_int8",
         "compact_cards_int4",
+        "compact_lowrank_int8",
     ],
 )
 def test_profile_model_and_precision_reach_the_native_backend(
@@ -403,8 +408,9 @@ def test_profile_model_and_precision_reach_the_native_backend(
     assert backend.model_name == curve_model_for_choice(model or "sm72e25")
     assert backend.state_precision == (
         precision
-        if precision not in (None, "int4", "cards_int4_notes_int8")
-        else "compact_cards_int8"
+        if precision
+        not in (None, "int4", "cards_int4_notes_int8", "compact_cards_int8")
+        else "compact_lowrank_int8"
     )
 
 

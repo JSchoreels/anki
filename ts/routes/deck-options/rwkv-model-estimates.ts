@@ -22,12 +22,21 @@ export interface RwkvModelEstimate {
 }
 
 type StateSizes = { card: number; note: number };
-type Precision = "f32" | "int8" | "cards_int4_notes_int8" | "compact_cards_int8" | "compact_cards_int4";
+type Precision =
+    | "f32"
+    | "int8"
+    | "cards_int4_notes_int8"
+    | "compact_cards_int8"
+    | "compact_cards_int4"
+    | "compact_lowrank_int8";
 
 // Serialized card and note states, checked against the native codecs in
 // rwkv_state_precision_stored_sizes_of_the_small_and_tiny_models,
 // rwkv_state_precision_stored_sizes_of_the_big_model and
-// rwkv_big_pair_stores_two_big_states_per_card_and_note.
+// rwkv_big_pair_stores_two_big_states_per_card_and_note. The low-rank state
+// grows with a card's answers (rank 1 after one answer, rank 2, rank 4 from
+// the 16th; rwkv_state_precision_lowrank_sizes_grow_with_the_answer_count):
+// its entries are the mean over the answer counts of 723 benchmark users.
 const STATE_SIZES: Record<RwkvModelSize, Record<Precision, StateSizes>> = {
     [RWKV_MODEL_BIG]: {
         f32: { card: 52_278, note: 34_858 },
@@ -35,6 +44,7 @@ const STATE_SIZES: Record<RwkvModelSize, Record<Precision, StateSizes>> = {
         cards_int4_notes_int8: { card: 9_271, note: 10_283 },
         compact_cards_int8: { card: 13_891, note: 9_267 },
         compact_cards_int4: { card: 7_747, note: 9_267 },
+        compact_lowrank_int8: { card: 2_524, note: 1_720 },
     },
     [RWKV_MODEL_SMALL]: {
         f32: { card: 9_002, note: 4_638 },
@@ -42,6 +52,7 @@ const STATE_SIZES: Record<RwkvModelSize, Record<Precision, StateSizes>> = {
         cards_int4_notes_int8: { card: 1_963, note: 1_567 },
         compact_cards_int8: { card: 2_545, note: 1_315 },
         compact_cards_int4: { card: 1_521, note: 1_315 },
+        compact_lowrank_int8: { card: 839, note: 470 },
     },
     [RWKV_MODEL_TINY]: {
         f32: { card: 4_638, note: 4_638 },
@@ -49,6 +60,7 @@ const STATE_SIZES: Record<RwkvModelSize, Record<Precision, StateSizes>> = {
         cards_int4_notes_int8: { card: 1_055, note: 1_567 },
         compact_cards_int8: { card: 1_315, note: 1_315 },
         compact_cards_int4: { card: 803, note: 1_315 },
+        compact_lowrank_int8: { card: 462, note: 470 },
     },
 };
 

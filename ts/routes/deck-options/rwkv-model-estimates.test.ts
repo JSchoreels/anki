@@ -34,9 +34,13 @@ describe("RWKV model estimates", () => {
                 replaySaving
             ),
         ).toEqual([undefined, undefined, undefined]);
-        // Unknown values use the default.
+        // Unknown values use the default (the low-rank state: mean bytes over
+        // the answer counts of the benchmark users).
         expect(rwkvModelEstimates(usage, false, "unknown", undefined).map(({ perCardAndNote }) => perCardAndNote))
-            .toEqual([23_158, 3_860, 2_630]);
+            .toEqual([4_244, 1_309, 932]);
+        const both = { curve: true, instant: true };
+        const lowRank = rwkvModelEstimates(both, false, "compact_lowrank_int8", undefined);
+        expect(lowRank.map(({ perCardAndNote }) => perCardAndNote)).toEqual([8_526, 2_656, 1_902]);
         const int8 = rwkvModelEstimates(usage, false, "int8", undefined);
         expect(int8.map(({ perCardAndNote }) => perCardAndNote)).toEqual([25_698, 4_554, 3_134]);
         expect(int8.map(({ totalStateBytes }) => totalStateBytes)).toEqual([undefined, undefined, undefined]);

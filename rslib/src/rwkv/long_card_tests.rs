@@ -29,6 +29,7 @@ use std::path::PathBuf;
 use std::sync::Mutex;
 
 use crate::rwkv::ModelKind;
+use crate::rwkv::RankSchedule;
 use crate::rwkv::ReviewInput;
 use crate::rwkv::ReviewState;
 use crate::rwkv::RwkvRuntime;
@@ -225,7 +226,10 @@ fn state_stats(bytes: &[u8]) -> Option<(f32, bool)> {
     let mut at = 14;
     let code = bytes[at];
     at += 1;
-    let compact = code & 0x10 != 0;
+    // 0x28: low-rank int8 factors (compact shifts, one float16 scale per
+    // factor vector).
+    let lowrank = code == 0x28;
+    let compact = code & 0x10 != 0 || lowrank;
     let int8 = code & 0x0f == 8;
     let scale_bytes = if compact { 2 } else { 4 };
     let mut max_scale = 0.0_f32;
@@ -246,7 +250,22 @@ fn state_stats(bytes: &[u8]) -> Option<(f32, bool)> {
     for _ in 0..u32_at(bytes, &mut at) {
         shift(bytes, &mut at, &mut non_finite);
         let values = u32_at(bytes, &mut at);
-        if values > 0 {
+        if values > 0 && lowrank {
+            let head_size = ((values / 4) as f64).sqrt() as usize;
+            let rank = bytes[at + 1] as usize;
+            at += 2;
+            for _ in 0..4 * 2 * rank {
+                let scale = f16_at(bytes, at);
+                non_finite |= !scale.is_finite();
+                if bytes[at + 2..at + 2 + head_size]
+                    .iter()
+                    .any(|&code| code != 0)
+                {
+                    max_scale = max_scale.max(scale);
+                }
+                at += 2 + head_size;
+            }
+        } else if values > 0 {
             let head_size = ((values / 4) as f64).sqrt() as usize;
             let code_bytes = if int8 { head_size } else { head_size / 2 };
             for _ in 0..values / head_size {
@@ -446,6 +465,10 @@ fn policy_name(precision: StatePrecision) -> &'static str {
     match precision {
         StatePrecision::CompactCardsInt8 => "compact_cards_int8",
         StatePrecision::CompactCardsInt4 => "compact_cards_int4",
+        StatePrecision::CompactLowRank(schedule) if schedule == RankSchedule::DEFAULT => {
+            "compact_lowrank_int8"
+        }
+        StatePrecision::CompactLowRank(_) => "compact_lowrank_int8:other",
         StatePrecision::Int4CardsInt8Notes => "cards_int4_notes_int8",
         StatePrecision::F32 => "f32",
         _ => "other",
@@ -474,6 +497,7 @@ fn rwkv_long_card_quick_compact_states_stay_finite() {
         for precision in [
             StatePrecision::CompactCardsInt8,
             StatePrecision::CompactCardsInt4,
+            StatePrecision::CompactLowRank(RankSchedule::DEFAULT),
         ] {
             for run in [
                 per_answer(kind, file, precision, &reviews),
@@ -496,6 +520,7 @@ fn rwkv_long_card_full() {
     let mut policies = vec![
         StatePrecision::CompactCardsInt8,
         StatePrecision::CompactCardsInt4,
+        StatePrecision::CompactLowRank(RankSchedule::DEFAULT),
     ];
     if std::env::var("RWKV_LONG_CARD_PLAIN").is_ok_and(|value| value == "1") {
         policies.push(StatePrecision::Int4CardsInt8Notes);

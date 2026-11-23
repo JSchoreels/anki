@@ -4,13 +4,21 @@
 use super::state_scope_bench::load_for_scopes;
 use super::*;
 
-const PRECISIONS: [(StatePrecision, [bool; 3]); 6] = [
+const PRECISIONS: [(StatePrecision, [bool; 3]); 8] = [
     (StatePrecision::F32, [false; 3]),
     (StatePrecision::Int8, [false; 3]),
     (StatePrecision::Int4CardsInt8Notes, [false; 3]),
     (StatePrecision::Int8, [true; 3]),
     (StatePrecision::CompactCardsInt8, [false; 3]),
     (StatePrecision::CompactCardsInt4, [false; 3]),
+    (
+        StatePrecision::CompactLowRank(RankSchedule::DEFAULT),
+        [false; 3],
+    ),
+    (
+        StatePrecision::CompactLowRank(RankSchedule::uniform(2)),
+        [false; 3],
+    ),
 ];
 
 /// The tiny model (the smaller instant-only model, SM101): one card layer.
@@ -109,6 +117,8 @@ fn check_mixed_packs_cards_as_int4_and_notes_as_int8(weights: &Path) {
         ("cards_int4_notes_int8", 4, 8, true, false),
         ("compact_cards_int8", 0x18, 0x18, true, true),
         ("compact_cards_int4", 0x14, 0x18, true, true),
+        ("compact_lowrank_int8", 0x28, 0x28, true, true),
+        ("compact_lowrank_int8:2", 0x28, 0x28, true, true),
     ] {
         let precision = StatePrecision::parse(name).unwrap();
         let mut mixed = runtime(weights, precision, [false; 3]);
@@ -569,4 +579,61 @@ fn rwkv_state_precision_stored_sizes_of_the_big_model() {
             (7_747, 9_267)
         ]
     );
+}
+
+/// Low-rank card and note state (the default schedule: rank 2 below 16
+/// answers, rank 4 from 16): one card answered 1 to 20 times. Against the
+/// compact int8 rows each time layer replaces its `HEADS * HEAD_SIZE` rows
+/// by the block (answer count, rank, then per head 2 x rank factor vectors
+/// of a float16 scale and `HEAD_SIZE` codes); the stored rank is min(n, r),
+/// so the state grows at answers 2, 16 and 17. Checked on every model and
+/// layer plan, cards and notes.
+#[test]
+fn rwkv_state_precision_lowrank_sizes_grow_with_the_answer_count() {
+    let rows = HEADS * HEAD_SIZE * (2 + HEAD_SIZE);
+    let block = |rank: usize| 2 + HEADS * 2 * rank * (2 + HEAD_SIZE);
+    for weights in models() {
+        let mut card_sizes = Vec::new();
+        for answers in 1..=20 {
+            let reviews: Vec<ReviewInput> = reviews(7 * answers)
+                .into_iter()
+                .filter(|review| review.card_id == 100)
+                .collect();
+            assert_eq!(reviews.len(), answers);
+            let sizes = |precision| {
+                let mut inference = runtime(&weights, precision, [false; 3]);
+                inference.warm_up_reviews(reviews.clone(), false).unwrap();
+                let card = serialize_module_state(&inference.warm_up_states.card[&100]);
+                let note = inference.warm_up_states.note.values().next().unwrap();
+                (
+                    card.len(),
+                    serialize_module_state(note).len(),
+                    inference.card_layers(),
+                )
+            };
+            let (int8_card, int8_note, card_layers) = sizes(StatePrecision::CompactCardsInt8);
+            let (card, note, _) = sizes(StatePrecision::CompactLowRank(RankSchedule::DEFAULT));
+            let rank = RankSchedule::DEFAULT.rank(answers as u8);
+            assert_eq!(
+                rank,
+                [1, 2, 4][usize::from(answers >= 2) + usize::from(answers >= 16)]
+            );
+            let saved = rows - block(rank);
+            assert_eq!(
+                int8_card - card,
+                card_layers * saved,
+                "{weights:?} {answers}"
+            );
+            assert!(
+                int8_note > note && (int8_note - note) % saved == 0,
+                "{weights:?} {answers}"
+            );
+            card_sizes.push(card);
+        }
+        assert!(card_sizes.windows(2).all(|pair| pair[0] <= pair[1]));
+        println!(
+            "{weights:?}: low-rank card bytes at 1, 2, 16 answers: {} {} {}",
+            card_sizes[0], card_sizes[1], card_sizes[15]
+        );
+    }
 }
