@@ -46,12 +46,15 @@ mod instant_workload_forecast;
 #[cfg(test)]
 #[path = "model_bench.rs"]
 mod model_bench;
+#[path = "lowrank.rs"]
+mod lowrank;
 #[path = "precision.rs"]
 mod precision;
 #[path = "workload_comparison.rs"]
 mod workload_comparison;
 #[path = "workload_forecast.rs"]
 mod workload_forecast;
+pub use lowrank::RankSchedule;
 pub use precision::StatePrecision;
 #[cfg(test)]
 #[path = "collection_benchmark.rs"]
@@ -4356,8 +4359,12 @@ impl SrsModel {
             let previous = decoded[module_id]
                 .as_ref()
                 .and_then(|state| state.layers.get(layer_id));
-            let (out, value, layer_state) =
-                self.modules[module_id].layers[layer_id].run(&x, &v0[module_id], previous);
+            let (out, value, layer_state) = self.modules[module_id].layers[layer_id].run(
+                &x,
+                &v0[module_id],
+                previous,
+                self.modules[module_id].precision,
+            );
             x = out;
             v0[module_id] = value;
             next[module_id].push(layer_state);
@@ -4433,8 +4440,13 @@ impl SrsModel {
             let previous = decoded[module_id]
                 .as_ref()
                 .and_then(|state| state.layers.get(layer_id));
-            let (next, value, _) =
-                self.modules[module_id].layers[layer_id].run(&x, &v0[module_id], previous);
+            // The stored state is discarded: no state rounding.
+            let (next, value, _) = self.modules[module_id].layers[layer_id].run(
+                &x,
+                &v0[module_id],
+                previous,
+                StatePrecision::F32,
+            );
             x = next;
             v0[module_id] = value;
             if answer_time_unit_ends(steps, index) {
@@ -6654,10 +6666,14 @@ impl RwkvLayer {
         input: &[f32],
         v0: &[f32],
         state: Option<&LayerState>,
+        precision: StatePrecision,
     ) -> (Vec<f32>, Vec<f32>, LayerState) {
-        let (x, v0, time_state) =
-            self.time_mixer
-                .run(input, v0, state.and_then(|state| state.time.as_ref()));
+        let (x, v0, time_state) = self.time_mixer.run(
+            input,
+            v0,
+            state.and_then(|state| state.time.as_ref()),
+            precision,
+        );
         let (x, channel_shift) = match &self.channel_mixer {
             Some(mixer) => {
                 let (x, shift) =
@@ -6899,6 +6915,7 @@ impl TimeMixer {
         input: &[f32],
         v0: &[f32],
         state: Option<&TimeState>,
+        precision: StatePrecision,
     ) -> (Vec<f32>, Vec<f32>, TimeState) {
         #[cfg(test)]
         let profile_started = rwkv_warmup_profile_start();
@@ -6923,7 +6940,7 @@ impl TimeMixer {
             &parts.k_deformed,
         );
 
-        let (out, next_matrix) = single_timestep(
+        let (out, mut next_matrix) = single_timestep(
             &parts.r,
             &parts.k,
             &parts.v,
@@ -6933,6 +6950,19 @@ impl TimeMixer {
             state_matrix,
         );
         let out = self.mix_output(&parts, out, input);
+        // The answer's output used the float update; a low-rank state is
+        // factored here, where the previous factors and the value vector are
+        // at hand (other formats round when the module state is compacted).
+        let mut packed_matrix = None;
+        if precision.is_lowrank() {
+            packed_matrix = state.and_then(|state| state.packed_matrix.clone());
+            precision.round_written_matrix(
+                &mut next_matrix,
+                &mut packed_matrix,
+                state_matrix,
+                &parts.v,
+            );
+        }
 
         let output = (
             out,
@@ -6940,7 +6970,7 @@ impl TimeMixer {
             TimeState {
                 x_shift: x,
                 matrix: next_matrix,
-                packed_matrix: None,
+                packed_matrix,
             },
         );
         #[cfg(test)]

@@ -14,12 +14,18 @@
 //!   (`int_row_quant(bits | F16_SCALE)`). The float16 clamp keeps every
 //!   stored value finite, so a long, drifting card saturates instead of
 //!   overflowing.
+//!
+//! A third layout (`LowRankInt8`, precision byte 0x28) stores every card /
+//! note head as a rank-c product of int8 factors with the compact int8
+//! shifts (`lowrank.rs`).
 
 use std::borrow::Cow;
 use std::io;
 
 use half::f16;
 
+use super::lowrank;
+use super::lowrank::RankSchedule;
 use super::Cursor;
 use super::LayerState;
 use super::ModuleState;
@@ -53,7 +59,19 @@ pub enum StatePrecision {
     /// Runtime policy `compact_cards_int4`: Int4Compact cards and
     /// Int8Compact notes (`w8+s4c8nhx8`).
     CompactCardsInt4,
+    /// Module precision: rank-c int8 factors per head (rank by the
+    /// schedule), int8 shifts with float16 scales (`lowrank.rs`). The stored
+    /// bytes do not depend on the schedule; it only picks the next write's
+    /// rank.
+    LowRankInt8(RankSchedule),
+    /// Runtime policy `compact_lowrank_int8[:spec]`: LowRankInt8 cards and
+    /// notes (the training repository's `w8+lr<spec>q8x8`; default spec
+    /// `2.16.4`, rank 2 below 16 answers and rank 4 from 16).
+    CompactLowRank(RankSchedule),
 }
+
+/// The runtime policy string of the default low-rank state.
+pub const LOWRANK_POLICY: &str = "compact_lowrank_int8";
 
 impl StatePrecision {
     pub fn parse(value: &str) -> io::Result<Self> {
@@ -63,7 +81,13 @@ impl StatePrecision {
             "cards_int4_notes_int8" => Ok(Self::Int4CardsInt8Notes),
             "compact_cards_int8" => Ok(Self::CompactCardsInt8),
             "compact_cards_int4" => Ok(Self::CompactCardsInt4),
-            _ => Err(invalid_state()),
+            LOWRANK_POLICY => Ok(Self::CompactLowRank(RankSchedule::DEFAULT)),
+            _ => value
+                .strip_prefix(LOWRANK_POLICY)
+                .and_then(|rest| rest.strip_prefix(':'))
+                .and_then(RankSchedule::parse)
+                .map(Self::CompactLowRank)
+                .ok_or_else(invalid_state),
         }
     }
 
@@ -74,12 +98,29 @@ impl StatePrecision {
             Self::Int4CardsInt8Notes => (Self::Int4, Self::Int8),
             Self::CompactCardsInt8 => (Self::Int8Compact, Self::Int8Compact),
             Self::CompactCardsInt4 => (Self::Int4Compact, Self::Int8Compact),
+            Self::CompactLowRank(schedule) => {
+                (Self::LowRankInt8(schedule), Self::LowRankInt8(schedule))
+            }
             precision => (precision, precision),
         }
     }
 
+    /// Compact shift vectors (float16 scale + int8 codes).
     fn is_compact(self) -> bool {
-        matches!(self, Self::Int8Compact | Self::Int4Compact)
+        matches!(
+            self,
+            Self::Int8Compact | Self::Int4Compact | Self::LowRankInt8(_)
+        )
+    }
+
+    pub(super) fn is_lowrank(self) -> bool {
+        matches!(self, Self::LowRankInt8(_))
+    }
+
+    /// Whether stored bytes of `self` can be kept for `other` (the low-rank
+    /// bytes do not depend on the schedule).
+    fn same_layout(self, other: Self) -> bool {
+        self == other || (self.is_lowrank() && other.is_lowrank())
     }
 
     fn int8_codes(self) -> bool {
@@ -121,6 +162,7 @@ impl StatePrecision {
             Self::Int4 => 4,
             Self::Int8Compact => 0x18,
             Self::Int4Compact => 0x14,
+            Self::LowRankInt8(_) => 0x28,
             _ => unreachable!("{self:?} is not a module precision"),
         }
     }
@@ -131,6 +173,7 @@ impl StatePrecision {
             4 => Ok(Self::Int4),
             0x18 => Ok(Self::Int8Compact),
             0x14 => Ok(Self::Int4Compact),
+            0x28 => Ok(Self::LowRankInt8(RankSchedule::DEFAULT)),
             _ => Err(invalid_state()),
         }
     }
@@ -139,6 +182,10 @@ impl StatePrecision {
         if self == Self::F32 {
             return;
         }
+        debug_assert!(
+            !self.is_lowrank(),
+            "low-rank writes use round_written_matrix"
+        );
         let packed = packed.get_or_insert_with(|| PackedMatrix {
             precision: self,
             bytes: Vec::new(),
@@ -147,6 +194,36 @@ impl StatePrecision {
         packed.bytes.clear();
         encode_matrix(self, values, &mut packed.bytes);
         decode_matrix(self, &packed.bytes, values);
+    }
+
+    /// Rounds a layer's matrix after a write exactly as storing and reloading
+    /// it would. `packed` holds the previous write's bytes on entry (low-rank
+    /// only: its factors are the basis of the solve) and this write's bytes
+    /// on return; `previous` is the matrix before the write and `v` the
+    /// write's value vector.
+    pub(super) fn round_written_matrix(
+        self,
+        values: &mut [f32],
+        packed: &mut Option<PackedMatrix>,
+        previous: &[f32],
+        v: &[f32],
+    ) {
+        let Self::LowRankInt8(schedule) = self else {
+            self.round_matrix(values, packed);
+            return;
+        };
+        let mut bytes = Vec::with_capacity(lowrank::block_len(4));
+        lowrank::encode_layer(
+            values,
+            lowrank_previous(packed.as_ref(), previous),
+            v,
+            schedule,
+            &mut bytes,
+        );
+        *packed = Some(PackedMatrix {
+            precision: self,
+            bytes,
+        });
     }
 
     /// Rounds a shift vector exactly as storing and reloading it would.
@@ -212,9 +289,14 @@ impl ModuleState {
                 super::write_u32(&mut bytes, time.matrix.len() as u32);
                 if let Some(packed) = time
                     .packed_matrix
-                    .filter(|packed| packed.precision == precision)
+                    .filter(|packed| packed.precision.same_layout(precision))
                 {
                     bytes.extend(packed.bytes);
+                } else if let StatePrecision::LowRankInt8(schedule) = precision {
+                    // A matrix without factors (never written at this
+                    // precision): factor it on the full basis.
+                    let mut matrix = time.matrix;
+                    lowrank::encode_existing(&mut matrix, schedule, &mut bytes);
                 } else {
                     encode_matrix(precision, &time.matrix, &mut bytes);
                 }
@@ -242,7 +324,7 @@ fn abs_max(values: &[f32]) -> f32 {
 /// The float16 scale rule of the training repository's `round_scale_f16`:
 /// clamp to 65,504, round to nearest even, and use 1.0 when the result is 0
 /// (all-zero vectors and float16 underflow).
-fn f16_scale(maximum: f32, limit: f32) -> f16 {
+pub(super) fn f16_scale(maximum: f32, limit: f32) -> f16 {
     let scale = f16::from_f32((maximum / limit).min(f16::MAX.to_f32()));
     if scale.to_f32() > 0.0 {
         scale
@@ -251,7 +333,7 @@ fn f16_scale(maximum: f32, limit: f32) -> f16 {
     }
 }
 
-fn quantize(value: f32, scale: f32, limit: f32) -> i8 {
+pub(super) fn quantize(value: f32, scale: f32, limit: f32) -> i8 {
     (value / scale).round_ties_even().clamp(-limit, limit) as i8
 }
 
@@ -349,6 +431,37 @@ pub(super) fn decode(bytes: &[u8]) -> io::Result<ModuleState> {
         let matrix_count = cursor.u32()? as usize;
         if matrix_count != 0 && matrix_count != HEADS * HEAD_SIZE * HEAD_SIZE {
             return Err(invalid_state());
+        }
+        if precision.is_lowrank() {
+            let time = if matrix_count == 0 {
+                None
+            } else {
+                let head = cursor.bytes(2)?;
+                let rank = head[1] as usize;
+                if rank > lowrank::MAX_RANK.min(HEAD_SIZE) {
+                    return Err(invalid_state());
+                }
+                let rest = cursor.bytes(lowrank::block_len(rank) - 2)?;
+                let mut block = Vec::with_capacity(lowrank::block_len(rank));
+                block.extend_from_slice(head);
+                block.extend_from_slice(rest);
+                let mut matrix = vec![0.0; matrix_count];
+                lowrank::decode_block(&block, &mut matrix)?;
+                Some((matrix, block))
+            };
+            let channel_shift = read_shift(precision, &mut cursor)?;
+            if x_shift.is_empty() != time.is_none() {
+                return Err(invalid_state());
+            }
+            layers.push(LayerState {
+                time: time.map(|(matrix, bytes)| TimeState {
+                    x_shift,
+                    matrix,
+                    packed_matrix: Some(PackedMatrix { precision, bytes }),
+                }),
+                channel_shift: (!channel_shift.is_empty()).then_some(channel_shift),
+            });
+            continue;
         }
         let packed = cursor.bytes(matrix_count / HEAD_SIZE * precision.row_bytes())?;
         for row in packed.chunks_exact(precision.row_bytes()) {
@@ -464,6 +577,19 @@ fn decode_matrix(precision: StatePrecision, bytes: &[u8], out: &mut [f32]) {
             };
             *value = code as f32 * scale;
         }
+    }
+}
+
+/// The basis of a low-rank write: the previous write's block, or what the
+/// previous matrix is when it has none.
+pub(super) fn lowrank_previous<'a>(
+    packed: Option<&'a PackedMatrix>,
+    previous: &[f32],
+) -> lowrank::Previous<'a> {
+    match packed.filter(|packed| packed.precision.is_lowrank()) {
+        Some(packed) => lowrank::Previous::Block(&packed.bytes),
+        None if previous.iter().all(|value| *value == 0.0) => lowrank::Previous::Fresh,
+        None => lowrank::Previous::Matrix,
     }
 }
 
