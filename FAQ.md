@@ -120,6 +120,27 @@ Source: [Q4](#q4--reverse-cards-and-sibling-burying).
 Details: [Sibling burying](RWKV_FAQ.md#does-rwkv-override-standard-sibling-burying)
 and [queue refresh behavior](docs/rwkv.MD).
 
+### Can I donate my review history for research?
+
+A way to donate review history is in development. The plan is to make uploads
+easy directly from the desktop fork. We’ll share more details in the coming
+weeks.
+
+Source: [Q7](#q7--donating-review-history).
+
+### Can I compare two schedulers in the same collection?
+
+The fork has no built-in randomized comparison. To run one manually, randomly
+split your deck into two subdecks, give each its own preset and scheduler, and
+use the same desired retention. Study each subdeck separately, since starting
+from the parent can apply the parent’s settings to review selection.
+
+Track both reviews per card and actual recall rates. The same desired retention
+can yield different recall rates, and RWKV can use reviews from both groups as
+shared collection history.
+
+Source: [Q8](#q8--comparing-schedulers).
+
 ## Source questions
 
 ### Q1 — Getting started
@@ -177,3 +198,21 @@ Reddit, 2026-11-20 —
 [source comment](https://www.reddit.com/r/Anki/comments/1y0u0h1/comment/19sxq0vwlrc69/)
 
 Answer: [Should reverse cards use sibling burying or RWKV ordering?](#should-reverse-cards-use-sibling-burying-or-rwkv-ordering)
+
+### Q7 — Donating review history
+
+> Hello! I use your fork. Just wondering, do you know if there's any way I can donate my review history for study?
+
+Reddit, 2026-11-22 —
+[source comment](https://www.reddit.com/r/Anki/comments/1y1uivb/comment/19t0qo8e0upog/)
+
+Answer: [Can I donate my review history for research?](#can-i-donate-my-review-history-for-research)
+
+### Q8 — Comparing schedulers
+
+> does any fork let two schedulers run side by side in one collection, with cards split at random and the same desired retention?
+
+Reddit —
+[source comment](https://www.reddit.com/r/Anki/comments/1xws8kt/comment/19so9ibzv744i/)
+
+Answer: [Can I compare two schedulers in the same collection?](#can-i-compare-two-schedulers-in-the-same-collection)
