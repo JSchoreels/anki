@@ -2138,9 +2138,24 @@ What the spread covers: answer-outcome randomness and systematic recall error.
 It does not cover the per-day range of `done`, `new`, `lapses` and `seconds`
 that comes from the queue, the limits and the sampled days; three to seven paths
 are not enough to estimate that, and at least 100 independent paths are needed. It is an
-approximation, not a calibrated probability interval for workload. In
-particular, the recurrent model and changing queues can make workload paths
-cross or produce a large spread.
+approximation, not a calibrated probability interval for workload.
+
+Lapses follow the answer outcome closely, but `due` and the other workload
+metrics are not necessarily ordered by it. Every simulated answer updates the
+recurrent model's state, so paths that answer differently soon score cards
+differently, reach different cards under the daily limits and count different
+cards as due. Many review cards sit close to desired retention, and a small
+shift of the state moves hundreds of them in or out of `due`. With five or
+seven paths, neighbouring scenarios usually differ by less than this variation
+between sessions, so their daily `due` values often cross, and the central path
+can be the lowest or the highest. Three paths are ordered more often, but not
+always. On one tested collection (7 paths, 7 days, about 10,000 review cards),
+about 80% of path pairs were in order on a given day and no day had all seven
+in order, while lapses were in order for over 90% of pairs. The variation is
+real: making the paths answer the same cards would order them, but they would
+no longer be sessions Anki could show, and counting `due` as a snapshot or as
+an average over the day removed only a small part of it. Read several paths as
+a range of workload, not as a ranking by answer outcome.
 The API adds `scenario_kind: "stratified"`, `scenario_history_days` and
 `scenario_bias_sd` when calibration succeeds, and `scenario_daily`; each
 metric's array has one value per path, ordered from the lowest to the highest
