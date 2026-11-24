@@ -17,8 +17,8 @@
 //! `ANKI_RWKV_SIZE_BENCH_RUNTIMES` picks runtimes (default: all that load),
 //! `ANKI_RWKV_SIZE_BENCH_SAMPLES` the timed samples per runtime (default 5,
 //! after one untimed warm-up sample), `ANKI_RWKV_SIZE_BENCH_PRECISION` the
-//! state precision (default `compact_cards_int8`). A runtime whose model key the engine
-//! does not know is skipped, so the same file runs on older sources.
+//! state precision (default `compact_cards_int8`). A runtime whose model key
+//! the engine does not know is skipped, so the same file runs on older sources.
 
 use std::path::PathBuf;
 use std::time::Instant;

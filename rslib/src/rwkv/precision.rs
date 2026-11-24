@@ -8,12 +8,11 @@
 //! - Plain (`Int8`, `Int4`, precision bytes 8 / 4): one f32 scale per matrix
 //!   row and float16 shift vectors.
 //! - Compact (`Int8Compact`, `Int4Compact`, precision bytes 0x18 / 0x14): one
-//!   float16 scale per matrix row (abs-max / limit, clamped to 65,504, 1.0
-//!   when it rounds to zero) and int8 shift codes with one float16 scale per
-//!   vector. This is the training repository's `hx8` state rounding
-//!   (`int_row_quant(bits | F16_SCALE)`). The float16 clamp keeps every
-//!   stored value finite, so a long, drifting card saturates instead of
-//!   overflowing.
+//!   float16 scale per matrix row (abs-max / limit, clamped to 65,504, 1.0 when
+//!   it rounds to zero) and int8 shift codes with one float16 scale per vector.
+//!   This is the training repository's `hx8` state rounding
+//!   (`int_row_quant(bits | F16_SCALE)`). The float16 clamp keeps every stored
+//!   value finite, so a long, drifting card saturates instead of overflowing.
 //!
 //! A third layout (`LowRankInt8`, precision byte 0x28) stores every card /
 //! note head as a rank-c product of int8 factors with the compact int8

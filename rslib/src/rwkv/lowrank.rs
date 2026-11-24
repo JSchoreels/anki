@@ -4,20 +4,20 @@
 //! Low-rank card / note WKV state (precision byte 0x28): every head's matrix
 //! is stored as a rank-c product L R with int8 factors.
 //!
-//! This is the training repository's `LowRankCodec` (`scripts/state_lowrank.py`,
-//! the low-rank int8 state experiment). After each write the stored state is
-//! the best rank-r approximation of the float update S' = S G + v k^T. Because
-//! the previous stored state is L R, the columns of S' lie in span(L, v), so
-//! the truncation needs only small eigen problems:
+//! This is the training repository's `LowRankCodec`
+//! (`scripts/state_lowrank.py`, the low-rank int8 state experiment). After each
+//! write the stored state is the best rank-r approximation of the float update
+//! S' = S G + v k^T. Because the previous stored state is L R, the columns of
+//! S' lie in span(L, v), so the truncation needs only small eigen problems:
 //!
 //! 1. P = [L_1 .. L_c, v] (m = c + 1 vectors of `HEAD_SIZE` values), each
 //!    vector normalised; the Gram matrix of the normalised vectors is
-//!    eigen-decomposed and directions with an eigenvalue at or below 1e-5 x
-//!    the largest are dropped; Q is the orthonormal basis that remains.
+//!    eigen-decomposed and directions with an eigenvalue at or below 1e-5 x the
+//!    largest are dropped; Q is the orthonormal basis that remains.
 //! 2. B = Q^T S' (m x K); the eigenvectors U of B B^T (by decreasing
 //!    eigenvalue) give component i: left_i = Q u_i, right_i = u_i^T B, with
-//!    sigma_i = |right_i|, split evenly: L_i = left_i sqrt(sigma_i),
-//!    R_i = right_i / sqrt(sigma_i).
+//!    sigma_i = |right_i|, split evenly: L_i = left_i sqrt(sigma_i), R_i =
+//!    right_i / sqrt(sigma_i).
 //! 3. Each factor vector is rounded to int8 with its own float16 scale (the
 //!    compact rows' rule: abs-max / 127, clamped to 65,504, 1.0 on zero), and
 //!    the stored matrix is the product of the decoded factors.
@@ -354,9 +354,9 @@ pub(super) fn quantize_vector(values: &mut [f32], out: &mut [u8]) {
     }
 }
 
-/// `factor_heads` for one head and a head size given at run time (the tests' vectors
-/// cover both engines' head sizes); other head sizes and the full basis use
-/// the general solve.
+/// `factor_heads` for one head and a head size given at run time (the tests'
+/// vectors cover both engines' head sizes); other head sizes and the full basis
+/// use the general solve.
 #[cfg(test)]
 pub(super) fn factor_head(
     matrix: &[f32],
@@ -379,15 +379,26 @@ pub(super) fn factor_head(
         }
         let mut left = [[[0.0_f32; K]; MAX_RANK]];
         let mut right = [[[0.0_f32; K]; MAX_RANK]];
-        factor_heads(matrix, &vectors, basis.len() / K, rank, &mut left, &mut right);
+        factor_heads(
+            matrix,
+            &vectors,
+            basis.len() / K,
+            rank,
+            &mut left,
+            &mut right,
+        );
         left_out[..rank * K].copy_from_slice(left[0][..rank].as_flattened());
         right_out[..rank * K].copy_from_slice(right[0][..rank].as_flattened());
     }
     match basis {
-        Some(basis) if rank <= MAX_RANK && (k..=MAX_BASIS * k).contains(&basis.len()) && k == 16 => {
+        Some(basis)
+            if rank <= MAX_RANK && (k..=MAX_BASIS * k).contains(&basis.len()) && k == 16 =>
+        {
             fixed::<16>(matrix, basis, rank, left_out, right_out)
         }
-        Some(basis) if rank <= MAX_RANK && (k..=MAX_BASIS * k).contains(&basis.len()) && k == 32 => {
+        Some(basis)
+            if rank <= MAX_RANK && (k..=MAX_BASIS * k).contains(&basis.len()) && k == 32 =>
+        {
             fixed::<32>(matrix, basis, rank, left_out, right_out)
         }
         _ => factor_head_general(matrix, k, basis, rank, left_out, right_out),
@@ -683,11 +694,11 @@ fn jacobi_lanes<const N: usize>(
                         row[p] = c * arp - s * arq;
                         row[q] = s * arp + c * arq;
                     }
-                    for r in 0..N {
-                        let apr = a[p][r];
-                        let aqr = a[q][r];
-                        a[p][r] = c * apr - s * aqr;
-                        a[q][r] = s * apr + c * aqr;
+                    let (before_q, from_q) = a.split_at_mut(q);
+                    for (apr, aqr) in before_q[p].iter_mut().zip(&mut from_q[0]) {
+                        let (old_apr, old_aqr) = (*apr, *aqr);
+                        *apr = c * old_apr - s * old_aqr;
+                        *aqr = s * old_apr + c * old_aqr;
                     }
                     for row in v.iter_mut() {
                         let vrp = row[p];
@@ -882,11 +893,6 @@ fn eigh(matrix: &[f64], n: usize) -> (Vec<f64>, Vec<f64>) {
     ((0..n).map(|i| a[i * n + i]).collect(), v)
 }
 
-/// The answer count and rank of a stored block.
-pub(super) fn block_info(block: &[u8]) -> io::Result<(u8, usize)> {
-    header(block)
-}
-
 #[cfg(test)]
 #[path = "lowrank_reference.rs"]
 mod reference;
@@ -1008,7 +1014,10 @@ mod tests {
                         schedule,
                         &mut old_out,
                     );
-                    assert_eq!(new_out, old_out, "{schedule:?} start {start} answer {answer}");
+                    assert_eq!(
+                        new_out, old_out,
+                        "{schedule:?} start {start} answer {answer}"
+                    );
                     assert_eq!(bits(&new_matrix), bits(&old_matrix));
                     let mut new_decoded = vec![1.0_f32; size];
                     let mut old_decoded = vec![2.0_f32; size];
@@ -1476,7 +1485,7 @@ mod tests {
             };
             let mut out = Vec::new();
             encode_layer(&mut next, previous, &v, RankSchedule::DEFAULT, &mut out);
-            let (answers, rank) = block_info(&out).unwrap();
+            let (answers, rank) = header(&out).unwrap();
             assert_eq!(answers as u32, answer.min(255));
             assert_eq!(rank, RankSchedule::DEFAULT.rank(answers));
             assert_eq!(out.len(), block_len(rank));

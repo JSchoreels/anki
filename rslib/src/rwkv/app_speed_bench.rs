@@ -47,10 +47,10 @@
 //!   note state bytes (it serializes a snapshot, so keep it out of RAM runs).
 //! - `ANKI_SPEED_ITERATIONS` (default 1): runs of each op in this process;
 //!   iteration 0 of a fresh process is the cold run, later ones are warm.
-//! - `ANKI_SPEED_PRECISION` (default `compact_cards_int8`, the app's
-//!   default), `ANKI_SPEED_CHUNK` (default 16384), `ANKI_SPEED_WORK_DIR`
-//!   (default `<collection folder>/speed-work`), `ANKI_SPEED_OUT` (JSON lines
-//!   appended per run).
+//! - `ANKI_SPEED_PRECISION` (default `compact_cards_int8`, the app's default),
+//!   `ANKI_SPEED_CHUNK` (default 16384), `ANKI_SPEED_WORK_DIR` (default
+//!   `<collection folder>/speed-work`), `ANKI_SPEED_OUT` (JSON lines appended
+//!   per run).
 //! - `ANKI_SPEED_DUMP_HISTORY`: write the native history response there
 //!   (collection data; scratch folder only).
 //! - `RAYON_NUM_THREADS`: leave unset to match the app (Rayon's default pool,

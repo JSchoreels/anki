@@ -24061,10 +24061,9 @@ def test_card_info_configures_embedded_backend_for_rwkv_enabled_card(
             "model_path": model_path,
             "device": "cpu",
             "dtype": "float",
-            "state_precision": "compact_cards_int8",
-            # Small without RWKV-Instant: its two-head model, the show-time
-            # retrain (SM92), since the family wiring (SM114).
-            "model": "sm92",
+            "state_precision": "compact_lowrank_int8",
+            # Small without RWKV-Instant uses its two-head model.
+            "model": "sm118",
         }
     ]
 
@@ -25230,10 +25229,9 @@ def test_configure_reviewer_backend_uses_embedded_default(
             "model_path": model_path,
             "device": "cpu",
             "dtype": "float",
-            "state_precision": "compact_cards_int8",
-            # Small without RWKV-Instant: its two-head model, the show-time
-            # retrain (SM92), since the family wiring (SM114).
-            "model": "sm92",
+            "state_precision": "compact_lowrank_int8",
+            # Small without RWKV-Instant uses its two-head model.
+            "model": "sm118",
         }
     ]
 
@@ -25306,10 +25304,9 @@ def test_configure_reviewer_backend_uses_model_env_with_embedded_runner(
             "model_path": Path("/tmp/custom-rwkv.pth"),
             "device": "mps",
             "dtype": "bfloat16",
-            "state_precision": "compact_cards_int8",
-            # A custom checkpoint replaces Small's two-head model, the show-time
-            # retrain (SM92), since the family wiring (SM114).
-            "model": "sm92",
+            "state_precision": "compact_lowrank_int8",
+            # A custom checkpoint replaces Small's two-head model.
+            "model": "sm118",
         }
     ]
 
@@ -27617,7 +27614,7 @@ def test_card_info_without_curve_model_omits_curve_rows(
                 "RWKV : Answer Time by Button",
                 "Again:9.0s Hard:7.0s Good:5.0s Easy:3.0s",
             ),
-            ("RWKV : Expected Answer Time", "6.0s (Good under 3.9s: 30%)"),
+            ("RWKV : Expected Answer Time", "6.0s (under 3.9s if Good: 30%)"),
         ]
         if answer_time_head
         else []

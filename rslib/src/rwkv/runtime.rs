@@ -196,11 +196,11 @@ fn check_module_layers(model: ModelKind, module_layers: [usize; 5]) -> io::Resul
 /// intervals and S90, the instant model provides instant recall and button
 /// probabilities, and the answer time comes from the instant model's head
 /// when it has one (the head reads the same trunk as the grade
-/// probabilities it is mixed with), else from the release's. Every serialized state holds
-/// both (`super::paired`). Both models are of one architecture and run on
-/// its engine: two small models (Small, Tiny) or the two big models (Big:
-/// the show-time big model (SM91s2) and the show-time instant-only big model
-/// (SM99)).
+/// probabilities it is mixed with), else from the release's. Every serialized
+/// state holds both (`super::paired`). Both models are of one architecture and
+/// run on its engine: two small models (Small, Tiny) or the two big models
+/// (Big: the show-time big model (SM91s2) and the show-time instant-only big
+/// model (SM99)).
 pub struct PairedRuntime<E> {
     release: E,
     instant: E,

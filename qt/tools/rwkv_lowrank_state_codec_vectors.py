@@ -41,8 +41,8 @@ STEPS = 24
 def main() -> None:
     repo, out = Path(sys.argv[1]).resolve(), Path(sys.argv[2])
     sys.path.insert(0, str(repo))
-    import torch
-    from scripts import state_lowrank as sl
+    import torch  # type: ignore[import-not-found]
+    from scripts import state_lowrank as sl  # type: ignore[import-not-found]
 
     torch.set_num_threads(1)
     g = torch.Generator().manual_seed(20261123)
@@ -84,12 +84,18 @@ def main() -> None:
                 rows = [e for e in range(ENTITIES) if t == 0 or (t + e) % 7 != 6]
                 idx = torch.tensor(rows)
                 R = len(rows)
-                w = torch.exp(-torch.exp(torch.rand(R, HEADS, K, generator=g) * 3.5 - 3.0))
+                w = torch.exp(
+                    -torch.exp(torch.rand(R, HEADS, K, generator=g) * 3.5 - 3.0)
+                )
                 kd = torch.randn(R, HEADS, K, generator=g)
                 kd = kd / kd.norm(dim=-1, keepdim=True)
                 a = torch.rand(R, HEADS, K, generator=g)
                 k = torch.randn(R, HEADS, K, generator=g) / K**0.5
-                v = torch.randn(R, HEADS, K, generator=g) / K**0.5 * scale[idx][:, None, None]
+                v = (
+                    torch.randn(R, HEADS, K, generator=g)
+                    / K**0.5
+                    * scale[idx][:, None, None]
+                )
                 if t == 7:
                     v[0] = 0.0  # a zero value: its direction is dropped from the basis
                 S = state[idx]
@@ -100,7 +106,9 @@ def main() -> None:
                     + v.unsqueeze(-1) * k.unsqueeze(-2)
                 )
                 count[idx] += 1
-                stored, lf, rf, r_eff = encode_with_right(codec, nxt, left[idx], v, count[idx])
+                stored, lf, rf, r_eff = encode_with_right(
+                    codec, nxt, left[idx], v, count[idx]
+                )
                 state[idx] = stored
                 left[idx] = lf
                 entries = []

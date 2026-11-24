@@ -26,6 +26,7 @@ from aqt.rwkv_model import (
     RWKV_SIZE_MODELS,
     RWKV_SMALL_INSTANT_MODEL,
     RWKV_SMALL_TWO_HEAD_MODEL,
+    RWKV_SMALL_TWO_HEAD_MODEL_SM92,
     RWKV_TINY_INSTANT_MODEL,
     RWKV_TINY_TWO_HEAD_MODEL,
     RwkvRuntimeModels,
@@ -458,16 +459,15 @@ def test_cache_replay_identity_tracks_active_model_until_profile_reopen(
         # 2026-11-16).
         (True, False, False, RwkvRuntimeModels("sm113")),
         (True, False, True, RwkvRuntimeModels("sm113")),
-        # Both: by default SM113 beside the show-time retrain (SM92), which
-        # keeps curve, intervals and S90; the opt-out uses SM92 alone.
-        (True, True, False, RwkvRuntimeModels("sm92", "sm113")),
-        (True, True, True, RwkvRuntimeModels("sm92")),
-        # Only RWKV-Curve, or neither: SM92 alone (the default small model
-        # (SM63) until SM114).
-        (False, True, False, RwkvRuntimeModels("sm92")),
-        (False, True, True, RwkvRuntimeModels("sm92")),
-        (False, False, False, RwkvRuntimeModels("sm92")),
-        (False, False, True, RwkvRuntimeModels("sm92")),
+        # Both: SM113 runs beside SM118, which keeps the curve, intervals and
+        # S90. The opt-out uses SM118 alone.
+        (True, True, False, RwkvRuntimeModels("sm118", "sm113")),
+        (True, True, True, RwkvRuntimeModels("sm118")),
+        # Only RWKV-Curve, or neither: SM118 alone.
+        (False, True, False, RwkvRuntimeModels("sm118")),
+        (False, True, True, RwkvRuntimeModels("sm118")),
+        (False, False, False, RwkvRuntimeModels("sm118")),
+        (False, False, True, RwkvRuntimeModels("sm118")),
     ],
 )
 def test_runtime_models_pick_the_instant_model_per_scheduler(
@@ -482,16 +482,16 @@ def test_runtime_models_pick_the_instant_model_per_scheduler(
     assert models == expected
     if instant_used:
         assert models.instant_scheduler_model == (
-            "sm92" if curve_used and single else "sm113"
+            "sm118" if curve_used and single else "sm113"
         )
     # A curve exists exactly when a preset uses RWKV-Curve or nothing uses
-    # RWKV-Instant, and it always comes from SM92. Neither the default small
+    # RWKV-Instant, and it always comes from SM118. Neither the default small
     # model (SM63) nor the instant-only small model (SM57) is ever picked.
     if instant_used and not curve_used:
         assert models.curve_model is None
         assert models.model in RWKV_INSTANT_ONLY_MODELS
     else:
-        assert models.curve_model == models.model == "sm92"
+        assert models.curve_model == models.model == "sm118"
     assert "sm57" not in models
     assert "sm72e25" not in models
 
@@ -500,9 +500,11 @@ def test_instant_only_model_stays_selectable():
     # The instant-only small model (SM57) stays bundled but unused by default;
     # alone it never serves a curve. The show-time retrain (SM92) stays
     # bundled and selectable as a profile model.
-    assert RWKV_SMALL_TWO_HEAD_MODEL == "sm92"
-    assert RWKV_SMALL_TWO_HEAD_MODEL in RWKV_MODELS
-    assert RWKV_MODEL_FILES[RWKV_SMALL_TWO_HEAD_MODEL] == Path("sm92/weights.f32.bin")
+    assert RWKV_SMALL_TWO_HEAD_MODEL_SM92 == "sm92"
+    assert RWKV_SMALL_TWO_HEAD_MODEL_SM92 in RWKV_MODELS
+    assert RWKV_MODEL_FILES[RWKV_SMALL_TWO_HEAD_MODEL_SM92] == Path(
+        "sm92/weights.f32.bin"
+    )
     assert RWKV_INSTANT_ONLY_MODEL == "sm57"
     assert RWKV_INSTANT_ONLY_MODEL in RWKV_MODEL_FILES
     assert RwkvRuntimeModels("sm57").curve_model is None
@@ -976,7 +978,7 @@ def test_curve_as_instant_fallback_counts_as_curve_used(configs, curve_enabled):
     assert state.curve_enabled is curve_enabled
     assert state.instant_enabled
     assert rwkv_scheduler._rwkv_runtime_models_for_profile(reviewer.mw) == (
-        RwkvRuntimeModels("sm92", "sm113")
+        RwkvRuntimeModels("sm118", "sm113")
         if curve_enabled
         else RwkvRuntimeModels("sm113")
     )
@@ -1205,7 +1207,7 @@ def test_paired_runtime_gets_its_own_replay_identity(monkeypatch):
     # Single, SM98 alone, SM101 alone, SM106 alone, SM99 alone and every
     # pair's states never share a key: a switch between the sizes, or
     # between a pair and its instant model alone, rebuilds once.
-    assert len(set(keys)) == 18
+    assert len(set(keys)) == len(keys)
 
 
 def _resident_identity(monkeypatch, models):

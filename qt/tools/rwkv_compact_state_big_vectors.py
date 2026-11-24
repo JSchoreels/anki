@@ -37,7 +37,7 @@ os.environ.setdefault("RWKV_NO_JIT", "1")
 os.environ.setdefault("CUDA_VISIBLE_DEVICES", "")
 sys.path.insert(0, os.getcwd())
 
-from scripts import compress_quant as cq  # noqa: E402
+from scripts import compress_quant as cq  # type: ignore[import-not-found]  # noqa: E402
 
 # The scorer's patched model rounds every row's shift input, including the
 # first row of a stream, whose shift is its own input: the fork reads no
@@ -57,7 +57,7 @@ def install_state_quant_model():
     import importlib.util
     import tempfile
 
-    import rwkv.model  # noqa: F401  (parent package)
+    import rwkv.model  # type: ignore[import-not-found]  # noqa: F401  (parent package)
 
     name = "rwkv.model.rwkv_model"
     assert name not in sys.modules, "rwkv.model.rwkv_model is already imported"
@@ -87,14 +87,19 @@ from scripts import compress_wkv_cuda  # noqa: E402
 compress_wkv_cuda.define()
 install_state_quant_model()
 
-import numpy as np  # noqa: E402
-import torch  # noqa: E402
+import numpy as np  # type: ignore[import-not-found]  # noqa: E402
+import torch  # type: ignore[import-not-found]  # noqa: E402
 from rwkv import data_processing as dp  # noqa: E402
-from rwkv.data_processing import add_segment_features, get_rwkv_data  # noqa: E402
-from rwkv.prepare_batch import prepare  # noqa: E402
+from rwkv.data_processing import (  # type: ignore[import-not-found]  # noqa: E402
+    add_segment_features,
+    get_rwkv_data,
+)
+from rwkv.prepare_batch import prepare  # type: ignore[import-not-found]  # noqa: E402
 from scripts import compress_common as cc  # noqa: E402
 from scripts import sm31_inputs  # noqa: E402
-from scripts.small_model_wkv import F16_SCALE  # noqa: E402
+from scripts.small_model_wkv import (  # type: ignore[import-not-found]  # noqa: E402
+    F16_SCALE,
+)
 
 COMPACT8 = 8 | F16_SCALE
 COMPACT4 = 4 | F16_SCALE

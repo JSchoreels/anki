@@ -43,11 +43,11 @@ mod instant_forecast_queue;
 mod instant_forecast_sampling;
 #[path = "instant_workload_forecast.rs"]
 mod instant_workload_forecast;
+#[path = "lowrank.rs"]
+mod lowrank;
 #[cfg(test)]
 #[path = "model_bench.rs"]
 mod model_bench;
-#[path = "lowrank.rs"]
-mod lowrank;
 #[path = "precision.rs"]
 mod precision;
 #[path = "workload_comparison.rs"]

@@ -26,7 +26,9 @@ import gzip
 import json
 import os
 import sys
+from collections.abc import Callable
 from pathlib import Path
+from typing import cast
 
 os.environ.setdefault("CUDA_VISIBLE_DEVICES", "")
 
@@ -34,17 +36,21 @@ os.environ.setdefault("CUDA_VISIBLE_DEVICES", "")
 def main() -> None:
     repo, out = Path(sys.argv[1]).resolve(), Path(sys.argv[2])
     sys.path.insert(0, str(repo))
-    import numpy as np
-    import torch
-    from scripts import compress_quant
-    from scripts.small_model_wkv import F16_SCALE
-    from scripts.state_vq import int_row_quant
+    import numpy as np  # type: ignore[import-not-found]
+    import torch  # type: ignore[import-not-found]
+    from scripts import compress_quant  # type: ignore[import-not-found]
+    from scripts.small_model_wkv import F16_SCALE  # type: ignore[import-not-found]
+    from scripts.state_vq import int_row_quant  # type: ignore[import-not-found]
 
     # The helpers the scorer patches into the big model.
     helpers: dict[str, object] = {"torch": torch}
     exec(compress_quant._PATCH_HELPERS.split("def reference_rwkv7_q")[0], helpers)
-    quantize_rows = helpers["_quantize_rows"]
-    round_shift = helpers["_round_shift"]
+    quantize_rows = cast(
+        Callable[[torch.Tensor, int], torch.Tensor], helpers["_quantize_rows"]
+    )
+    round_shift = cast(
+        Callable[[torch.Tensor, int], torch.Tensor], helpers["_round_shift"]
+    )
 
     rng = np.random.default_rng(20261121)
 
