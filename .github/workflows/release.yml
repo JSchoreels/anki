@@ -185,7 +185,7 @@ jobs:
   # already complex enough without adding matrix dimensions.
   build-and-sign-mac:
     needs: prepare
-    runs-on: macos-15
+    runs-on: macos-26
     timeout-minutes: 120
     environment: ${{ inputs.sign == true && 'release' || '' }}
     env:
