@@ -63,3 +63,40 @@ float factors) and writes `rslib/src/rwkv/testdata/lowrank-state-codec.json.gz`.
   step apart: relative Frobenius error at most 3.5e-3); float factors agree to at most 2.2e-6.
 - `rwkv_state_lowrank_chain_follows_the_scorer`, the Rust chain on its own: mean relative difference at most 1.3e-3
   (int8, K = 16), 0 (int8, K = 32), at most 7.3e-6 (float factors).
+
+## End to end on benchmark users (2026-11-24)
+
+`rwkv_big_lowrank_state_end_to_end` and `rwkv_small_lowrank_state_end_to_end` (ignored; the input file comes from an
+environment variable and is never bundled, it holds benchmark rows) replay three benchmark users of the training
+repository's low-rank int8 states experiment (SM148) (2388, 4676 and 1866, the last with a card of 128+ answers;
+show-time inputs, deleted cards `neighbour`) through all six release models at float32, `compact_cards_int8`, the new
+default and `compact_lowrank_int8:2`. The vectors and the comparison scripts are in the training repository
+(`artifacts/small-model/sm151/`).
+
+- Big models (show-time big model (SM91s2), show-time instant-only big model (SM99)) against the scorer's per-row
+  outputs on the same rows: per-user LogLoss within 1.8e-5 at the new default (float32 state: 2e-8).
+- All six models: the default's LogLoss change against the int8 rows matches the experiment's per user within 5.5e-5
+  (curve and instant; rule: 3e-4 per user, 1e-4 mean).
+
+## Speed
+
+Release build, `rwkv_model_size_benchmark` (whole-model state replay, synthetic answers), int8 rows and the low-rank
+default back to back, one thread, measured while a GPU job and other CPU work ran (absolute reviews/s under load,
+ratios from back-to-back pairs; history sizes via `ANKI_RWKV_SIZE_BENCH_CARDS` / `ANKI_RWKV_SIZE_BENCH_ROUNDS`):
+
+| History | Size | int8 rows: reviews/s (µs per review) | low-rank: reviews/s (µs per review) | extra µs per review |
+| --- | --- | ---: | ---: | ---: |
+| 4,000 cards x 8 answers | Big | 3,455 (289.5) | 3,614 (276.7) | within noise |
+| 4,000 cards x 8 answers | Small | 16,436 (60.8) | 13,330 (75.0) | +14.2 |
+| 4,000 cards x 8 answers | Tiny | 30,703 (32.6) | 23,438 (42.7) | +10.1 |
+| 1,000 cards x 24 answers | Big | 3,653 (273.8) | 3,169 (315.5) | +41.8 |
+| 1,000 cards x 24 answers | Small | 16,397 (61.0) | 10,285 (97.2) | +36.2 |
+| 1,000 cards x 24 answers | Tiny | 30,644 (32.6) | 17,600 (56.8) | +24.2 |
+
+The cost is in the codec's small solves (`rwkv_state_lowrank_codec_micro_benchmark`: one layer write 19 to 21 µs at
+head size 16, 33 µs at 32; a read 0.7 µs and 6 µs). The Jacobi solver stops once a sweep no longer reduces the
+off-diagonal mass: before, a third of the 5 x 5 solves ran all 60 sweeps and long-card replay took up to 2.6 times
+the int8 time (Tiny); the results are unchanged (same codec parity). At four threads (the Deck Options benchmark)
+Small and Tiny save 72% and 84% of Big's replay time as pairs (70% and 84% alone), against 77% and 88% at the int8
+rows; the Deck Options table uses the low-rank values. Its byte estimate keeps the mean per card and note, and the
+tooltip shows the range from rank 1 (one answer) to rank 4 (16 answers or more).

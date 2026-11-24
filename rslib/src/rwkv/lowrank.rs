@@ -454,15 +454,20 @@ fn eigh(matrix: &[f64], n: usize) -> (Vec<f64>, Vec<f64>) {
     for i in 0..n {
         v[i * n + i] = 1.0;
     }
+    let mut last_off = f64::INFINITY;
     for _sweep in 0..60 {
         let off: f64 = (0..n)
             .flat_map(|i| (0..n).filter(move |&j| j != i).map(move |j| (i, j)))
             .map(|(i, j)| a[i * n + j] * a[i * n + j])
             .sum();
         let diagonal: f64 = (0..n).map(|i| a[i * n + i] * a[i * n + i]).sum();
-        if off <= diagonal * 1e-32 || off == 0.0 {
+        // Converged, or stalled at rounding level: a sweep that no longer
+        // reduces the off-diagonal mass only rotates by angles below one ulp
+        // (without this stop, a third of the 5 x 5 problems ran all 60 sweeps).
+        if off <= diagonal * 1e-32 || off == 0.0 || off >= last_off {
             break;
         }
+        last_off = off;
         for p in 0..n {
             for q in p + 1..n {
                 let apq = a[p * n + q];
@@ -901,5 +906,84 @@ mod tests {
         block[4] = 128;
         assert!(decode_block(&block, &mut matrix).is_err(), "code -128");
         assert!(decode_block(&block[..block.len() - 1], &mut matrix).is_err());
+    }
+
+    /// Manual micro-benchmark of the codec alone (release build, one
+    /// thread): one layer's write (`encode_layer` on a previous block, the
+    /// factored solve, the int8 rounding and the reconstruction) and one
+    /// layer's read (`decode_block`), at rank 2 (a card below 16 answers)
+    /// and rank 4, for this engine's head layout.
+    ///
+    /// ```sh
+    /// cargo test --release -p anki --lib rwkv_state_lowrank_codec_micro_benchmark -- --ignored --nocapture
+    /// ```
+    #[test]
+    #[ignore]
+    fn rwkv_state_lowrank_codec_micro_benchmark() {
+        let size = HEADS * HEAD_SIZE * HEAD_SIZE;
+        for (answers, label) in [(8_u32, "rank 2"), (40, "rank 4")] {
+            let mut seed = 11;
+            let mut block: Vec<u8> = Vec::new();
+            let mut matrix = vec![0.0_f32; size];
+            let mut writes = Vec::new();
+            for answer in 1..=answers + 64 {
+                let mut next: Vec<f32> = matrix.iter().map(|x| x * 0.9).collect();
+                let v = random(&mut seed, HEADS * HEAD_SIZE, 2.0);
+                let key = random(&mut seed, HEADS * HEAD_SIZE, 2.0);
+                for head in 0..HEADS {
+                    for row in 0..HEAD_SIZE {
+                        for column in 0..HEAD_SIZE {
+                            next[head * HEAD_SIZE * HEAD_SIZE + row * HEAD_SIZE + column] +=
+                                v[head * HEAD_SIZE + row] * key[head * HEAD_SIZE + column];
+                        }
+                    }
+                }
+                if answer > answers {
+                    writes.push((block.clone(), next.clone(), v.clone()));
+                }
+                let previous = if block.is_empty() {
+                    Previous::Fresh
+                } else {
+                    Previous::Block(&block)
+                };
+                let mut out = Vec::new();
+                encode_layer(&mut next, previous, &v, RankSchedule::DEFAULT, &mut out);
+                block = out;
+                matrix = next;
+            }
+            let rounds = 2_000;
+            let mut out = Vec::with_capacity(block.len());
+            let started = std::time::Instant::now();
+            let mut checksum = 0.0_f32;
+            for _ in 0..rounds {
+                for (previous, next, v) in &writes {
+                    let mut next = next.clone();
+                    out.clear();
+                    encode_layer(
+                        &mut next,
+                        Previous::Block(previous),
+                        v,
+                        RankSchedule::DEFAULT,
+                        &mut out,
+                    );
+                    checksum += next[0];
+                }
+            }
+            let encode_ns =
+                started.elapsed().as_secs_f64() * 1e9 / (rounds * writes.len()) as f64;
+            let mut decoded = vec![0.0_f32; size];
+            let started = std::time::Instant::now();
+            for _ in 0..rounds {
+                for (previous, _, _) in &writes {
+                    decode_block(previous, &mut decoded).unwrap();
+                    checksum += decoded[0];
+                }
+            }
+            let decode_ns =
+                started.elapsed().as_secs_f64() * 1e9 / (rounds * writes.len()) as f64;
+            println!(
+                "heads={HEADS} head_size={HEAD_SIZE} {label}: encode_layer {encode_ns:.0} ns, decode_block {decode_ns:.0} ns per layer (checksum {checksum:.3})"
+            );
+        }
     }
 }

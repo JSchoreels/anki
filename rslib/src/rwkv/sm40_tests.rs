@@ -1059,3 +1059,98 @@ fn check_answer_time_head(package: &str, users: Vec<AnswerTimeUser>) {
         );
     }
 }
+
+#[derive(serde::Deserialize)]
+struct EndToEndRow {
+    features: Vec<f32>,
+    ids: [i64; 5],
+    skip: bool,
+    elapsed: f32,
+}
+
+#[derive(serde::Deserialize)]
+struct EndToEndUser {
+    name: String,
+    rows: Vec<EndToEndRow>,
+}
+
+/// End-to-end check of the low-rank card and note state (SM151) on the small
+/// engine's release models: the same inputs as the big engine's
+/// `rwkv_big_lowrank_state_end_to_end` (`ANKI_RWKV_LOWRANK_E2E_VECTORS`,
+/// benchmark rows, never bundled; the 92 inputs do not depend on the model),
+/// `ANKI_RWKV_LOWRANK_E2E_PACKAGES` a comma-separated list of package folders
+/// (for example `sm118,sm113,sm130th,sm130io`), float32 weights as the
+/// runtime loads them, and `ANKI_RWKV_LOWRANK_E2E_OUT` receiving, per package,
+/// user and state format, the instant recall and the curve recall at the
+/// row's elapsed time of every row.
+#[test]
+#[ignore]
+fn rwkv_small_lowrank_state_end_to_end() {
+    let vectors: Vec<EndToEndUser> = serde_json::from_slice(
+        &fs::read(std::env::var("ANKI_RWKV_LOWRANK_E2E_VECTORS").unwrap()).unwrap(),
+    )
+    .unwrap();
+    let packages = std::env::var("ANKI_RWKV_LOWRANK_E2E_PACKAGES").unwrap();
+    let formats = [
+        ("fp32", StatePrecision::F32),
+        ("compact_int8", StatePrecision::CompactCardsInt8),
+        ("t24", StatePrecision::CompactLowRank(RankSchedule::DEFAULT)),
+        (
+            "q2",
+            StatePrecision::CompactLowRank(RankSchedule::uniform(2)),
+        ),
+    ];
+    let mut out = serde_json::Map::new();
+    for package in packages.split(',') {
+        let mut by_user = serde_json::Map::new();
+        for user in &vectors {
+            let mut by_format = serde_json::Map::new();
+            for (label, precision) in formats {
+                let mut model = SrsModel::load(&PathBuf::from(env!("CARGO_MANIFEST_DIR")).join(
+                    format!("../qt/aqt/rwkv_inference/{package}/weights.f32.bin"),
+                ))
+                .unwrap();
+                model.leak_free_inputs = true;
+                let (card, note) = precision.module_precisions();
+                model.modules[0].precision = card;
+                model.modules[2].precision = note;
+                let mut states = ReviewStateMaps::default();
+                let mut values = Vec::with_capacity(user.rows.len());
+                for row in &user.rows {
+                    let input = ReviewInput {
+                        card_id: row.ids[0],
+                        deck_id: Some(row.ids[1]),
+                        note_id: Some(row.ids[2]),
+                        preset_id: Some(row.ids[3]),
+                        is_query: row.skip,
+                        ease: None,
+                        duration_millis: None,
+                        card_type: None,
+                        day_offset: None,
+                        current_elapsed_days: None,
+                        current_elapsed_seconds: None,
+                        target_retentions: [None; 4],
+                        enforce_grade_order: true,
+                    };
+                    let heads = model.review(&row.features, states.state_ref(&input));
+                    values.push(serde_json::json!([
+                        heads.retrievability.clamp(1e-5, 1.0 - 1e-5),
+                        predict_curve(&heads.curve, row.elapsed)
+                    ]));
+                    if !row.skip {
+                        states.store(&input, heads.next_state);
+                    }
+                }
+                by_format.insert(label.to_string(), serde_json::Value::Array(values));
+            }
+            println!("{package} {}: {} rows", user.name, user.rows.len());
+            by_user.insert(user.name.clone(), serde_json::Value::Object(by_format));
+        }
+        out.insert(package.to_string(), serde_json::Value::Object(by_user));
+    }
+    fs::write(
+        std::env::var("ANKI_RWKV_LOWRANK_E2E_OUT").unwrap(),
+        serde_json::to_vec(&out).unwrap(),
+    )
+    .unwrap();
+}

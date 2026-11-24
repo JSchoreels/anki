@@ -409,6 +409,97 @@ fn rwkv_legacy_compact_state_matches_the_scorer() {
 }
 
 #[derive(serde::Deserialize)]
+struct EndToEndRow {
+    features: Vec<f32>,
+    ids: [i64; 5],
+    skip: bool,
+    elapsed: f32,
+}
+
+#[derive(serde::Deserialize)]
+struct EndToEndUser {
+    name: String,
+    rows: Vec<EndToEndRow>,
+}
+
+/// End-to-end check of the low-rank card and note state (SM151) on benchmark
+/// users: `ANKI_RWKV_LOWRANK_E2E_VECTORS` is a file written by the training
+/// repository's `artifacts/small-model/sm151/e2e_big_vectors.py` (features,
+/// ids and the scorer's outputs per row; benchmark rows, never bundled),
+/// `ANKI_RWKV_LOWRANK_E2E_MODEL` is `legacy` (the show-time big model
+/// (SM91s2)) or `sm99` (the show-time instant-only big model (SM99)), and
+/// `ANKI_RWKV_LOWRANK_E2E_OUT` receives the runtime's instant recall and curve
+/// recall at the row's elapsed time per row and state format; the comparison
+/// with the scorer is done by `e2e_compare.py` next to that script.
+#[test]
+#[ignore]
+fn rwkv_big_lowrank_state_end_to_end() {
+    let vectors: Vec<EndToEndUser> = serde_json::from_slice(
+        &fs::read(std::env::var("ANKI_RWKV_LOWRANK_E2E_VECTORS").unwrap()).unwrap(),
+    )
+    .unwrap();
+    let model_name = std::env::var("ANKI_RWKV_LOWRANK_E2E_MODEL").unwrap();
+    let formats = [
+        ("fp32", StatePrecision::F32),
+        ("compact_int8", StatePrecision::CompactCardsInt8),
+        ("t24", StatePrecision::CompactLowRank(RankSchedule::DEFAULT)),
+        (
+            "q2",
+            StatePrecision::CompactLowRank(RankSchedule::uniform(2)),
+        ),
+    ];
+    let mut out = serde_json::Map::new();
+    for user in &vectors {
+        let mut by_format = serde_json::Map::new();
+        for (label, precision) in formats {
+            let mut model = match model_name.as_str() {
+                "legacy" => legacy_model(),
+                "sm99" => sm99_model(),
+                other => panic!("unknown model {other}"),
+            };
+            let (card, note) = precision.module_precisions();
+            model.modules[0].precision = card;
+            model.modules[2].precision = note;
+            let mut states = ReviewStateMaps::default();
+            let mut values = Vec::with_capacity(user.rows.len());
+            for row in &user.rows {
+                let input = ReviewInput {
+                    card_id: row.ids[0],
+                    deck_id: Some(row.ids[1]),
+                    note_id: Some(row.ids[2]),
+                    preset_id: Some(row.ids[3]),
+                    is_query: row.skip,
+                    ease: None,
+                    duration_millis: None,
+                    card_type: None,
+                    day_offset: None,
+                    current_elapsed_days: None,
+                    current_elapsed_seconds: None,
+                    target_retentions: [None; 4],
+                    enforce_grade_order: true,
+                };
+                let heads = model.review(&row.features, states.state_ref(&input));
+                values.push(serde_json::json!([
+                    heads.retrievability.clamp(1e-5, 1.0 - 1e-5),
+                    predict_curve(&heads.curve, row.elapsed)
+                ]));
+                if !row.skip {
+                    states.store(&input, heads.next_state);
+                }
+            }
+            by_format.insert(label.to_string(), serde_json::Value::Array(values));
+        }
+        println!("{}: {} rows", user.name, user.rows.len());
+        out.insert(user.name.clone(), serde_json::Value::Object(by_format));
+    }
+    fs::write(
+        std::env::var("ANKI_RWKV_LOWRANK_E2E_OUT").unwrap(),
+        serde_json::to_vec(&out).unwrap(),
+    )
+    .unwrap();
+}
+
+#[derive(serde::Deserialize)]
 struct AnswerTimeVectors {
     rows: Vec<usize>,
     review_th: Vec<usize>,

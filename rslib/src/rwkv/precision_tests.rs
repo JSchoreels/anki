@@ -594,6 +594,7 @@ fn rwkv_state_precision_lowrank_sizes_grow_with_the_answer_count() {
     let block = |rank: usize| 2 + HEADS * 2 * rank * (2 + HEAD_SIZE);
     for weights in models() {
         let mut card_sizes = Vec::new();
+        let mut note_sizes = Vec::new();
         for answers in 1..=20 {
             let reviews: Vec<ReviewInput> = reviews(7 * answers)
                 .into_iter()
@@ -629,11 +630,18 @@ fn rwkv_state_precision_lowrank_sizes_grow_with_the_answer_count() {
                 "{weights:?} {answers}"
             );
             card_sizes.push(card);
+            note_sizes.push(note);
         }
         assert!(card_sizes.windows(2).all(|pair| pair[0] <= pair[1]));
         println!(
-            "{weights:?}: low-rank card bytes at 1, 2, 16 answers: {} {} {}",
-            card_sizes[0], card_sizes[1], card_sizes[15]
+            "{weights:?}: low-rank card bytes at 1, 2, 16, 20 answers: {} {} {} {}; \
+             note bytes (one card's answers) at 1, 20: {} {}",
+            card_sizes[0],
+            card_sizes[1],
+            card_sizes[15],
+            card_sizes[19],
+            note_sizes[0],
+            note_sizes[19]
         );
     }
 }

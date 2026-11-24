@@ -4,8 +4,10 @@
 //! Manual benchmark of the runtimes behind the Big / Small / Tiny model
 //! sizes: answer replay (reviews/s), queue scoring, full predictions and the
 //! stored state per card, on a synthetic history of 4,000 cards, 2,000
-//! notes and 32,000 answers at the default state precision (compact int8
-//! cards and notes, `compact_cards_int8`).
+//! notes and 32,000 answers (sizes: `ANKI_RWKV_SIZE_BENCH_CARDS`,
+//! `ANKI_RWKV_SIZE_BENCH_ROUNDS`) at the compact int8 card and note state
+//! (`compact_cards_int8`) unless `ANKI_RWKV_SIZE_BENCH_PRECISION` says
+//! otherwise.
 //!
 //! ```sh
 //! ANKI_RWKV_SIZE_BENCH_RUNTIMES=small,small-pair,small-instant \
@@ -23,9 +25,24 @@ use std::time::Instant;
 
 use super::*;
 
-const CARDS: i64 = 4_000;
-const ROUNDS: i64 = 8;
 const FULL_PREDICTIONS: usize = 500;
+
+/// Cards (default 4,000; `ANKI_RWKV_SIZE_BENCH_CARDS`) and answer rounds
+/// (default 8; `ANKI_RWKV_SIZE_BENCH_ROUNDS`, 24 takes every card past the
+/// low-rank state's rank-4 tier at 16 answers).
+fn shape() -> (i64, i64) {
+    let read = |name: &str, default: i64| {
+        std::env::var(name)
+            .ok()
+            .and_then(|value| value.parse::<i64>().ok())
+            .unwrap_or(default)
+            .max(1)
+    };
+    (
+        read("ANKI_RWKV_SIZE_BENCH_CARDS", 4_000).max(FULL_PREDICTIONS as i64),
+        read("ANKI_RWKV_SIZE_BENCH_ROUNDS", 8),
+    )
+}
 
 fn weights(folder: &str) -> PathBuf {
     let root = PathBuf::from(env!("CARGO_MANIFEST_DIR")).join("../qt/aqt/rwkv_inference");
@@ -83,6 +100,7 @@ fn load(main: &str, instant: Option<&str>) -> Option<RwkvRuntime> {
 /// Every card answered once per round, rounds three days apart, in time
 /// order; two cards per note, three decks, one preset.
 fn answers() -> Vec<ReviewInput> {
+    let (cards, rounds) = shape();
     let mut state = 0x9e37_79b9_7f4a_7c15_u64;
     let mut next = move || {
         state = state
@@ -90,9 +108,9 @@ fn answers() -> Vec<ReviewInput> {
             .wrapping_add(1_442_695_040_888_963_407);
         state >> 33
     };
-    let mut out = Vec::with_capacity((CARDS * ROUNDS) as usize);
-    for round in 0..ROUNDS {
-        for card in 0..CARDS {
+    let mut out = Vec::with_capacity((cards * rounds) as usize);
+    for round in 0..rounds {
+        for card in 0..cards {
             let elapsed_days = if round == 0 { 0 } else { 3 };
             out.push(ReviewInput {
                 card_id: 10_000 + card,
@@ -115,7 +133,8 @@ fn answers() -> Vec<ReviewInput> {
 }
 
 fn queries() -> Vec<ReviewInput> {
-    (0..CARDS)
+    let (cards, rounds) = shape();
+    (0..cards)
         .map(|card| ReviewInput {
             card_id: 10_000 + card,
             note_id: Some(5_000 + card / 2),
@@ -125,7 +144,7 @@ fn queries() -> Vec<ReviewInput> {
             ease: None,
             duration_millis: None,
             card_type: Some(2),
-            day_offset: Some(1_000 + 3 * ROUNDS),
+            day_offset: Some(1_000 + 3 * rounds),
             current_elapsed_days: Some(3),
             current_elapsed_seconds: Some(3 * 86_400),
             target_retentions: [Some(0.9); 4],
@@ -158,7 +177,11 @@ fn rwkv_model_size_benchmark() {
     if let Ok(threads) = std::env::var("RAYON_NUM_THREADS") {
         println!("rayon_num_threads={threads}");
     }
-    println!("answers={} cards={CARDS} samples={samples}", answers.len());
+    let (cards, rounds) = shape();
+    println!(
+        "answers={} cards={cards} rounds={rounds} samples={samples}",
+        answers.len()
+    );
     for (name, main, instant) in RUNTIMES {
         if selected
             .as_deref()
@@ -222,7 +245,7 @@ fn rwkv_model_size_benchmark() {
             median(&mut full),
             state_bytes.0,
             state_bytes.1,
-            (state_bytes.0 as f64 + 2.0 * state_bytes.1 as f64) / CARDS as f64,
+            (state_bytes.0 as f64 + 2.0 * state_bytes.1 as f64) / cards as f64,
         );
     }
 }
