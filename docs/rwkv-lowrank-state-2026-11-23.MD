@@ -96,7 +96,13 @@ ratios from back-to-back pairs; history sizes via `ANKI_RWKV_SIZE_BENCH_CARDS` /
 The cost is in the codec's small solves (`rwkv_state_lowrank_codec_micro_benchmark`: one layer write 19 to 21 µs at
 head size 16, 33 µs at 32; a read 0.7 µs and 6 µs). The Jacobi solver stops once a sweep no longer reduces the
 off-diagonal mass: before, a third of the 5 x 5 solves ran all 60 sweeps and long-card replay took up to 2.6 times
-the int8 time (Tiny); the results are unchanged (same codec parity). At four threads (the Deck Options benchmark)
+the int8 time (Tiny); the results are unchanged (same codec parity). A later rewrite of the codec (faster low-rank codec in the fork
+(SM156)) keeps every stored byte identical (checked against a frozen copy of the codec above: long chains of every
+schedule shape, the scorer's vectors, random bases; `lowrank_reference.rs`) and halves the write: no per-head
+allocation (fixed-size arrays), and the four heads' Jacobi solves run in lockstep so their serial chains of divisions
+and square roots overlap (one layer write at rank 4: 21 to 22 -> 11 µs at head size 16, 33 -> 16 µs at 32; at
+rank 2: 7.7 -> 3.4 µs and 17 -> 6.4 µs; reads 0.8 -> 0.5 µs and 6.9 -> 1.4 µs). Replay of 1,000 cards x 24 answers, one thread, medians under load: Small
+90.3 -> 72.4 µs per review, Tiny 54.5 -> 39.2, Big 301.6 -> 237.0 (int8 rows 59.5, 31.1 and 250.8 in the same runs). At four threads (the Deck Options benchmark)
 Small and Tiny save 72% and 84% of Big's replay time as pairs (70% and 84% alone), against 77% and 88% at the int8
 rows; the Deck Options table uses the low-rank values. Its byte estimate keeps the mean per card and note, and the
 tooltip shows the range from rank 1 (one answer) to rank 4 (16 answers or more).

@@ -140,6 +140,13 @@ fn invalid(what: &str) -> io::Error {
 }
 
 const VECTOR_BYTES: usize = 2 + HEAD_SIZE;
+/// The largest basis of a write's solve: the previous write's left vectors
+/// (at most `MAX_RANK`) and the new value vector.
+const MAX_BASIS: usize = MAX_RANK + 1;
+const _: () = assert!(MAX_BASIS == 9, "eigh_lanes dispatches n = 1..=9");
+
+/// One factor vector of this engine's head size.
+type Vector = [f32; HEAD_SIZE];
 
 /// Decoded factor vector `index` (0..2c: left vectors, then right vectors) of
 /// `head`.
@@ -166,16 +173,23 @@ pub(super) fn decode_block(block: &[u8], matrix: &mut [f32]) -> io::Result<()> {
         }
     }
     reconstruct(block, rank, matrix);
-    if matrix.iter().any(|value| !value.is_finite()) {
+    if !all_finite(matrix) {
         return Err(invalid("non-finite matrix value"));
     }
     Ok(())
 }
 
+/// Every value finite (no early exit, so the check vectorises).
+fn all_finite(values: &[f32]) -> bool {
+    values
+        .iter()
+        .fold(true, |finite, value| finite & value.is_finite())
+}
+
 fn reconstruct(block: &[u8], rank: usize, matrix: &mut [f32]) {
-    matrix.fill(0.0);
-    let mut left = vec![[0.0_f32; HEAD_SIZE]; rank];
-    let mut right = vec![[0.0_f32; HEAD_SIZE]; rank];
+    debug_assert_eq!(matrix.len(), HEADS * HEAD_SIZE * HEAD_SIZE);
+    let mut left = [[0.0_f32; HEAD_SIZE]; MAX_RANK];
+    let mut right = [[0.0_f32; HEAD_SIZE]; MAX_RANK];
     for head in 0..HEADS {
         for component in 0..rank {
             vector(block, rank, head, component, &mut left[component]);
@@ -183,17 +197,17 @@ fn reconstruct(block: &[u8], rank: usize, matrix: &mut [f32]) {
         }
         let base = head * HEAD_SIZE * HEAD_SIZE;
         product(
-            &left,
-            &right,
+            &left[..rank],
+            &right[..rank],
             &mut matrix[base..base + HEAD_SIZE * HEAD_SIZE],
         );
     }
 }
 
-/// out[row][column] = sum_i left_i[row] right_i[column], in component order.
-fn product(left: &[[f32; HEAD_SIZE]], right: &[[f32; HEAD_SIZE]], out: &mut [f32]) {
-    for row in 0..HEAD_SIZE {
-        let out_row = &mut out[row * HEAD_SIZE..(row + 1) * HEAD_SIZE];
+/// out[row][column] = sum_i left_i[row] right_i[column], in component order
+/// (every value of `out` is written, also for no components).
+fn product(left: &[Vector], right: &[Vector], out: &mut [f32]) {
+    for (row, out_row) in out.chunks_exact_mut(HEAD_SIZE).enumerate() {
         out_row.fill(0.0);
         for (l, r) in left.iter().zip(right) {
             let scale = l[row];
@@ -219,6 +233,10 @@ pub(super) enum Previous<'a> {
 /// Encodes one layer's float update `matrix` (replaced by the stored
 /// reconstruction) after a write with value vector `v` (`HEADS * HEAD_SIZE`)
 /// and appends the block to `out`.
+///
+/// Everything per head lives in fixed-size stack arrays (no allocation on
+/// the factored path); the stored matrix is the product of the rounded
+/// factors as they are written (the values a decode of the block gives).
 pub(super) fn encode_layer(
     matrix: &mut [f32],
     previous: Previous<'_>,
@@ -239,50 +257,57 @@ pub(super) fn encode_layer(
         Previous::Block(block) => header(block).is_err(),
         Previous::Fresh => false,
     };
+    debug_assert_eq!(matrix.len(), HEADS * HEAD_SIZE * HEAD_SIZE);
     let rank = schedule.rank(answers);
     let start = out.len();
     out.push(answers);
     out.push(rank as u8);
     out.resize(start + block_len(rank), 0);
-    let mut basis = Vec::with_capacity((previous_rank + 1) * HEAD_SIZE);
-    let mut left = vec![0.0_f32; rank * HEAD_SIZE];
-    let mut right = vec![0.0_f32; rank * HEAD_SIZE];
-    for head in 0..HEADS {
-        let base = head * HEAD_SIZE * HEAD_SIZE;
-        let head_matrix = &mut matrix[base..base + HEAD_SIZE * HEAD_SIZE];
-        sanitize(head_matrix);
-        basis.clear();
-        if !full_basis {
+    let mut left = [[[0.0_f32; HEAD_SIZE]; MAX_RANK]; HEADS];
+    let mut right = [[[0.0_f32; HEAD_SIZE]; MAX_RANK]; HEADS];
+    sanitize(matrix);
+    if full_basis {
+        for (head, head_matrix) in matrix.chunks_exact(HEAD_SIZE * HEAD_SIZE).enumerate() {
+            factor_head_general(
+                head_matrix,
+                HEAD_SIZE,
+                None,
+                rank,
+                left[head].as_flattened_mut(),
+                right[head].as_flattened_mut(),
+            );
+        }
+    } else {
+        debug_assert_eq!(v.len(), HEADS * HEAD_SIZE);
+        let mut basis = [[[0.0_f32; HEAD_SIZE]; MAX_BASIS]; HEADS];
+        for (head, vectors) in basis.iter_mut().enumerate() {
             if let Previous::Block(block) = previous {
-                let mut values = [0.0_f32; HEAD_SIZE];
-                for component in 0..previous_rank {
-                    vector(block, previous_rank, head, component, &mut values);
-                    basis.extend_from_slice(&values);
+                for (component, slot) in vectors[..previous_rank].iter_mut().enumerate() {
+                    vector(block, previous_rank, head, component, slot);
                 }
             }
-            let mut value = v[head * HEAD_SIZE..(head + 1) * HEAD_SIZE].to_vec();
-            debug_assert_eq!(v.len(), HEADS * HEAD_SIZE);
-            sanitize(&mut value);
-            basis.extend_from_slice(&value);
+            let value = &mut vectors[previous_rank];
+            value.copy_from_slice(&v[head * HEAD_SIZE..(head + 1) * HEAD_SIZE]);
+            sanitize(value);
         }
-        factor_head(
-            head_matrix,
-            HEAD_SIZE,
-            (!full_basis).then_some(basis.as_slice()),
+        factor_heads(
+            matrix,
+            &basis,
+            previous_rank + 1,
             rank,
             &mut left,
             &mut right,
         );
-        let mut write = out.len() - block_len(rank) + 2 + head * 2 * rank * VECTOR_BYTES;
-        for vector in left
-            .chunks_exact_mut(HEAD_SIZE)
-            .chain(right.chunks_exact_mut(HEAD_SIZE))
-        {
+    }
+    for (head, head_matrix) in matrix.chunks_exact_mut(HEAD_SIZE * HEAD_SIZE).enumerate() {
+        let (left, right) = (&mut left[head][..rank], &mut right[head][..rank]);
+        let mut write = start + 2 + head * 2 * rank * VECTOR_BYTES;
+        for vector in left.iter_mut().chain(right.iter_mut()) {
             quantize_vector(vector, &mut out[write..write + VECTOR_BYTES]);
             write += VECTOR_BYTES;
         }
+        product(left, right, head_matrix);
     }
-    reconstruct(&out[start..], rank, matrix);
 }
 
 /// Encodes a matrix that no write at this precision produced (a state held
@@ -301,6 +326,9 @@ pub(super) fn encode_existing(matrix: &mut [f32], schedule: RankSchedule, out: &
 /// Non-finite values (never written by a finite model) become finite so
 /// the stored state stays decodable: NaN as 0, infinities as +-f32::MAX.
 fn sanitize(values: &mut [f32]) {
+    if all_finite(values) {
+        return;
+    }
     for value in values {
         if !value.is_finite() {
             *value = if value.is_nan() {
@@ -326,12 +354,361 @@ pub(super) fn quantize_vector(values: &mut [f32], out: &mut [u8]) {
     }
 }
 
+/// `factor_heads` for one head and a head size given at run time (the tests' vectors
+/// cover both engines' head sizes); other head sizes and the full basis use
+/// the general solve.
+#[cfg(test)]
+pub(super) fn factor_head(
+    matrix: &[f32],
+    k: usize,
+    basis: Option<&[f32]>,
+    rank: usize,
+    left_out: &mut [f32],
+    right_out: &mut [f32],
+) {
+    fn fixed<const K: usize>(
+        matrix: &[f32],
+        basis: &[f32],
+        rank: usize,
+        left_out: &mut [f32],
+        right_out: &mut [f32],
+    ) {
+        let mut vectors = [[[0.0_f32; K]; MAX_BASIS]];
+        for (vector, values) in vectors[0].iter_mut().zip(basis.chunks_exact(K)) {
+            vector.copy_from_slice(values);
+        }
+        let mut left = [[[0.0_f32; K]; MAX_RANK]];
+        let mut right = [[[0.0_f32; K]; MAX_RANK]];
+        factor_heads(matrix, &vectors, basis.len() / K, rank, &mut left, &mut right);
+        left_out[..rank * K].copy_from_slice(left[0][..rank].as_flattened());
+        right_out[..rank * K].copy_from_slice(right[0][..rank].as_flattened());
+    }
+    match basis {
+        Some(basis) if rank <= MAX_RANK && (k..=MAX_BASIS * k).contains(&basis.len()) && k == 16 => {
+            fixed::<16>(matrix, basis, rank, left_out, right_out)
+        }
+        Some(basis) if rank <= MAX_RANK && (k..=MAX_BASIS * k).contains(&basis.len()) && k == 32 => {
+            fixed::<32>(matrix, basis, rank, left_out, right_out)
+        }
+        _ => factor_head_general(matrix, k, basis, rank, left_out, right_out),
+    }
+}
+
+/// One small symmetric problem (the leading `n x n` block is used).
+type Small = [[f64; MAX_BASIS]; MAX_BASIS];
+
+/// The rank-`rank` factors of each head's `K x K` matrix (`matrix` holds
+/// `basis.len()` heads, row = value index) whose column space lies in the
+/// span of that head's first `m0` basis vectors, by decreasing singular
+/// value; zero for components beyond the basis. Writes `left_out[head]` and
+/// `right_out[head]` components `0..rank`.
+///
+/// Per head, the same arithmetic as `factor_head_general` on a basis,
+/// operation for operation and in the same order (so the same bits), with
+/// stack arrays and compile-time sizes. The heads' eigen problems run
+/// together (`eigh_lanes`), so their serial Jacobi rotations overlap.
+fn factor_heads<const K: usize>(
+    matrix: &[f32],
+    basis: &[[[f32; K]; MAX_BASIS]],
+    m0: usize,
+    rank: usize,
+    left_out: &mut [[[f32; K]; MAX_RANK]],
+    right_out: &mut [[[f32; K]; MAX_RANK]],
+) {
+    let heads = basis.len();
+    debug_assert!(heads <= HEADS && matrix.len() == heads * K * K);
+    debug_assert!((1..=MAX_BASIS).contains(&m0) && rank <= MAX_RANK);
+    for vector in left_out[..heads]
+        .iter_mut()
+        .chain(&mut right_out[..heads])
+        .flat_map(|vectors| &mut vectors[..rank])
+    {
+        vector.fill(0.0);
+    }
+    if rank == 0 {
+        return;
+    }
+    // P: the basis vectors, each normalised (zero vectors stay zero).
+    let mut pn = [[[0.0_f64; K]; MAX_BASIS]; HEADS];
+    let mut gram = [[[0.0_f64; MAX_BASIS]; MAX_BASIS]; HEADS];
+    for head in 0..heads {
+        let pn = &mut pn[head];
+        for (vector, values) in pn.iter_mut().zip(&basis[head][..m0]) {
+            for (x, &value) in vector.iter_mut().zip(values) {
+                *x = value as f64;
+            }
+            let norm = vector.iter().map(|x| x * x).sum::<f64>().sqrt();
+            if norm > 0.0 {
+                for x in vector.iter_mut() {
+                    *x /= norm;
+                }
+            }
+        }
+        let gram = &mut gram[head];
+        for i in 0..m0 {
+            for j in 0..=i {
+                let dot = dot_fixed(&pn[i], &pn[j]);
+                gram[i][j] = dot;
+                gram[j][i] = dot;
+            }
+        }
+    }
+    let mut lanes = [false; HEADS];
+    lanes[..heads].fill(true);
+    let (lam, w) = eigh_lanes(&gram, m0, lanes);
+    // Q: orthonormal basis vectors of the kept directions; B = Q^T S.
+    let mut q = [[[0.0_f64; K]; MAX_BASIS]; HEADS];
+    let mut b = [[[0.0_f64; K]; MAX_BASIS]; HEADS];
+    let mut bbt = [[[0.0_f64; MAX_BASIS]; MAX_BASIS]; HEADS];
+    let mut kept = [0_usize; HEADS];
+    for head in 0..heads {
+        let (lam, w, pn) = (&lam[head], &w[head], &pn[head]);
+        let top = lam[..m0].iter().copied().fold(0.0_f64, f64::max);
+        let q = &mut q[head];
+        let mut m = 0;
+        for (j, &value) in lam[..m0].iter().enumerate() {
+            if value > top * KEEP_TOL && value > 0.0 {
+                let inv = value.sqrt().recip();
+                let column = &mut q[m];
+                for i in 0..m0 {
+                    let weight = w[i][j] * inv;
+                    if weight != 0.0 {
+                        for (c, &x) in column.iter_mut().zip(&pn[i]) {
+                            *c += weight * x;
+                        }
+                    }
+                }
+                m += 1;
+            }
+        }
+        kept[head] = m;
+        let b = &mut b[head];
+        let head_matrix = &matrix[head * K * K..(head + 1) * K * K];
+        for (bj, qj) in b[..m].iter_mut().zip(&*q) {
+            for (&weight, row) in qj.iter().zip(head_matrix.chunks_exact(K)) {
+                if weight != 0.0 {
+                    for (value, &s) in bj.iter_mut().zip(row) {
+                        *value += weight * s as f64;
+                    }
+                }
+            }
+        }
+        let bbt = &mut bbt[head];
+        for i in 0..m {
+            for j in 0..=i {
+                let dot = dot_fixed(&b[i], &b[j]);
+                bbt[i][j] = dot;
+                bbt[j][i] = dot;
+            }
+        }
+    }
+    // The eigen problems of B B^T, heads of the same size together.
+    let mut s2 = [[0.0_f64; MAX_BASIS]; HEADS];
+    let mut u = [[[0.0_f64; MAX_BASIS]; MAX_BASIS]; HEADS];
+    for size in 1..=MAX_BASIS {
+        let mut lanes = [false; HEADS];
+        for (lane, &m) in lanes.iter_mut().zip(&kept[..heads]) {
+            *lane = m == size;
+        }
+        if lanes.contains(&true) {
+            let (values, vectors) = eigh_lanes(&bbt, size, lanes);
+            for head in (0..heads).filter(|&head| lanes[head]) {
+                s2[head] = values[head];
+                u[head] = vectors[head];
+            }
+        }
+    }
+    for head in 0..heads {
+        let m = kept[head];
+        if m == 0 {
+            continue;
+        }
+        let (s2, u, q, b) = (&s2[head], &u[head], &q[head], &b[head]);
+        let mut order = [0_usize; MAX_BASIS];
+        for (index, slot) in order.iter_mut().enumerate() {
+            *slot = index;
+        }
+        let order = &mut order[..m];
+        order.sort_by(|&x, &y| s2[y].total_cmp(&s2[x]));
+        for (component, &column) in order.iter().take(rank).enumerate() {
+            let mut left = [0.0_f64; K];
+            let mut right = [0.0_f64; K];
+            for j in 0..m {
+                let weight = u[j][column];
+                for (value, &x) in left.iter_mut().zip(&q[j]) {
+                    *value += weight * x;
+                }
+                for (value, &x) in right.iter_mut().zip(&b[j]) {
+                    *value += weight * x;
+                }
+            }
+            let sigma = right.iter().map(|x| x * x).sum::<f64>().sqrt();
+            let g = sigma.sqrt();
+            let divisor = if g > 0.0 { g } else { 1.0 };
+            for ((out, &x), (out_right, &y)) in left_out[head][component]
+                .iter_mut()
+                .zip(&left)
+                .zip(right_out[head][component].iter_mut().zip(&right))
+            {
+                *out = (x * g) as f32;
+                *out_right = (y / divisor) as f32;
+            }
+        }
+    }
+}
+
+fn dot_fixed<const K: usize>(a: &[f64; K], b: &[f64; K]) -> f64 {
+    a.iter().zip(b).map(|(x, y)| x * y).sum()
+}
+
+/// `eigh` of the leading `n x n` block (1 <= n <= `MAX_BASIS`) of each
+/// problem whose lane is set: eigenvalues, and eigenvectors as columns
+/// (zeros for the other lanes).
+fn eigh_lanes(
+    problems: &[Small; HEADS],
+    n: usize,
+    lanes: [bool; HEADS],
+) -> ([[f64; MAX_BASIS]; HEADS], [Small; HEADS]) {
+    fn run<const N: usize>(
+        problems: &[Small; HEADS],
+        lanes: [bool; HEADS],
+    ) -> ([[f64; MAX_BASIS]; HEADS], [Small; HEADS]) {
+        let mut a = [[[0.0_f64; N]; N]; HEADS];
+        for (lane, problem) in a.iter_mut().zip(problems) {
+            for (row, values) in lane.iter_mut().zip(problem) {
+                row.copy_from_slice(&values[..N]);
+            }
+        }
+        let v = jacobi_lanes(&mut a, lanes);
+        let mut values = [[0.0_f64; MAX_BASIS]; HEADS];
+        let mut vectors = [[[0.0_f64; MAX_BASIS]; MAX_BASIS]; HEADS];
+        for lane in (0..HEADS).filter(|&lane| lanes[lane]) {
+            for i in 0..N {
+                values[lane][i] = a[lane][i][i];
+                vectors[lane][i][..N].copy_from_slice(&v[lane][i]);
+            }
+        }
+        (values, vectors)
+    }
+    match n {
+        1 => run::<1>(problems, lanes),
+        2 => run::<2>(problems, lanes),
+        3 => run::<3>(problems, lanes),
+        4 => run::<4>(problems, lanes),
+        5 => run::<5>(problems, lanes),
+        6 => run::<6>(problems, lanes),
+        7 => run::<7>(problems, lanes),
+        8 => run::<8>(problems, lanes),
+        9 => run::<9>(problems, lanes),
+        _ => unreachable!("eigen problem of size {n}"),
+    }
+}
+
+/// `eigh`'s cyclic Jacobi rotations on each lane's `N x N` problem (in
+/// place: the diagonal ends as the eigenvalues; returns the eigenvectors as
+/// columns). Every lane runs exactly `eigh`'s sequence (stop rule, sweep
+/// cap, rotation order, operation order), so each gives `eigh`'s bits; the
+/// lanes only share the loop, so the CPU overlaps their independent chains
+/// of divisions and square roots (one lane alone is latency-bound).
+fn jacobi_lanes<const N: usize>(
+    a: &mut [[[f64; N]; N]; HEADS],
+    mut active: [bool; HEADS],
+) -> [[[f64; N]; N]; HEADS] {
+    let mut v = [[[0.0_f64; N]; N]; HEADS];
+    for lane in v.iter_mut() {
+        for (i, row) in lane.iter_mut().enumerate() {
+            row[i] = 1.0;
+        }
+    }
+    let mut last_off = [f64::INFINITY; HEADS];
+    for _sweep in 0..60 {
+        for lane in 0..HEADS {
+            if !active[lane] {
+                continue;
+            }
+            let a = &a[lane];
+            // The sums of `eigh` (same terms, same order; the terms are
+            // squares, so the starting zero's sign does not matter).
+            let mut off = -0.0_f64;
+            for (i, row) in a.iter().enumerate() {
+                for (j, &value) in row.iter().enumerate() {
+                    if j != i {
+                        off += value * value;
+                    }
+                }
+            }
+            let mut diagonal = -0.0_f64;
+            for (i, row) in a.iter().enumerate() {
+                diagonal += row[i] * row[i];
+            }
+            if off <= diagonal * 1e-32 || off == 0.0 || off >= last_off[lane] {
+                active[lane] = false;
+            } else {
+                last_off[lane] = off;
+            }
+        }
+        if !active.contains(&true) {
+            break;
+        }
+        for p in 0..N {
+            for q in p + 1..N {
+                // All lanes' rotation angles first (independent chains),
+                // then the updates.
+                let mut rotations = [(0.0_f64, 0.0_f64, false); HEADS];
+                for (lane, rotation) in rotations.iter_mut().enumerate() {
+                    if !active[lane] {
+                        continue;
+                    }
+                    let a = &a[lane];
+                    let apq = a[p][q];
+                    if apq == 0.0 {
+                        continue;
+                    }
+                    let app = a[p][p];
+                    let aqq = a[q][q];
+                    let theta = (aqq - app) / (2.0 * apq);
+                    let t = theta.signum() / (theta.abs() + (theta * theta + 1.0).sqrt());
+                    let t = if theta == 0.0 { 1.0 } else { t };
+                    let c = (t * t + 1.0).sqrt().recip();
+                    let s = t * c;
+                    *rotation = (c, s, true);
+                }
+                for ((a, v), &(c, s, rotate)) in a.iter_mut().zip(v.iter_mut()).zip(&rotations) {
+                    if !rotate {
+                        continue;
+                    }
+                    for row in a.iter_mut() {
+                        let arp = row[p];
+                        let arq = row[q];
+                        row[p] = c * arp - s * arq;
+                        row[q] = s * arp + c * arq;
+                    }
+                    for r in 0..N {
+                        let apr = a[p][r];
+                        let aqr = a[q][r];
+                        a[p][r] = c * apr - s * aqr;
+                        a[q][r] = s * apr + c * aqr;
+                    }
+                    for row in v.iter_mut() {
+                        let vrp = row[p];
+                        let vrq = row[q];
+                        row[p] = c * vrp - s * vrq;
+                        row[q] = s * vrp + c * vrq;
+                    }
+                }
+            }
+        }
+    }
+    v
+}
+
 /// The rank-`rank` factors of one head's matrix (`k x k`, row = value
 /// index) whose column space lies in the span of `basis` (vectors of `k`
 /// values; `None` = every direction). Writes `rank` left vectors and `rank`
 /// right vectors of `k` float32 values (zero for components beyond the
-/// basis), by decreasing singular value.
-pub(super) fn factor_head(
+/// basis), by decreasing singular value. The general solve (any head size
+/// and basis size, allocating): the full basis of a state without factors.
+fn factor_head_general(
     matrix: &[f32],
     k: usize,
     basis: Option<&[f32]>,
@@ -511,10 +888,253 @@ pub(super) fn block_info(block: &[u8]) -> io::Result<(u8, usize)> {
 }
 
 #[cfg(test)]
+#[path = "lowrank_reference.rs"]
+mod reference;
+
+#[cfg(test)]
 mod tests {
     use std::io::Read;
 
     use super::*;
+
+    fn bits(values: &[f32]) -> Vec<u32> {
+        values.iter().map(|value| value.to_bits()).collect()
+    }
+
+    /// One synthetic layer write on `matrix`: S' = S diag(w) + v k^T per
+    /// head (w in 0.5..1 per column), with the value vector `v`. Some
+    /// answers use extreme or degenerate inputs.
+    fn synthetic_write(matrix: &[f32], seed: &mut u64, answer: u32) -> (Vec<f32>, Vec<f32>) {
+        let decay: Vec<f32> = random(seed, HEADS * HEAD_SIZE, 0.5)
+            .into_iter()
+            .map(|x| 0.75 + x)
+            .collect();
+        let scale = match answer % 7 {
+            0 => 1e-3,
+            3 => 40.0,
+            _ => 2.0,
+        };
+        let mut v = random(seed, HEADS * HEAD_SIZE, scale);
+        let mut key = random(seed, HEADS * HEAD_SIZE, 2.0);
+        match answer {
+            40 => v.iter_mut().for_each(|x| *x *= 1e30),
+            60 => v.fill(0.0),
+            70 => v.iter_mut().for_each(|x| *x *= 1e-33),
+            75 => key.fill(0.0),
+            // The new value vector repeats the previous direction.
+            90 => v[..HEAD_SIZE].copy_from_slice(&matrix[..HEAD_SIZE]),
+            _ => {}
+        }
+        let mut next = vec![0.0_f32; matrix.len()];
+        for head in 0..HEADS {
+            for row in 0..HEAD_SIZE {
+                for column in 0..HEAD_SIZE {
+                    let index = head * HEAD_SIZE * HEAD_SIZE + row * HEAD_SIZE + column;
+                    next[index] = matrix[index] * decay[head * HEAD_SIZE + column]
+                        + v[head * HEAD_SIZE + row] * key[head * HEAD_SIZE + column];
+                }
+            }
+        }
+        if answer == 50 {
+            next[3] = f32::NAN;
+            next[5] = f32::INFINITY;
+            next[HEAD_SIZE * HEAD_SIZE + 1] = f32::NEG_INFINITY;
+        }
+        if answer == 80 {
+            next.fill(0.0);
+        }
+        (next, v)
+    }
+
+    /// The previous block of a write (`unreadable`: a block whose header
+    /// does not parse, written on the full basis).
+    fn choose(block: &[u8], unreadable: bool) -> Previous<'_> {
+        if unreadable {
+            Previous::Block(&[1])
+        } else if block.is_empty() {
+            Previous::Fresh
+        } else {
+            Previous::Block(block)
+        }
+    }
+
+    /// The allocation-free codec stores the same bytes and the same matrix,
+    /// bit for bit, as the codec merged into the release candidate (the
+    /// frozen copy in `lowrank_reference.rs`): long chains for every
+    /// schedule shape, from a fresh state, from a dense matrix without
+    /// factors and from an unreadable previous block, with extreme, zero,
+    /// tiny, non-finite and repeated inputs, past the 255-answer saturation.
+    #[test]
+    fn rwkv_state_lowrank_codec_matches_the_frozen_codec_bit_for_bit() {
+        let size = HEADS * HEAD_SIZE * HEAD_SIZE;
+        let mut schedules = vec![
+            RankSchedule::DEFAULT,
+            RankSchedule::parse("1.3.8").unwrap(),
+            RankSchedule::parse("8.20.2").unwrap(),
+        ];
+        schedules.extend((1..=MAX_RANK.min(HEAD_SIZE) as u8).map(RankSchedule::uniform));
+        let mut writes = 0;
+        for (index, &schedule) in schedules.iter().enumerate() {
+            for start in 0..3 {
+                let mut seed = 1_000 + 10 * index as u64 + start;
+                let mut matrix = vec![0.0_f32; size];
+                let (mut new_block, mut old_block) = (Vec::new(), Vec::new());
+                if start == 1 {
+                    // A dense matrix without factors: the full basis.
+                    let mut new_matrix = random(&mut seed, size, 3.0);
+                    let mut old_matrix = new_matrix.clone();
+                    encode_existing(&mut new_matrix, schedule, &mut new_block);
+                    reference::encode_existing(&mut old_matrix, schedule, &mut old_block);
+                    assert_eq!(new_block, old_block);
+                    assert_eq!(bits(&new_matrix), bits(&old_matrix));
+                    matrix = new_matrix;
+                }
+                for answer in 1..=300_u32 {
+                    let (next, v) = synthetic_write(&matrix, &mut seed, answer);
+                    let unreadable = start == 2 && answer == 120;
+                    let (mut new_matrix, mut old_matrix) = (next.clone(), next);
+                    let (mut new_out, mut old_out) = (Vec::new(), Vec::new());
+                    encode_layer(
+                        &mut new_matrix,
+                        choose(&new_block, unreadable),
+                        &v,
+                        schedule,
+                        &mut new_out,
+                    );
+                    reference::encode_layer(
+                        &mut old_matrix,
+                        choose(&old_block, unreadable),
+                        &v,
+                        schedule,
+                        &mut old_out,
+                    );
+                    assert_eq!(new_out, old_out, "{schedule:?} start {start} answer {answer}");
+                    assert_eq!(bits(&new_matrix), bits(&old_matrix));
+                    let mut new_decoded = vec![1.0_f32; size];
+                    let mut old_decoded = vec![2.0_f32; size];
+                    decode_block(&new_out, &mut new_decoded).unwrap();
+                    reference::decode_block(&old_out, &mut old_decoded).unwrap();
+                    assert_eq!(bits(&new_decoded), bits(&old_decoded));
+                    assert_eq!(bits(&new_decoded), bits(&new_matrix));
+                    new_block = new_out;
+                    old_block = old_out;
+                    matrix = new_matrix;
+                    writes += 1;
+                }
+            }
+        }
+        println!("{writes} layer writes identical (head size {HEAD_SIZE})");
+    }
+
+    fn compare_layer<const K: usize>(layer: &[(Vec<f32>, Vec<f32>)], rank: usize) {
+        let m0 = layer[0].1.len() / K;
+        let mut basis = vec![[[0.0_f32; K]; MAX_BASIS]; layer.len()];
+        let mut matrix = Vec::new();
+        for (vectors, (head_matrix, head_basis)) in basis.iter_mut().zip(layer) {
+            for (vector, values) in vectors.iter_mut().zip(head_basis.chunks_exact(K)) {
+                vector.copy_from_slice(values);
+            }
+            matrix.extend_from_slice(head_matrix);
+        }
+        let mut left = vec![[[7.0_f32; K]; MAX_RANK]; layer.len()];
+        let mut right = vec![[[7.0_f32; K]; MAX_RANK]; layer.len()];
+        factor_heads(&matrix, &basis, m0, rank, &mut left, &mut right);
+        for (head, (head_matrix, head_basis)) in layer.iter().enumerate() {
+            let (mut l, mut r) = (vec![9.0; rank * K], vec![9.0; rank * K]);
+            reference::factor_head(head_matrix, K, Some(head_basis), rank, &mut l, &mut r);
+            assert_eq!(bits(left[head][..rank].as_flattened()), bits(&l));
+            assert_eq!(bits(right[head][..rank].as_flattened()), bits(&r));
+        }
+    }
+
+    /// The fixed-size solve gives the frozen general solve's factors bit for
+    /// bit at both head sizes: every write of the scorer's vectors (from the
+    /// scorer's previous factors) and random bases of every size (1 to
+    /// `MAX_BASIS` vectors, every rank) with zero, repeated and nearly
+    /// dependent vectors, alone and as the heads of one layer.
+    #[test]
+    fn rwkv_state_lowrank_solve_matches_the_frozen_solve_bit_for_bit() {
+        let compare = |matrix: &[f32], k: usize, basis: &[f32], rank: usize| {
+            let (mut l1, mut r1) = (vec![7.0; rank * k], vec![7.0; rank * k]);
+            let (mut l2, mut r2) = (vec![9.0; rank * k], vec![9.0; rank * k]);
+            factor_head(matrix, k, Some(basis), rank, &mut l1, &mut r1);
+            reference::factor_head(matrix, k, Some(basis), rank, &mut l2, &mut r2);
+            assert_eq!(bits(&l1), bits(&l2), "k={k} rank={rank}");
+            assert_eq!(bits(&r1), bits(&r2), "k={k} rank={rank}");
+        };
+        let mut solves = 0;
+        for case in cases() {
+            let (k, heads) = (case.k, case.heads);
+            let mut last: Vec<Option<&Entry>> = vec![None; case.entities];
+            for step in &case.steps {
+                for entry in step {
+                    for head in 0..heads {
+                        let (state, mut basis) = match last[entry.entity] {
+                            Some(previous) => {
+                                let span = previous.rank * k;
+                                let left = &previous.left[head * span..(head + 1) * span];
+                                let right = &previous.right[head * span..(head + 1) * span];
+                                (outer(left, right, k, previous.rank), left.to_vec())
+                            }
+                            None => (vec![0.0; k * k], Vec::new()),
+                        };
+                        let inputs = head_inputs(entry, heads, k, head);
+                        basis.extend_from_slice(&inputs[4 * k..5 * k]);
+                        compare(&update(&state, &inputs, k), k, &basis, entry.rank);
+                        solves += 1;
+                    }
+                    last[entry.entity] = Some(entry);
+                }
+            }
+        }
+        let mut seed = 5;
+        for k in [16, 32] {
+            for m0 in 1..=MAX_BASIS {
+                for rank in 1..=MAX_RANK {
+                    let mut layer = Vec::new();
+                    for variant in 0..HEADS {
+                        let mut basis = random(&mut seed, m0 * k, 2.0);
+                        match variant {
+                            1 if m0 > 1 => {
+                                let (first, rest) = basis.split_at_mut(k);
+                                rest[(m0 - 2) * k..].copy_from_slice(first);
+                            }
+                            2 if m0 > 1 => {
+                                let noise = random(&mut seed, k, 1e-4);
+                                let (first, rest) = basis.split_at_mut(k);
+                                for ((x, &y), &e) in
+                                    rest[(m0 - 2) * k..].iter_mut().zip(&*first).zip(&noise)
+                                {
+                                    *x = y + e;
+                                }
+                            }
+                            3 => basis[..k].fill(0.0),
+                            _ => {}
+                        }
+                        let right = random(&mut seed, m0 * k, 2.0);
+                        let mut matrix = outer(&basis, &right, k, m0);
+                        let decay = random(&mut seed, k, 0.5);
+                        for row in matrix.chunks_exact_mut(k) {
+                            for (x, &w) in row.iter_mut().zip(&decay) {
+                                *x *= 0.75 + w;
+                            }
+                        }
+                        compare(&matrix, k, &basis, rank);
+                        solves += 1;
+                        layer.push((matrix, basis));
+                    }
+                    // The heads of one layer solved together (lanes that
+                    // keep different numbers of directions and stop after
+                    // different sweeps).
+                    match k {
+                        16 => compare_layer::<16>(&layer, rank),
+                        _ => compare_layer::<32>(&layer, rank),
+                    }
+                }
+            }
+        }
+        println!("{solves} head solves identical");
+    }
 
     struct Entry {
         entity: usize,
@@ -912,7 +1532,8 @@ mod tests {
     /// thread): one layer's write (`encode_layer` on a previous block, the
     /// factored solve, the int8 rounding and the reconstruction) and one
     /// layer's read (`decode_block`), at rank 2 (a card below 16 answers)
-    /// and rank 4, for this engine's head layout.
+    /// and rank 4, for this engine's head layout; the frozen codec of the
+    /// release candidate (`reference`) and this one back to back.
     ///
     /// ```sh
     /// cargo test --release -p anki --lib rwkv_state_lowrank_codec_micro_benchmark -- --ignored --nocapture
@@ -920,70 +1541,92 @@ mod tests {
     #[test]
     #[ignore]
     fn rwkv_state_lowrank_codec_micro_benchmark() {
+        type Encode = fn(&mut [f32], Previous<'_>, &[f32], RankSchedule, &mut Vec<u8>);
+        type Decode = fn(&[u8], &mut [f32]) -> bool;
+        let codecs: [(&str, Encode, Decode); 2] = [
+            ("frozen", reference::encode_layer, |block, matrix| {
+                reference::decode_block(block, matrix).is_ok()
+            }),
+            ("current", encode_layer, |block, matrix| {
+                decode_block(block, matrix).is_ok()
+            }),
+        ];
         let size = HEADS * HEAD_SIZE * HEAD_SIZE;
-        for (answers, label) in [(8_u32, "rank 2"), (40, "rank 4")] {
+        // (answers before the timed writes, label): 64 timed writes each,
+        // all below 16 answers for rank 2 (a fresh chain per write) and
+        // all at rank 4 from answer 41.
+        for (answers, label) in [(1_u32, "rank 2"), (40, "rank 4")] {
             let mut seed = 11;
-            let mut block: Vec<u8> = Vec::new();
-            let mut matrix = vec![0.0_f32; size];
             let mut writes = Vec::new();
-            for answer in 1..=answers + 64 {
-                let mut next: Vec<f32> = matrix.iter().map(|x| x * 0.9).collect();
-                let v = random(&mut seed, HEADS * HEAD_SIZE, 2.0);
-                let key = random(&mut seed, HEADS * HEAD_SIZE, 2.0);
-                for head in 0..HEADS {
-                    for row in 0..HEAD_SIZE {
-                        for column in 0..HEAD_SIZE {
-                            next[head * HEAD_SIZE * HEAD_SIZE + row * HEAD_SIZE + column] +=
-                                v[head * HEAD_SIZE + row] * key[head * HEAD_SIZE + column];
+            for _chain in 0..if answers == 1 { 8 } else { 1 } {
+                let mut block: Vec<u8> = Vec::new();
+                let mut matrix = vec![0.0_f32; size];
+                let timed = if answers == 1 { 8 } else { 64 };
+                for answer in 1..=answers + timed {
+                    let mut next: Vec<f32> = matrix.iter().map(|x| x * 0.9).collect();
+                    let v = random(&mut seed, HEADS * HEAD_SIZE, 2.0);
+                    let key = random(&mut seed, HEADS * HEAD_SIZE, 2.0);
+                    for head in 0..HEADS {
+                        for row in 0..HEAD_SIZE {
+                            for column in 0..HEAD_SIZE {
+                                next[head * HEAD_SIZE * HEAD_SIZE + row * HEAD_SIZE + column] +=
+                                    v[head * HEAD_SIZE + row] * key[head * HEAD_SIZE + column];
+                            }
                         }
                     }
+                    if answer > answers {
+                        writes.push((block.clone(), next.clone(), v.clone()));
+                    }
+                    let previous = if block.is_empty() {
+                        Previous::Fresh
+                    } else {
+                        Previous::Block(&block)
+                    };
+                    let mut out = Vec::new();
+                    encode_layer(&mut next, previous, &v, RankSchedule::DEFAULT, &mut out);
+                    block = out;
+                    matrix = next;
                 }
-                if answer > answers {
-                    writes.push((block.clone(), next.clone(), v.clone()));
-                }
-                let previous = if block.is_empty() {
-                    Previous::Fresh
-                } else {
-                    Previous::Block(&block)
-                };
-                let mut out = Vec::new();
-                encode_layer(&mut next, previous, &v, RankSchedule::DEFAULT, &mut out);
-                block = out;
-                matrix = next;
             }
             let rounds = 2_000;
-            let mut out = Vec::with_capacity(block.len());
-            let started = std::time::Instant::now();
-            let mut checksum = 0.0_f32;
-            for _ in 0..rounds {
-                for (previous, next, v) in &writes {
-                    let mut next = next.clone();
-                    out.clear();
-                    encode_layer(
-                        &mut next,
-                        Previous::Block(previous),
-                        v,
-                        RankSchedule::DEFAULT,
-                        &mut out,
-                    );
-                    checksum += next[0];
+            for (name, encode, decode) in codecs {
+                let mut out = Vec::with_capacity(block_len(MAX_RANK));
+                let mut scratch = vec![0.0_f32; size];
+                let started = std::time::Instant::now();
+                let mut checksum = 0.0_f32;
+                for _ in 0..rounds {
+                    for (previous, next, v) in &writes {
+                        scratch.copy_from_slice(next);
+                        out.clear();
+                        let previous = if previous.is_empty() {
+                            Previous::Fresh
+                        } else {
+                            Previous::Block(previous)
+                        };
+                        encode(&mut scratch, previous, v, RankSchedule::DEFAULT, &mut out);
+                        checksum += scratch[0];
+                    }
                 }
-            }
-            let encode_ns =
-                started.elapsed().as_secs_f64() * 1e9 / (rounds * writes.len()) as f64;
-            let mut decoded = vec![0.0_f32; size];
-            let started = std::time::Instant::now();
-            for _ in 0..rounds {
-                for (previous, _, _) in &writes {
-                    decode_block(previous, &mut decoded).unwrap();
-                    checksum += decoded[0];
+                let encode_ns =
+                    started.elapsed().as_secs_f64() * 1e9 / (rounds * writes.len()) as f64;
+                let stored: Vec<&Vec<u8>> = writes
+                    .iter()
+                    .map(|(previous, _, _)| previous)
+                    .filter(|previous| !previous.is_empty())
+                    .collect();
+                let started = std::time::Instant::now();
+                for _ in 0..rounds {
+                    for previous in &stored {
+                        assert!(decode(previous, &mut scratch));
+                        checksum += scratch[0];
+                    }
                 }
+                let decode_ns =
+                    started.elapsed().as_secs_f64() * 1e9 / (rounds * stored.len()) as f64;
+                println!(
+                    "heads={HEADS} head_size={HEAD_SIZE} {label} {name}: encode_layer {encode_ns:.0} ns, decode_block {decode_ns:.0} ns per layer (checksum {checksum:.3})"
+                );
             }
-            let decode_ns =
-                started.elapsed().as_secs_f64() * 1e9 / (rounds * writes.len()) as f64;
-            println!(
-                "heads={HEADS} head_size={HEAD_SIZE} {label}: encode_layer {encode_ns:.0} ns, decode_block {decode_ns:.0} ns per layer (checksum {checksum:.3})"
-            );
         }
     }
 }
