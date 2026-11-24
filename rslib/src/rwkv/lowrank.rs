@@ -1,8 +1,9 @@
 // Copyright: Ankitects Pty Ltd and contributors
 // License: GNU AGPL, version 3 or later; http://www.gnu.org/licenses/agpl.html
 
-//! Low-rank card / note WKV state (precision byte 0x28): every head's matrix
-//! is stored as a rank-c product L R with int8 factors.
+//! Low-rank card / note WKV state (precision bytes 0x28 and 0x26): every
+//! head's matrix is stored as a rank-c product L R with int8 (0x28) or int6
+//! (0x26) factors.
 //!
 //! This is the training repository's `LowRankCodec` (`scripts/state_lowrank.py`,
 //! the low-rank int8 state experiment). After each write the stored state is
@@ -18,9 +19,12 @@
 //!    eigenvalue) give component i: left_i = Q u_i, right_i = u_i^T B, with
 //!    sigma_i = |right_i|, split evenly: L_i = left_i sqrt(sigma_i),
 //!    R_i = right_i / sqrt(sigma_i).
-//! 3. Each factor vector is rounded to int8 with its own float16 scale (the
-//!    compact rows' rule: abs-max / 127, clamped to 65,504, 1.0 on zero), and
-//!    the stored matrix is the product of the decoded factors.
+//! 3. Each factor vector is rounded to int8 (or int6) codes with its own
+//!    float16 scale (the compact rows' rule: abs-max / 127, or abs-max / 31
+//!    for int6, clamped to 65,504, 1.0 on zero), and the stored matrix is the
+//!    product of the decoded factors. Int6 is the scorer's `q6` factor format
+//!    (`w8+lr2.16.4q6x8`, the smaller shift vectors and factors experiment
+//!    (SM152)): the same arithmetic with codes in [-31, 31].
 //!
 //! The rank follows a schedule (`RankSchedule`): rank `low` below `switch`
 //! answers, rank `high` from `switch`; an entity with n answers stores rank
@@ -29,7 +33,9 @@
 //!
 //! Stored block per layer: answer count n (u8, saturating at 255), rank c
 //! (u8), then per head c left vectors and c right vectors, each a float16
-//! scale and `HEAD_SIZE` int8 codes.
+//! scale and `HEAD_SIZE` codes: one byte per int8 code, or the int6 codes
+//! bit-packed little-endian in two's complement (four codes in three bytes;
+//! the code -32 is never written).
 
 use std::io;
 
@@ -45,7 +51,34 @@ pub(super) const MAX_RANK: usize = 8;
 /// Gram eigenvalues kept: above this share of the largest (the scorer's
 /// float32 `KEEP_TOL`).
 const KEEP_TOL: f64 = 1e-5;
-const LIMIT: f32 = 127.0;
+
+/// The code width of the factor vectors (the stored layout: precision byte
+/// 0x28 for int8, 0x26 for int6).
+#[derive(Clone, Copy, Debug, PartialEq, Eq, Hash)]
+pub enum Factors {
+    Int8,
+    Int6,
+}
+
+const _: () = assert!(HEAD_SIZE % 4 == 0, "int6 codes pack in groups of four");
+
+impl Factors {
+    /// The largest code magnitude (the scorer's `qmax`).
+    const fn limit(self) -> f32 {
+        match self {
+            Self::Int8 => 127.0,
+            Self::Int6 => 31.0,
+        }
+    }
+
+    /// Bytes of one factor vector: a float16 scale and the codes.
+    const fn vector_bytes(self) -> usize {
+        2 + match self {
+            Self::Int8 => HEAD_SIZE,
+            Self::Int6 => HEAD_SIZE / 4 * 3,
+        }
+    }
+}
 
 /// Rank `low` below `switch` answers, rank `high` from `switch` answers.
 #[derive(Clone, Copy, Debug, PartialEq, Eq, Hash)]
@@ -115,18 +148,18 @@ impl RankSchedule {
 }
 
 /// Bytes of one layer's block at rank `rank`.
-pub(super) fn block_len(rank: usize) -> usize {
-    2 + HEADS * 2 * rank * (2 + HEAD_SIZE)
+pub(super) fn block_len(rank: usize, factors: Factors) -> usize {
+    2 + HEADS * 2 * rank * factors.vector_bytes()
 }
 
 /// Splits a stored block into (answer count, rank, factor bytes) after
 /// checking its length.
-fn header(block: &[u8]) -> io::Result<(u8, usize)> {
+fn header(block: &[u8], factors: Factors) -> io::Result<(u8, usize)> {
     if block.len() < 2 {
         return Err(invalid("truncated low-rank block"));
     }
     let rank = block[1] as usize;
-    if rank > MAX_RANK.min(HEAD_SIZE) || block.len() != block_len(rank) {
+    if rank > MAX_RANK.min(HEAD_SIZE) || block.len() != block_len(rank, factors) {
         return Err(invalid("invalid low-rank block size"));
     }
     Ok((block[0], rank))
@@ -139,7 +172,6 @@ fn invalid(what: &str) -> io::Error {
     )
 }
 
-const VECTOR_BYTES: usize = 2 + HEAD_SIZE;
 /// The largest basis of a write's solve: the previous write's left vectors
 /// (at most `MAX_RANK`) and the new value vector.
 const MAX_BASIS: usize = MAX_RANK + 1;
@@ -150,29 +182,62 @@ type Vector = [f32; HEAD_SIZE];
 
 /// Decoded factor vector `index` (0..2c: left vectors, then right vectors) of
 /// `head`.
-fn vector(block: &[u8], rank: usize, head: usize, index: usize, out: &mut [f32]) {
-    let start = 2 + (head * 2 * rank + index) * VECTOR_BYTES;
-    let bytes = &block[start..start + VECTOR_BYTES];
+fn vector(block: &[u8], rank: usize, factors: Factors, head: usize, index: usize, out: &mut [f32]) {
+    let vector_bytes = factors.vector_bytes();
+    let start = 2 + (head * 2 * rank + index) * vector_bytes;
+    let bytes = &block[start..start + vector_bytes];
     let scale = f16::from_bits(u16::from_le_bytes([bytes[0], bytes[1]])).to_f32();
-    for (value, &code) in out.iter_mut().zip(&bytes[2..]) {
-        *value = code as i8 as f32 * scale;
+    match factors {
+        Factors::Int8 => {
+            for (value, &code) in out.iter_mut().zip(&bytes[2..]) {
+                *value = code as i8 as f32 * scale;
+            }
+        }
+        Factors::Int6 => {
+            for (values, packed) in out.chunks_exact_mut(4).zip(bytes[2..].chunks_exact(3)) {
+                for (value, code) in values.iter_mut().zip(unpack6(packed)) {
+                    *value = code as f32 * scale;
+                }
+            }
+        }
     }
+}
+
+/// Four int6 codes (two's complement, the first in the lowest bits) in
+/// three little-endian bytes: the training repository's bit packing.
+fn pack6(codes: [i8; 4]) -> [u8; 3] {
+    let word = codes.iter().enumerate().fold(0_u32, |word, (i, &code)| {
+        word | ((code as u8 & 63) as u32) << (6 * i)
+    });
+    [word as u8, (word >> 8) as u8, (word >> 16) as u8]
+}
+
+/// The four codes of `pack6` (sign-extended).
+fn unpack6(bytes: &[u8]) -> [i8; 4] {
+    let word = bytes[0] as u32 | (bytes[1] as u32) << 8 | (bytes[2] as u32) << 16;
+    std::array::from_fn(|i| (((word >> (6 * i)) as u8) << 2) as i8 >> 2)
 }
 
 /// Checks a stored block (sizes, scales, codes) and writes the matrix it
 /// stores (`HEADS * HEAD_SIZE * HEAD_SIZE` values).
-pub(super) fn decode_block(block: &[u8], matrix: &mut [f32]) -> io::Result<()> {
-    let (_, rank) = header(block)?;
-    for chunk in block[2..].chunks_exact(VECTOR_BYTES) {
+pub(super) fn decode_block(block: &[u8], factors: Factors, matrix: &mut [f32]) -> io::Result<()> {
+    let (_, rank) = header(block, factors)?;
+    for chunk in block[2..].chunks_exact(factors.vector_bytes()) {
         let scale = f16::from_bits(u16::from_le_bytes([chunk[0], chunk[1]])).to_f32();
         if !scale.is_finite() || scale <= 0.0 {
             return Err(invalid("non-finite or non-positive factor scale"));
         }
-        if chunk[2..].contains(&128) {
+        let invalid_code = match factors {
+            Factors::Int8 => chunk[2..].contains(&128),
+            Factors::Int6 => chunk[2..]
+                .chunks_exact(3)
+                .any(|packed| unpack6(packed).contains(&-32)),
+        };
+        if invalid_code {
             return Err(invalid("out-of-range factor code"));
         }
     }
-    reconstruct(block, rank, matrix);
+    reconstruct(block, rank, factors, matrix);
     if !all_finite(matrix) {
         return Err(invalid("non-finite matrix value"));
     }
@@ -186,14 +251,21 @@ fn all_finite(values: &[f32]) -> bool {
         .fold(true, |finite, value| finite & value.is_finite())
 }
 
-fn reconstruct(block: &[u8], rank: usize, matrix: &mut [f32]) {
+fn reconstruct(block: &[u8], rank: usize, factors: Factors, matrix: &mut [f32]) {
     debug_assert_eq!(matrix.len(), HEADS * HEAD_SIZE * HEAD_SIZE);
     let mut left = [[0.0_f32; HEAD_SIZE]; MAX_RANK];
     let mut right = [[0.0_f32; HEAD_SIZE]; MAX_RANK];
     for head in 0..HEADS {
         for component in 0..rank {
-            vector(block, rank, head, component, &mut left[component]);
-            vector(block, rank, head, rank + component, &mut right[component]);
+            vector(block, rank, factors, head, component, &mut left[component]);
+            vector(
+                block,
+                rank,
+                factors,
+                head,
+                rank + component,
+                &mut right[component],
+            );
         }
         let base = head * HEAD_SIZE * HEAD_SIZE;
         product(
@@ -223,8 +295,9 @@ fn product(left: &[Vector], right: &[Vector], out: &mut [f32]) {
 pub(super) enum Previous<'a> {
     /// A fresh state (all zeros): the basis is the new value vector alone.
     Fresh,
-    /// A stored low-rank block.
-    Block(&'a [u8]),
+    /// A stored low-rank block and its factor width (which may differ from
+    /// the next write's: the basis is the decoded vectors).
+    Block(&'a [u8], Factors),
     /// A non-zero matrix without factors (a state written in another format
     /// or held at float32): the full basis, answer count unknown (saturated).
     Matrix,
@@ -232,7 +305,7 @@ pub(super) enum Previous<'a> {
 
 /// Encodes one layer's float update `matrix` (replaced by the stored
 /// reconstruction) after a write with value vector `v` (`HEADS * HEAD_SIZE`)
-/// and appends the block to `out`.
+/// and appends the block to `out`, with `factors` codes.
 ///
 /// Everything per head lives in fixed-size stack arrays (no allocation on
 /// the factored path); the stored matrix is the product of the rounded
@@ -242,11 +315,12 @@ pub(super) fn encode_layer(
     previous: Previous<'_>,
     v: &[f32],
     schedule: RankSchedule,
+    factors: Factors,
     out: &mut Vec<u8>,
 ) {
     let (answers, previous_rank) = match previous {
         Previous::Fresh => (1, 0),
-        Previous::Block(block) => match header(block) {
+        Previous::Block(block, width) => match header(block, width) {
             Ok((answers, rank)) => (answers.saturating_add(1), rank),
             Err(_) => (u8::MAX, 0),
         },
@@ -254,15 +328,16 @@ pub(super) fn encode_layer(
     };
     let full_basis = match previous {
         Previous::Matrix => true,
-        Previous::Block(block) => header(block).is_err(),
+        Previous::Block(block, width) => header(block, width).is_err(),
         Previous::Fresh => false,
     };
     debug_assert_eq!(matrix.len(), HEADS * HEAD_SIZE * HEAD_SIZE);
     let rank = schedule.rank(answers);
+    let vector_bytes = factors.vector_bytes();
     let start = out.len();
     out.push(answers);
     out.push(rank as u8);
-    out.resize(start + block_len(rank), 0);
+    out.resize(start + block_len(rank, factors), 0);
     let mut left = [[[0.0_f32; HEAD_SIZE]; MAX_RANK]; HEADS];
     let mut right = [[[0.0_f32; HEAD_SIZE]; MAX_RANK]; HEADS];
     sanitize(matrix);
@@ -281,9 +356,9 @@ pub(super) fn encode_layer(
         debug_assert_eq!(v.len(), HEADS * HEAD_SIZE);
         let mut basis = [[[0.0_f32; HEAD_SIZE]; MAX_BASIS]; HEADS];
         for (head, vectors) in basis.iter_mut().enumerate() {
-            if let Previous::Block(block) = previous {
+            if let Previous::Block(block, width) = previous {
                 for (component, slot) in vectors[..previous_rank].iter_mut().enumerate() {
-                    vector(block, previous_rank, head, component, slot);
+                    vector(block, previous_rank, width, head, component, slot);
                 }
             }
             let value = &mut vectors[previous_rank];
@@ -301,10 +376,10 @@ pub(super) fn encode_layer(
     }
     for (head, head_matrix) in matrix.chunks_exact_mut(HEAD_SIZE * HEAD_SIZE).enumerate() {
         let (left, right) = (&mut left[head][..rank], &mut right[head][..rank]);
-        let mut write = start + 2 + head * 2 * rank * VECTOR_BYTES;
+        let mut write = start + 2 + head * 2 * rank * vector_bytes;
         for vector in left.iter_mut().chain(right.iter_mut()) {
-            quantize_vector(vector, &mut out[write..write + VECTOR_BYTES]);
-            write += VECTOR_BYTES;
+            quantize_vector(vector, factors, &mut out[write..write + vector_bytes]);
+            write += vector_bytes;
         }
         product(left, right, head_matrix);
     }
@@ -314,13 +389,18 @@ pub(super) fn encode_layer(
 /// at float32 or stored in another layout): an all-zero matrix as answer
 /// count 0 and rank 0, any other on the full basis with the answer count
 /// unknown (saturated).
-pub(super) fn encode_existing(matrix: &mut [f32], schedule: RankSchedule, out: &mut Vec<u8>) {
+pub(super) fn encode_existing(
+    matrix: &mut [f32],
+    schedule: RankSchedule,
+    factors: Factors,
+    out: &mut Vec<u8>,
+) {
     if matrix.iter().all(|value| *value == 0.0) {
         out.extend_from_slice(&[0, 0]);
         matrix.fill(0.0);
         return;
     }
-    encode_layer(matrix, Previous::Matrix, &[], schedule, out);
+    encode_layer(matrix, Previous::Matrix, &[], schedule, factors, out);
 }
 
 /// Non-finite values (never written by a finite model) become finite so
@@ -340,17 +420,33 @@ fn sanitize(values: &mut [f32]) {
     }
 }
 
-/// Rounds `values` to int8 codes with one float16 scale (written to `out`:
-/// scale, then the codes) and replaces them with the decoded values.
-pub(super) fn quantize_vector(values: &mut [f32], out: &mut [u8]) {
+/// Rounds `values` to `factors` codes with one float16 scale (written to
+/// `out`: scale, then the codes) and replaces them with the decoded values.
+/// Int6 is the int8 arithmetic with limit 31 (the scorer's
+/// `quant_vectors(x, dim, 31)`), the codes then bit-packed.
+pub(super) fn quantize_vector(values: &mut [f32], factors: Factors, out: &mut [u8]) {
+    let limit = factors.limit();
     let maximum = values.iter().map(|v| v.abs()).fold(0.0_f32, f32::max);
-    let scale = f16_scale(maximum, LIMIT);
+    let scale = f16_scale(maximum, limit);
     out[..2].copy_from_slice(&scale.to_bits().to_le_bytes());
     let scale = scale.to_f32();
-    for (value, code) in values.iter_mut().zip(&mut out[2..]) {
-        let q = quantize(*value, scale, LIMIT);
-        *code = q as u8;
-        *value = q as f32 * scale;
+    match factors {
+        Factors::Int8 => {
+            for (value, code) in values.iter_mut().zip(&mut out[2..]) {
+                let q = quantize(*value, scale, limit);
+                *code = q as u8;
+                *value = q as f32 * scale;
+            }
+        }
+        Factors::Int6 => {
+            for (values, packed) in values.chunks_exact_mut(4).zip(out[2..].chunks_exact_mut(3)) {
+                let codes: [i8; 4] = std::array::from_fn(|i| quantize(values[i], scale, limit));
+                packed.copy_from_slice(&pack6(codes));
+                for (value, code) in values.iter_mut().zip(codes) {
+                    *value = code as f32 * scale;
+                }
+            }
+        }
     }
 }
 
@@ -883,8 +979,8 @@ fn eigh(matrix: &[f64], n: usize) -> (Vec<f64>, Vec<f64>) {
 }
 
 /// The answer count and rank of a stored block.
-pub(super) fn block_info(block: &[u8]) -> io::Result<(u8, usize)> {
-    header(block)
+pub(super) fn block_info(block: &[u8], factors: Factors) -> io::Result<(u8, usize)> {
+    header(block, factors)
 }
 
 #[cfg(test)]
@@ -948,13 +1044,23 @@ mod tests {
 
     /// The previous block of a write (`unreadable`: a block whose header
     /// does not parse, written on the full basis).
-    fn choose(block: &[u8], unreadable: bool) -> Previous<'_> {
+    fn choose(block: &[u8], unreadable: bool, factors: Factors) -> Previous<'_> {
         if unreadable {
-            Previous::Block(&[1])
+            Previous::Block(&[1], factors)
         } else if block.is_empty() {
             Previous::Fresh
         } else {
-            Previous::Block(block)
+            Previous::Block(block, factors)
+        }
+    }
+
+    fn choose_frozen(block: &[u8], unreadable: bool) -> reference::Previous<'_> {
+        if unreadable {
+            reference::Previous::Block(&[1])
+        } else if block.is_empty() {
+            reference::Previous::Fresh
+        } else {
+            reference::Previous::Block(block)
         }
     }
 
@@ -983,7 +1089,7 @@ mod tests {
                     // A dense matrix without factors: the full basis.
                     let mut new_matrix = random(&mut seed, size, 3.0);
                     let mut old_matrix = new_matrix.clone();
-                    encode_existing(&mut new_matrix, schedule, &mut new_block);
+                    encode_existing(&mut new_matrix, schedule, Factors::Int8, &mut new_block);
                     reference::encode_existing(&mut old_matrix, schedule, &mut old_block);
                     assert_eq!(new_block, old_block);
                     assert_eq!(bits(&new_matrix), bits(&old_matrix));
@@ -996,23 +1102,27 @@ mod tests {
                     let (mut new_out, mut old_out) = (Vec::new(), Vec::new());
                     encode_layer(
                         &mut new_matrix,
-                        choose(&new_block, unreadable),
+                        choose(&new_block, unreadable, Factors::Int8),
                         &v,
                         schedule,
+                        Factors::Int8,
                         &mut new_out,
                     );
                     reference::encode_layer(
                         &mut old_matrix,
-                        choose(&old_block, unreadable),
+                        choose_frozen(&old_block, unreadable),
                         &v,
                         schedule,
                         &mut old_out,
                     );
-                    assert_eq!(new_out, old_out, "{schedule:?} start {start} answer {answer}");
+                    assert_eq!(
+                        new_out, old_out,
+                        "{schedule:?} start {start} answer {answer}"
+                    );
                     assert_eq!(bits(&new_matrix), bits(&old_matrix));
                     let mut new_decoded = vec![1.0_f32; size];
                     let mut old_decoded = vec![2.0_f32; size];
-                    decode_block(&new_out, &mut new_decoded).unwrap();
+                    decode_block(&new_out, Factors::Int8, &mut new_decoded).unwrap();
                     reference::decode_block(&old_out, &mut old_decoded).unwrap();
                     assert_eq!(bits(&new_decoded), bits(&old_decoded));
                     assert_eq!(bits(&new_decoded), bits(&new_matrix));
@@ -1150,7 +1260,8 @@ mod tests {
         heads: usize,
         entities: usize,
         spec: String,
-        quantized: bool,
+        /// None: float32 factors (`f`).
+        factors: Option<Factors>,
         steps: Vec<Vec<Entry>>,
     }
 
@@ -1163,9 +1274,20 @@ mod tests {
             .collect()
     }
 
+    /// The scorer's codec vectors: int8 and float32 factors
+    /// (`lowrank-state-codec.json.gz`) and int6 factors
+    /// (`lowrank-state-codec-int6.json.gz`).
     fn cases() -> Vec<Case> {
+        let mut cases = read_cases(include_bytes!("testdata/lowrank-state-codec.json.gz"));
+        cases.extend(read_cases(include_bytes!(
+            "testdata/lowrank-state-codec-int6.json.gz"
+        )));
+        cases
+    }
+
+    fn read_cases(gzipped: &[u8]) -> Vec<Case> {
         let mut data = Vec::new();
-        flate2::read::GzDecoder::new(&include_bytes!("testdata/lowrank-state-codec.json.gz")[..])
+        flate2::read::GzDecoder::new(gzipped)
             .read_to_end(&mut data)
             .unwrap();
         let value: serde_json::Value = serde_json::from_slice(&data).unwrap();
@@ -1178,7 +1300,12 @@ mod tests {
                 heads: case["heads"].as_u64().unwrap() as usize,
                 entities: case["entities"].as_u64().unwrap() as usize,
                 spec: case["spec"].as_str().unwrap().to_string(),
-                quantized: case["quant"] == "q8",
+                factors: match case["quant"].as_str().unwrap() {
+                    "q8" => Some(Factors::Int8),
+                    "q6" => Some(Factors::Int6),
+                    "f" => None,
+                    other => panic!("factor format {other}"),
+                },
                 steps: case["steps"]
                     .as_array()
                     .unwrap()
@@ -1244,14 +1371,15 @@ mod tests {
             .collect()
     }
 
-    /// One write of one head: the Rust factors (rounded when `quantized`).
+    /// One write of one head: the Rust factors (rounded to `factors` codes
+    /// unless None).
     fn write(
         state: &[f32],
         previous_left: &[f32],
         inputs: &[f32],
         k: usize,
         rank: usize,
-        quantized: bool,
+        factors: Option<Factors>,
     ) -> (Vec<f32>, Vec<f32>) {
         let next = update(state, inputs, k);
         let mut basis = previous_left.to_vec();
@@ -1259,14 +1387,25 @@ mod tests {
         let mut left = vec![0.0; rank * k];
         let mut right = vec![0.0; rank * k];
         factor_head(&next, k, Some(&basis), rank, &mut left, &mut right);
-        if quantized {
-            let mut scratch = vec![0_u8; 2 + k];
-            for vector in left.chunks_exact_mut(k).chain(right.chunks_exact_mut(k)) {
-                quantize_vector(vector, &mut scratch);
-            }
+        if let Some(factors) = factors {
+            quantize_head_size(&mut left, k, factors);
+            quantize_head_size(&mut right, k, factors);
         }
         let stored = outer(&left, &right, k, rank);
         (stored, left)
+    }
+
+    /// `quantize_vector` on vectors of `k` values (the tests' head size,
+    /// which may differ from this engine's).
+    fn quantize_head_size(vectors: &mut [f32], k: usize, factors: Factors) {
+        let limit = factors.limit();
+        for vector in vectors.chunks_exact_mut(k) {
+            let maximum = vector.iter().map(|v| v.abs()).fold(0.0_f32, f32::max);
+            let scale = f16_scale(maximum, limit).to_f32();
+            for value in vector.iter_mut() {
+                *value = quantize(*value, scale, limit) as f32 * scale;
+            }
+        }
     }
 
     fn relative(a: &[f32], b: &[f32]) -> f64 {
@@ -1317,14 +1456,8 @@ mod tests {
                             None => (vec![0.0; k * k], Vec::new()),
                         };
                         let inputs = head_inputs(entry, heads, k, head);
-                        let (stored, _) = write(
-                            &state,
-                            &previous_left,
-                            &inputs,
-                            k,
-                            entry.rank,
-                            case.quantized,
-                        );
+                        let (stored, _) =
+                            write(&state, &previous_left, &inputs, k, entry.rank, case.factors);
                         let span = entry.rank * k;
                         let expected = outer(
                             &entry.left[head * span..(head + 1) * span],
@@ -1345,13 +1478,20 @@ mod tests {
             println!(
                 "K={k} {} {}: {count} head writes, relative error mean {mean:.2e} max {worst:.2e}, identical {exact}",
                 case.spec,
-                if case.quantized { "q8" } else { "f" }
+                label(case.factors)
             );
-            if case.quantized {
-                assert!(mean <= 2e-4 && worst <= 1e-2, "{mean} {worst}");
-                assert!(exact * 20 >= count * 19, "{exact} of {count} identical");
-            } else {
-                assert!(worst <= 1e-5, "{worst}");
+            match case.factors {
+                Some(factors) => {
+                    // Int6 codes are four times coarser: the same noise
+                    // flips a code as often, each flip moves 4x more.
+                    let steps = if factors == Factors::Int6 { 4.0 } else { 1.0 };
+                    assert!(
+                        mean <= 2e-4 * steps && worst <= 1e-2 * steps,
+                        "{mean} {worst}"
+                    );
+                    assert!(exact * 20 >= count * 19, "{exact} of {count} identical");
+                }
+                None => assert!(worst <= 1e-5, "{worst}"),
             }
         }
     }
@@ -1378,7 +1518,7 @@ mod tests {
                             &inputs,
                             k,
                             rank,
-                            case.quantized,
+                            case.factors,
                         );
                         let span = rank * k;
                         let expected = outer(
@@ -1401,13 +1541,21 @@ mod tests {
             println!(
                 "chain K={k} {} {}: relative difference mean {mean:.2e} max {worst:.2e}",
                 case.spec,
-                if case.quantized { "q8" } else { "f" }
+                label(case.factors)
             );
-            if case.quantized {
-                assert!(mean <= 3e-3 && worst <= 3e-2, "{mean} {worst}");
-            } else {
-                assert!(worst <= 1e-4, "{worst}");
+            match case.factors {
+                Some(Factors::Int8) => assert!(mean <= 3e-3 && worst <= 3e-2, "{mean} {worst}"),
+                Some(Factors::Int6) => assert!(mean <= 1.2e-2 && worst <= 1.2e-1, "{mean} {worst}"),
+                None => assert!(worst <= 1e-4, "{worst}"),
             }
+        }
+    }
+
+    fn label(factors: Option<Factors>) -> &'static str {
+        match factors {
+            Some(Factors::Int8) => "q8",
+            Some(Factors::Int6) => "q6",
+            None => "f",
         }
     }
 
@@ -1445,6 +1593,17 @@ mod tests {
     /// non-finite inputs.
     #[test]
     fn rwkv_state_lowrank_block_round_trip_and_growth() {
+        for factors in [Factors::Int8, Factors::Int6] {
+            block_round_trip_and_growth(factors);
+        }
+        assert_eq!(block_len(2, Factors::Int8), 2 + HEADS * 4 * (2 + HEAD_SIZE));
+        assert_eq!(
+            block_len(2, Factors::Int6),
+            2 + HEADS * 4 * (2 + HEAD_SIZE * 6 / 8)
+        );
+    }
+
+    fn block_round_trip_and_growth(factors: Factors) {
         let mut seed = 7;
         let size = HEADS * HEAD_SIZE * HEAD_SIZE;
         let mut block: Vec<u8> = Vec::new();
@@ -1472,22 +1631,28 @@ mod tests {
             let previous = if block.is_empty() {
                 Previous::Fresh
             } else {
-                Previous::Block(&block)
+                Previous::Block(&block, factors)
             };
             let mut out = Vec::new();
-            encode_layer(&mut next, previous, &v, RankSchedule::DEFAULT, &mut out);
-            let (answers, rank) = block_info(&out).unwrap();
+            encode_layer(
+                &mut next,
+                previous,
+                &v,
+                RankSchedule::DEFAULT,
+                factors,
+                &mut out,
+            );
+            let (answers, rank) = block_info(&out, factors).unwrap();
             assert_eq!(answers as u32, answer.min(255));
             assert_eq!(rank, RankSchedule::DEFAULT.rank(answers));
-            assert_eq!(out.len(), block_len(rank));
+            assert_eq!(out.len(), block_len(rank, factors));
             let mut decoded = vec![1.0_f32; size];
-            decode_block(&out, &mut decoded).unwrap();
-            assert_eq!(decoded, next);
+            decode_block(&out, factors, &mut decoded).unwrap();
+            assert_eq!(decoded, next, "{factors:?} answer {answer}");
             assert!(next.iter().all(|x| x.is_finite()));
             block = out;
             matrix = next;
         }
-        assert_eq!(block_len(2), 2 + HEADS * 4 * (2 + HEAD_SIZE));
     }
 
     /// Without factors (a state held at float32), the full basis gives the
@@ -1514,26 +1679,115 @@ mod tests {
     #[test]
     fn rwkv_state_lowrank_decoder_rejects_bad_blocks() {
         let mut matrix = vec![0.0_f32; HEADS * HEAD_SIZE * HEAD_SIZE];
-        assert!(decode_block(&[1], &mut matrix).is_err());
-        assert!(decode_block(&[1, 9], &mut matrix).is_err());
-        let mut block = vec![0_u8; block_len(1)];
-        block[1] = 1;
-        assert!(decode_block(&block, &mut matrix).is_err(), "zero scale");
-        for chunk in block[2..].chunks_exact_mut(2 + HEAD_SIZE) {
-            chunk[..2].copy_from_slice(&f16::ONE.to_bits().to_le_bytes());
+        for factors in [Factors::Int8, Factors::Int6] {
+            assert!(decode_block(&[1], factors, &mut matrix).is_err());
+            assert!(decode_block(&[1, 9], factors, &mut matrix).is_err());
+            let mut block = vec![0_u8; block_len(1, factors)];
+            block[1] = 1;
+            assert!(
+                decode_block(&block, factors, &mut matrix).is_err(),
+                "zero scale"
+            );
+            for chunk in block[2..].chunks_exact_mut(factors.vector_bytes()) {
+                chunk[..2].copy_from_slice(&f16::ONE.to_bits().to_le_bytes());
+            }
+            decode_block(&block, factors, &mut matrix).unwrap();
+            let good = block.clone();
+            match factors {
+                Factors::Int8 => block[4] = 128,
+                // -32 (0b100000) as the first code.
+                Factors::Int6 => block[4] = 0b0010_0000,
+            }
+            assert!(
+                decode_block(&block, factors, &mut matrix).is_err(),
+                "{factors:?} out-of-range code"
+            );
+            assert!(decode_block(&good[..good.len() - 1], factors, &mut matrix).is_err());
         }
-        decode_block(&block, &mut matrix).unwrap();
-        block[4] = 128;
-        assert!(decode_block(&block, &mut matrix).is_err(), "code -128");
-        assert!(decode_block(&block[..block.len() - 1], &mut matrix).is_err());
+        // The other width's block has the wrong length.
+        let int8 = vec![0_u8; block_len(1, Factors::Int8)];
+        let mut block = int8.clone();
+        block[1] = 1;
+        assert!(decode_block(&block, Factors::Int6, &mut matrix).is_err());
+    }
+
+    /// Int6 packing: four codes in three bytes, little-endian two's
+    /// complement (the training repository's `pack`), every code of
+    /// [-31, 31] in every position.
+    #[test]
+    fn rwkv_state_lowrank_int6_packing() {
+        assert_eq!(pack6([1, 0, 0, 0]), [1, 0, 0]);
+        assert_eq!(pack6([0, 1, 0, 0]), [64, 0, 0]);
+        assert_eq!(pack6([-1, 0, 0, 0]), [63, 0, 0]);
+        assert_eq!(pack6([0, 0, 0, -1]), [0, 0, 0b1111_1100]);
+        assert_eq!(pack6([-31, 31, -2, 5]), [0xE1, 0xE7, 0x17]);
+        for code in -31_i8..=31 {
+            for position in 0..4 {
+                let mut codes = [3_i8, -7, 0, 30];
+                codes[position] = code;
+                assert_eq!(unpack6(&pack6(codes)), codes);
+            }
+        }
+    }
+
+    /// The int6 rounding of a factor vector equals the scorer's
+    /// (`quant_vectors(x, -1, 31)`) bit for bit on synthetic vectors
+    /// (random, exact rounding ties, zero, float16 underflow and overflow):
+    /// the same float16 scale, the same codes, the same decoded values, and
+    /// the stored bytes are the training repository's bit packing of them.
+    #[test]
+    fn rwkv_state_lowrank_int6_rounding_matches_the_scorer() {
+        let mut data = Vec::new();
+        flate2::read::GzDecoder::new(
+            &include_bytes!("testdata/lowrank-state-codec-int6.json.gz")[..],
+        )
+        .read_to_end(&mut data)
+        .unwrap();
+        let value: serde_json::Value = serde_json::from_slice(&data).unwrap();
+        let vectors = value["quant_vectors"].as_array().unwrap();
+        let mut checked = [0_usize; 2];
+        for vector in vectors {
+            let k = vector["head_size"].as_u64().unwrap() as usize;
+            let mut values = floats(&vector["values"]);
+            let rounded = floats(&vector["rounded"]);
+            let packed = data_encoding::BASE64
+                .decode(vector["packed"].as_str().unwrap().as_bytes())
+                .unwrap();
+            let codes: Vec<i8> = vector["codes"]
+                .as_array()
+                .unwrap()
+                .iter()
+                .map(|code| code.as_i64().unwrap() as i8)
+                .collect();
+            let scale_bits = vector["scale_bits"].as_u64().unwrap() as u16;
+            assert_eq!(values.len(), k);
+            let mut out = vec![0_u8; 2 + k / 4 * 3];
+            quantize_vector(&mut values, Factors::Int6, &mut out);
+            // Bit for bit except the sign of zero: the scorer's value of a
+            // code 0 keeps the input's sign (-0.0), a stored code has none.
+            let unsigned_zero = |values: &[f32]| -> Vec<u32> {
+                values
+                    .iter()
+                    .map(|&value| if value == 0.0 { 0 } else { value.to_bits() })
+                    .collect()
+            };
+            assert_eq!(unsigned_zero(&values), unsigned_zero(&rounded), "k={k}");
+            assert_eq!(out[..2], scale_bits.to_le_bytes(), "k={k}");
+            assert_eq!(out[2..], packed[..], "k={k}");
+            let decoded: Vec<i8> = out[2..].chunks_exact(3).flat_map(unpack6).collect();
+            assert_eq!(decoded, codes);
+            checked[usize::from(k == 32)] += 1;
+        }
+        assert!(checked.iter().all(|&count| count >= 25), "{checked:?}");
     }
 
     /// Manual micro-benchmark of the codec alone (release build, one
     /// thread): one layer's write (`encode_layer` on a previous block, the
-    /// factored solve, the int8 rounding and the reconstruction) and one
-    /// layer's read (`decode_block`), at rank 2 (a card below 16 answers)
-    /// and rank 4, for this engine's head layout; the frozen codec of the
-    /// release candidate (`reference`) and this one back to back.
+    /// factored solve, the rounding and the reconstruction) and one layer's
+    /// read (`decode_block`), at rank 2 (a card below 16 answers) and rank
+    /// 4, for this engine's head layout; the frozen int8 codec of the
+    /// release candidate (`reference`), this one with int8 factors and this
+    /// one with int6 factors back to back.
     ///
     /// ```sh
     /// cargo test --release -p anki --lib rwkv_state_lowrank_codec_micro_benchmark -- --ignored --nocapture
@@ -1541,91 +1795,115 @@ mod tests {
     #[test]
     #[ignore]
     fn rwkv_state_lowrank_codec_micro_benchmark() {
-        type Encode = fn(&mut [f32], Previous<'_>, &[f32], RankSchedule, &mut Vec<u8>);
+        // (previous block or empty for a fresh state, matrix, v, out)
+        type Encode = fn(&[u8], &mut [f32], &[f32], &mut Vec<u8>);
         type Decode = fn(&[u8], &mut [f32]) -> bool;
-        let codecs: [(&str, Encode, Decode); 2] = [
-            ("frozen", reference::encode_layer, |block, matrix| {
-                reference::decode_block(block, matrix).is_ok()
-            }),
-            ("current", encode_layer, |block, matrix| {
-                decode_block(block, matrix).is_ok()
-            }),
+        fn current(factors: Factors) -> impl Fn(&[u8], &mut [f32], &[f32], &mut Vec<u8>) {
+            move |previous, matrix, v, out| {
+                let previous = if previous.is_empty() {
+                    Previous::Fresh
+                } else {
+                    Previous::Block(previous, factors)
+                };
+                encode_layer(matrix, previous, v, RankSchedule::DEFAULT, factors, out)
+            }
+        }
+        let codecs: [(&str, Factors, Encode, Decode); 3] = [
+            (
+                "frozen int8",
+                Factors::Int8,
+                |previous, matrix, v, out| {
+                    let previous = if previous.is_empty() {
+                        reference::Previous::Fresh
+                    } else {
+                        reference::Previous::Block(previous)
+                    };
+                    reference::encode_layer(matrix, previous, v, RankSchedule::DEFAULT, out)
+                },
+                |block, matrix| reference::decode_block(block, matrix).is_ok(),
+            ),
+            (
+                "current int8",
+                Factors::Int8,
+                |previous, matrix, v, out| current(Factors::Int8)(previous, matrix, v, out),
+                |block, matrix| decode_block(block, Factors::Int8, matrix).is_ok(),
+            ),
+            (
+                "current int6",
+                Factors::Int6,
+                |previous, matrix, v, out| current(Factors::Int6)(previous, matrix, v, out),
+                |block, matrix| decode_block(block, Factors::Int6, matrix).is_ok(),
+            ),
         ];
         let size = HEADS * HEAD_SIZE * HEAD_SIZE;
         // (answers before the timed writes, label): 64 timed writes each,
         // all below 16 answers for rank 2 (a fresh chain per write) and
         // all at rank 4 from answer 41.
         for (answers, label) in [(1_u32, "rank 2"), (40, "rank 4")] {
-            let mut seed = 11;
-            let mut writes = Vec::new();
-            for _chain in 0..if answers == 1 { 8 } else { 1 } {
-                let mut block: Vec<u8> = Vec::new();
-                let mut matrix = vec![0.0_f32; size];
-                let timed = if answers == 1 { 8 } else { 64 };
-                for answer in 1..=answers + timed {
-                    let mut next: Vec<f32> = matrix.iter().map(|x| x * 0.9).collect();
-                    let v = random(&mut seed, HEADS * HEAD_SIZE, 2.0);
-                    let key = random(&mut seed, HEADS * HEAD_SIZE, 2.0);
-                    for head in 0..HEADS {
-                        for row in 0..HEAD_SIZE {
-                            for column in 0..HEAD_SIZE {
-                                next[head * HEAD_SIZE * HEAD_SIZE + row * HEAD_SIZE + column] +=
-                                    v[head * HEAD_SIZE + row] * key[head * HEAD_SIZE + column];
+            for (name, factors, encode, decode) in codecs {
+                let mut seed = 11;
+                let mut writes = Vec::new();
+                for _chain in 0..if answers == 1 { 8 } else { 1 } {
+                    let mut block: Vec<u8> = Vec::new();
+                    let mut matrix = vec![0.0_f32; size];
+                    let timed = if answers == 1 { 8 } else { 64 };
+                    for answer in 1..=answers + timed {
+                        let mut next: Vec<f32> = matrix.iter().map(|x| x * 0.9).collect();
+                        let v = random(&mut seed, HEADS * HEAD_SIZE, 2.0);
+                        let key = random(&mut seed, HEADS * HEAD_SIZE, 2.0);
+                        for head in 0..HEADS {
+                            for row in 0..HEAD_SIZE {
+                                for column in 0..HEAD_SIZE {
+                                    next[head * HEAD_SIZE * HEAD_SIZE
+                                        + row * HEAD_SIZE
+                                        + column] +=
+                                        v[head * HEAD_SIZE + row] * key[head * HEAD_SIZE + column];
+                                }
                             }
                         }
-                    }
-                    if answer > answers {
-                        writes.push((block.clone(), next.clone(), v.clone()));
-                    }
-                    let previous = if block.is_empty() {
-                        Previous::Fresh
-                    } else {
-                        Previous::Block(&block)
-                    };
-                    let mut out = Vec::new();
-                    encode_layer(&mut next, previous, &v, RankSchedule::DEFAULT, &mut out);
-                    block = out;
-                    matrix = next;
-                }
-            }
-            let rounds = 2_000;
-            for (name, encode, decode) in codecs {
-                let mut out = Vec::with_capacity(block_len(MAX_RANK));
-                let mut scratch = vec![0.0_f32; size];
-                let started = std::time::Instant::now();
-                let mut checksum = 0.0_f32;
-                for _ in 0..rounds {
-                    for (previous, next, v) in &writes {
-                        scratch.copy_from_slice(next);
-                        out.clear();
-                        let previous = if previous.is_empty() {
-                            Previous::Fresh
-                        } else {
-                            Previous::Block(previous)
-                        };
-                        encode(&mut scratch, previous, v, RankSchedule::DEFAULT, &mut out);
-                        checksum += scratch[0];
+                        if answer > answers {
+                            writes.push((block.clone(), next.clone(), v.clone()));
+                        }
+                        let mut out = Vec::new();
+                        current(factors)(&block, &mut next, &v, &mut out);
+                        block = out;
+                        matrix = next;
                     }
                 }
-                let encode_ns =
-                    started.elapsed().as_secs_f64() * 1e9 / (rounds * writes.len()) as f64;
-                let stored: Vec<&Vec<u8>> = writes
-                    .iter()
-                    .map(|(previous, _, _)| previous)
-                    .filter(|previous| !previous.is_empty())
-                    .collect();
-                let started = std::time::Instant::now();
-                for _ in 0..rounds {
-                    for previous in &stored {
-                        assert!(decode(previous, &mut scratch));
-                        checksum += scratch[0];
+                let rounds = 2_000;
+                {
+                    let mut out = Vec::with_capacity(block_len(MAX_RANK, factors));
+                    let mut scratch = vec![0.0_f32; size];
+                    let started = std::time::Instant::now();
+                    let mut checksum = 0.0_f32;
+                    for _ in 0..rounds {
+                        for (previous, next, v) in &writes {
+                            scratch.copy_from_slice(next);
+                            out.clear();
+                            encode(previous, &mut scratch, v, &mut out);
+                            checksum += scratch[0];
+                        }
                     }
-                }
-                let decode_ns =
-                    started.elapsed().as_secs_f64() * 1e9 / (rounds * stored.len()) as f64;
-                println!(
+                    let encode_ns =
+                        started.elapsed().as_secs_f64() * 1e9 / (rounds * writes.len()) as f64;
+                    let stored: Vec<&Vec<u8>> = writes
+                        .iter()
+                        .map(|(previous, _, _)| previous)
+                        .filter(|previous| !previous.is_empty())
+                        .collect();
+                    let started = std::time::Instant::now();
+                    for _ in 0..rounds {
+                        for previous in &stored {
+                            assert!(decode(previous, &mut scratch));
+                            checksum += scratch[0];
+                        }
+                    }
+                    let decode_ns =
+                        started.elapsed().as_secs_f64() * 1e9 / (rounds * stored.len()) as f64;
+                    println!(
                     "heads={HEADS} head_size={HEAD_SIZE} {label} {name}: encode_layer {encode_ns:.0} ns, decode_block {decode_ns:.0} ns per layer (checksum {checksum:.3})"
                 );
+                }
             }
         }
     }

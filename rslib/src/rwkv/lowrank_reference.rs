@@ -14,12 +14,26 @@ use super::super::precision::f16_scale;
 use super::super::precision::quantize;
 use super::super::HEADS;
 use super::super::HEAD_SIZE;
-use super::block_len;
-use super::Previous;
 use super::RankSchedule;
 use super::KEEP_TOL;
-use super::LIMIT;
 use super::MAX_RANK;
+
+// The int8-only definitions the frozen codec used from its module, copied
+// here unchanged: the module's own carry the factor width since the 6-bit
+// factors (SM162). The codec below is untouched; int6 has no frozen Rust
+// reference, the scorer's vectors are its reference.
+const LIMIT: f32 = 127.0;
+
+fn block_len(rank: usize) -> usize {
+    2 + HEADS * 2 * rank * (2 + HEAD_SIZE)
+}
+
+#[derive(Clone, Copy)]
+pub(super) enum Previous<'a> {
+    Fresh,
+    Block(&'a [u8]),
+    Matrix,
+}
 
 fn header(block: &[u8]) -> Result<(u8, usize), ()> {
     if block.len() < 2 {

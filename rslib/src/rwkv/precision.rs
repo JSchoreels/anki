@@ -15,9 +15,9 @@
 //!   stored value finite, so a long, drifting card saturates instead of
 //!   overflowing.
 //!
-//! A third layout (`LowRankInt8`, precision byte 0x28) stores every card /
-//! note head as a rank-c product of int8 factors with the compact int8
-//! shifts (`lowrank.rs`).
+//! A third layout (`LowRankInt8`, precision byte 0x28, and `LowRankInt6`,
+//! 0x26) stores every card / note head as a rank-c product of int8 or int6
+//! factors with the compact int8 shifts (`lowrank.rs`).
 
 use std::borrow::Cow;
 use std::io;
@@ -25,6 +25,7 @@ use std::io;
 use half::f16;
 
 use super::lowrank;
+use super::lowrank::Factors;
 use super::lowrank::RankSchedule;
 use super::Cursor;
 use super::LayerState;
@@ -64,14 +65,32 @@ pub enum StatePrecision {
     /// bytes do not depend on the schedule; it only picks the next write's
     /// rank.
     LowRankInt8(RankSchedule),
+    /// Module precision: LowRankInt8 with int6 factor codes (bit-packed,
+    /// precision byte 0x26).
+    LowRankInt6(RankSchedule),
     /// Runtime policy `compact_lowrank_int8[:spec]`: LowRankInt8 cards and
     /// notes (the training repository's `w8+lr<spec>q8x8`; default spec
     /// `2.16.4`, rank 2 below 16 answers and rank 4 from 16).
     CompactLowRank(RankSchedule),
+    /// Runtime policy `compact_lowrank_int6[:spec]`: LowRankInt6 cards and
+    /// notes (`w8+lr<spec>q6x8`).
+    CompactLowRankInt6(RankSchedule),
+    /// Runtime policy `compact_lowrank[:spec]`, the profile default since
+    /// the 6-bit factors (SM162): the low-rank state with the factor width
+    /// of the model's size, chosen when a model loads (`for_card_layers`):
+    /// int6 factors for Big and Small (`w8+lr<spec>q6x8`), int8 factors for
+    /// Tiny (`w8+lr<spec>q8x8`; the smaller shift vectors and factors
+    /// experiment (SM152) kept Tiny on int8 factors).
+    CompactLowRankBySize(RankSchedule),
 }
 
-/// The runtime policy string of the default low-rank state.
+/// The runtime policy string of the int8-factor low-rank state.
 pub const LOWRANK_POLICY: &str = "compact_lowrank_int8";
+/// The runtime policy string of the int6-factor low-rank state.
+pub const LOWRANK_INT6_POLICY: &str = "compact_lowrank_int6";
+/// The runtime policy string of the default low-rank state (factor width by
+/// model size).
+pub const LOWRANK_BY_SIZE_POLICY: &str = "compact_lowrank";
 
 impl StatePrecision {
     pub fn parse(value: &str) -> io::Result<Self> {
@@ -82,12 +101,39 @@ impl StatePrecision {
             "compact_cards_int8" => Ok(Self::CompactCardsInt8),
             "compact_cards_int4" => Ok(Self::CompactCardsInt4),
             LOWRANK_POLICY => Ok(Self::CompactLowRank(RankSchedule::DEFAULT)),
-            _ => value
-                .strip_prefix(LOWRANK_POLICY)
-                .and_then(|rest| rest.strip_prefix(':'))
-                .and_then(RankSchedule::parse)
-                .map(Self::CompactLowRank)
-                .ok_or_else(invalid_state),
+            LOWRANK_INT6_POLICY => Ok(Self::CompactLowRankInt6(RankSchedule::DEFAULT)),
+            LOWRANK_BY_SIZE_POLICY => Ok(Self::CompactLowRankBySize(RankSchedule::DEFAULT)),
+            _ => {
+                let policies: [(&str, fn(RankSchedule) -> Self); 3] = [
+                    (LOWRANK_POLICY, Self::CompactLowRank),
+                    (LOWRANK_INT6_POLICY, Self::CompactLowRankInt6),
+                    (LOWRANK_BY_SIZE_POLICY, Self::CompactLowRankBySize),
+                ];
+                policies
+                    .into_iter()
+                    .find_map(|(policy, make)| {
+                        value
+                            .strip_prefix(policy)
+                            .and_then(|rest| rest.strip_prefix(':'))
+                            .and_then(RankSchedule::parse)
+                            .map(make)
+                    })
+                    .ok_or_else(invalid_state)
+            }
+        }
+    }
+
+    /// This policy for a model with `card_layers` card layers: the
+    /// size-dependent default resolves to int8 factors for Tiny (one card
+    /// layer: the Tiny two-head and Instant-Only models) and to int6
+    /// factors for Small (two) and Big (three); every other value is kept.
+    pub fn for_card_layers(self, card_layers: usize) -> Self {
+        match self {
+            Self::CompactLowRankBySize(schedule) if card_layers <= 1 => {
+                Self::CompactLowRank(schedule)
+            }
+            Self::CompactLowRankBySize(schedule) => Self::CompactLowRankInt6(schedule),
+            precision => precision,
         }
     }
 
@@ -101,6 +147,14 @@ impl StatePrecision {
             Self::CompactLowRank(schedule) => {
                 (Self::LowRankInt8(schedule), Self::LowRankInt8(schedule))
             }
+            Self::CompactLowRankInt6(schedule) => {
+                (Self::LowRankInt6(schedule), Self::LowRankInt6(schedule))
+            }
+            // Resolved per model when it loads (`for_card_layers`); a direct
+            // engine load without a model size takes int6 factors.
+            Self::CompactLowRankBySize(schedule) => {
+                Self::CompactLowRankInt6(schedule).module_precisions()
+            }
             precision => (precision, precision),
         }
     }
@@ -109,18 +163,31 @@ impl StatePrecision {
     fn is_compact(self) -> bool {
         matches!(
             self,
-            Self::Int8Compact | Self::Int4Compact | Self::LowRankInt8(_)
+            Self::Int8Compact | Self::Int4Compact | Self::LowRankInt8(_) | Self::LowRankInt6(_)
         )
     }
 
     pub(super) fn is_lowrank(self) -> bool {
-        matches!(self, Self::LowRankInt8(_))
+        self.lowrank().is_some()
+    }
+
+    /// The schedule and factor width of a low-rank module precision.
+    fn lowrank(self) -> Option<(RankSchedule, Factors)> {
+        match self {
+            Self::LowRankInt8(schedule) => Some((schedule, Factors::Int8)),
+            Self::LowRankInt6(schedule) => Some((schedule, Factors::Int6)),
+            _ => None,
+        }
     }
 
     /// Whether stored bytes of `self` can be kept for `other` (the low-rank
-    /// bytes do not depend on the schedule).
+    /// bytes do not depend on the schedule, only on the factor width).
     fn same_layout(self, other: Self) -> bool {
-        self == other || (self.is_lowrank() && other.is_lowrank())
+        self == other
+            || matches!(
+                (self.lowrank(), other.lowrank()),
+                (Some((_, a)), Some((_, b))) if a == b
+            )
     }
 
     fn int8_codes(self) -> bool {
@@ -163,6 +230,7 @@ impl StatePrecision {
             Self::Int8Compact => 0x18,
             Self::Int4Compact => 0x14,
             Self::LowRankInt8(_) => 0x28,
+            Self::LowRankInt6(_) => 0x26,
             _ => unreachable!("{self:?} is not a module precision"),
         }
     }
@@ -174,6 +242,7 @@ impl StatePrecision {
             0x18 => Ok(Self::Int8Compact),
             0x14 => Ok(Self::Int4Compact),
             0x28 => Ok(Self::LowRankInt8(RankSchedule::DEFAULT)),
+            0x26 => Ok(Self::LowRankInt6(RankSchedule::DEFAULT)),
             _ => Err(invalid_state()),
         }
     }
@@ -208,16 +277,17 @@ impl StatePrecision {
         previous: &[f32],
         v: &[f32],
     ) {
-        let Self::LowRankInt8(schedule) = self else {
+        let Some((schedule, factors)) = self.lowrank() else {
             self.round_matrix(values, packed);
             return;
         };
-        let mut bytes = Vec::with_capacity(lowrank::block_len(4));
+        let mut bytes = Vec::with_capacity(lowrank::block_len(4, factors));
         lowrank::encode_layer(
             values,
             lowrank_previous(packed.as_ref(), previous),
             v,
             schedule,
+            factors,
             &mut bytes,
         );
         *packed = Some(PackedMatrix {
@@ -292,11 +362,11 @@ impl ModuleState {
                     .filter(|packed| packed.precision.same_layout(precision))
                 {
                     bytes.extend(packed.bytes);
-                } else if let StatePrecision::LowRankInt8(schedule) = precision {
-                    // A matrix without factors (never written at this
-                    // precision): factor it on the full basis.
+                } else if let Some((schedule, factors)) = precision.lowrank() {
+                    // A matrix without factors of this width (never written
+                    // at this precision): factor it on the full basis.
                     let mut matrix = time.matrix;
-                    lowrank::encode_existing(&mut matrix, schedule, &mut bytes);
+                    lowrank::encode_existing(&mut matrix, schedule, factors, &mut bytes);
                 } else {
                     encode_matrix(precision, &time.matrix, &mut bytes);
                 }
@@ -432,7 +502,7 @@ pub(super) fn decode(bytes: &[u8]) -> io::Result<ModuleState> {
         if matrix_count != 0 && matrix_count != HEADS * HEAD_SIZE * HEAD_SIZE {
             return Err(invalid_state());
         }
-        if precision.is_lowrank() {
+        if let Some((_, factors)) = precision.lowrank() {
             let time = if matrix_count == 0 {
                 None
             } else {
@@ -441,12 +511,13 @@ pub(super) fn decode(bytes: &[u8]) -> io::Result<ModuleState> {
                 if rank > lowrank::MAX_RANK.min(HEAD_SIZE) {
                     return Err(invalid_state());
                 }
-                let rest = cursor.bytes(lowrank::block_len(rank) - 2)?;
-                let mut block = Vec::with_capacity(lowrank::block_len(rank));
+                let len = lowrank::block_len(rank, factors);
+                let rest = cursor.bytes(len - 2)?;
+                let mut block = Vec::with_capacity(len);
                 block.extend_from_slice(head);
                 block.extend_from_slice(rest);
                 let mut matrix = vec![0.0; matrix_count];
-                lowrank::decode_block(&block, &mut matrix)?;
+                lowrank::decode_block(&block, factors, &mut matrix)?;
                 Some((matrix, block))
             };
             let channel_shift = read_shift(precision, &mut cursor)?;
@@ -586,8 +657,8 @@ pub(super) fn lowrank_previous<'a>(
     packed: Option<&'a PackedMatrix>,
     previous: &[f32],
 ) -> lowrank::Previous<'a> {
-    match packed.filter(|packed| packed.precision.is_lowrank()) {
-        Some(packed) => lowrank::Previous::Block(&packed.bytes),
+    match packed.and_then(|packed| Some((packed, packed.precision.lowrank()?.1))) {
+        Some((packed, factors)) => lowrank::Previous::Block(&packed.bytes, factors),
         None if previous.iter().all(|value| *value == 0.0) => lowrank::Previous::Fresh,
         None => lowrank::Previous::Matrix,
     }

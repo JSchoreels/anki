@@ -1099,19 +1099,41 @@ fn rwkv_small_lowrank_state_end_to_end() {
             "q2",
             StatePrecision::CompactLowRank(RankSchedule::uniform(2)),
         ),
+        // Int6 factors (SM162) and the profile default, whose factor width
+        // follows the model's size (int6 for Big and Small, int8 for Tiny).
+        (
+            "t24_q6",
+            StatePrecision::CompactLowRankInt6(RankSchedule::DEFAULT),
+        ),
+        (
+            "by_size",
+            StatePrecision::CompactLowRankBySize(RankSchedule::DEFAULT),
+        ),
     ];
+    // Optional subset: `ANKI_RWKV_LOWRANK_E2E_FORMATS=compact_int8,t24,...`.
+    let selected = std::env::var("ANKI_RWKV_LOWRANK_E2E_FORMATS").ok();
+    let formats: Vec<(&str, StatePrecision)> = formats
+        .into_iter()
+        .filter(|(label, _)| {
+            selected
+                .as_deref()
+                .is_none_or(|list| list.split(',').any(|name| name == *label))
+        })
+        .collect();
     let mut out = serde_json::Map::new();
     for package in packages.split(',') {
         let mut by_user = serde_json::Map::new();
         for user in &vectors {
             let mut by_format = serde_json::Map::new();
-            for (label, precision) in formats {
+            for &(label, precision) in &formats {
                 let mut model = SrsModel::load(&PathBuf::from(env!("CARGO_MANIFEST_DIR")).join(
                     format!("../qt/aqt/rwkv_inference/{package}/weights.f32.bin"),
                 ))
                 .unwrap();
                 model.leak_free_inputs = true;
-                let (card, note) = precision.module_precisions();
+                let (card, note) = precision
+                    .for_card_layers(model.card_layers())
+                    .module_precisions();
                 model.modules[0].precision = card;
                 model.modules[2].precision = note;
                 let mut states = ReviewStateMaps::default();

@@ -4,10 +4,12 @@
 from collections.abc import Mapping
 
 # The stored card and note state (deck, preset and global stay f32):
-#   - "compact_lowrank_int8" (default): every card and note head stored as a
-#     rank-2 product (rank 4 from the 16th answer) of int8 factor vectors with
-#     float16 scales, int8 shift vectors (the training repository's
-#     w8+lr2.16.4q8x8). About -82% (Big), -66% (Small) and -65% (Tiny) state
+#   - "compact_lowrank" (default): every card and note head stored as a
+#     rank-2 product (rank 4 from the 16th answer) of factor vectors with
+#     float16 scales and int8 shift vectors. The factor width follows the
+#     model's size: int6 factors for Big and Small (the training repository's
+#     w8+lr2.16.4q6x8, the 6-bit factors (SM162)), int8 factors for Tiny
+#     (w8+lr2.16.4q8x8). About -85% (Big), -71% (Small) and -65% (Tiny) state
 #     bytes against the int8 rows.
 #   - "compact_cards_int4": the same notes, int4 card rows (w8+s4c8nhx8). It
 #     stays finite on long cards but drifts from the float32 state there.
@@ -21,8 +23,13 @@ from collections.abc import Mapping
 # page saves the value it loaded, so profiles that saved it move to the
 # default (one rebuild). The native code still reads and writes every layout.
 # docs/rwkv-lowrank-state-2026-11-23.MD has the low-rank measurements.
-RWKV_STATE_PRECISION_DEFAULT = "compact_lowrank_int8"
-RWKV_STATE_PRECISIONS = ("f32", "int8", "compact_lowrank_int8", "compact_cards_int4")
+# The low-rank state with int8 factors on every size ("compact_lowrank_int8",
+# the default until the 6-bit factors) is no longer a profile value for the
+# same reason: profiles that saved it move to "compact_lowrank" (one rebuild;
+# Tiny's bytes stay the same). The native code still accepts
+# "compact_lowrank_int8" and "compact_lowrank_int6" (int6 on every size).
+RWKV_STATE_PRECISION_DEFAULT = "compact_lowrank"
+RWKV_STATE_PRECISIONS = ("f32", "int8", "compact_lowrank", "compact_cards_int4")
 RWKV_STATE_PRECISION_KEY = "rwkvStatePrecision"
 
 

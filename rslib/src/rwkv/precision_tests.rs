@@ -4,7 +4,7 @@
 use super::state_scope_bench::load_for_scopes;
 use super::*;
 
-const PRECISIONS: [(StatePrecision, [bool; 3]); 8] = [
+const PRECISIONS: [(StatePrecision, [bool; 3]); 10] = [
     (StatePrecision::F32, [false; 3]),
     (StatePrecision::Int8, [false; 3]),
     (StatePrecision::Int4CardsInt8Notes, [false; 3]),
@@ -17,6 +17,14 @@ const PRECISIONS: [(StatePrecision, [bool; 3]); 8] = [
     ),
     (
         StatePrecision::CompactLowRank(RankSchedule::uniform(2)),
+        [false; 3],
+    ),
+    (
+        StatePrecision::CompactLowRankInt6(RankSchedule::DEFAULT),
+        [false; 3],
+    ),
+    (
+        StatePrecision::CompactLowRankBySize(RankSchedule::DEFAULT),
         [false; 3],
     ),
 ];
@@ -111,6 +119,9 @@ fn rwkv_state_precision_mixed_packs_cards_as_int4_and_notes_as_int8() {
 fn check_mixed_packs_cards_as_int4_and_notes_as_int8(weights: &Path) {
     let mut int8 = runtime(weights, StatePrecision::Int8, [false; 3]);
     int8.warm_up_reviews(reviews(14), false).unwrap();
+    // The profile default's factor width follows the model's size: int8
+    // (0x28) for Tiny (one card layer), int6 (0x26) for Small and Big.
+    let by_size = if int8.card_layers() == 1 { 0x28 } else { 0x26 };
     // (policy, card precision byte, note precision byte, card smaller than int8,
     // note smaller than int8)
     for (name, card_code, note_code, card_smaller, note_smaller) in [
@@ -119,6 +130,10 @@ fn check_mixed_packs_cards_as_int4_and_notes_as_int8(weights: &Path) {
         ("compact_cards_int4", 0x14, 0x18, true, true),
         ("compact_lowrank_int8", 0x28, 0x28, true, true),
         ("compact_lowrank_int8:2", 0x28, 0x28, true, true),
+        ("compact_lowrank_int6", 0x26, 0x26, true, true),
+        ("compact_lowrank_int6:2", 0x26, 0x26, true, true),
+        ("compact_lowrank", by_size, by_size, true, true),
+        ("compact_lowrank:2.16.4", by_size, by_size, true, true),
     ] {
         let precision = StatePrecision::parse(name).unwrap();
         let mut mixed = runtime(weights, precision, [false; 3]);
@@ -587,14 +602,18 @@ fn rwkv_state_precision_stored_sizes_of_the_big_model() {
 /// by the block (answer count, rank, then per head 2 x rank factor vectors
 /// of a float16 scale and `HEAD_SIZE` codes); the stored rank is min(n, r),
 /// so the state grows at answers 2, 16 and 17. Checked on every model and
-/// layer plan, cards and notes.
+/// layer plan, cards and notes. Int6 factors store `HEAD_SIZE * 3 / 4`
+/// bytes of codes per vector instead of `HEAD_SIZE`, nothing else changes.
 #[test]
 fn rwkv_state_precision_lowrank_sizes_grow_with_the_answer_count() {
     let rows = HEADS * HEAD_SIZE * (2 + HEAD_SIZE);
     let block = |rank: usize| 2 + HEADS * 2 * rank * (2 + HEAD_SIZE);
+    let block6 = |rank: usize| 2 + HEADS * 2 * rank * (2 + HEAD_SIZE / 4 * 3);
     for weights in models() {
         let mut card_sizes = Vec::new();
         let mut note_sizes = Vec::new();
+        let mut card_sizes6 = Vec::new();
+        let mut note_sizes6 = Vec::new();
         for answers in 1..=20 {
             let reviews: Vec<ReviewInput> = reviews(7 * answers)
                 .into_iter()
@@ -614,7 +633,17 @@ fn rwkv_state_precision_lowrank_sizes_grow_with_the_answer_count() {
             };
             let (int8_card, int8_note, card_layers) = sizes(StatePrecision::CompactCardsInt8);
             let (card, note, _) = sizes(StatePrecision::CompactLowRank(RankSchedule::DEFAULT));
+            let (card6, note6, _) =
+                sizes(StatePrecision::CompactLowRankInt6(RankSchedule::DEFAULT));
             let rank = RankSchedule::DEFAULT.rank(answers as u8);
+            let saved6 = block(rank) - block6(rank);
+            assert_eq!(card - card6, card_layers * saved6, "{weights:?} {answers}");
+            assert!(
+                note > note6 && (note - note6) % saved6 == 0,
+                "{weights:?} {answers}"
+            );
+            card_sizes6.push(card6);
+            note_sizes6.push(note6);
             assert_eq!(
                 rank,
                 [1, 2, 4][usize::from(answers >= 2) + usize::from(answers >= 16)]
@@ -642,6 +671,16 @@ fn rwkv_state_precision_lowrank_sizes_grow_with_the_answer_count() {
             card_sizes[19],
             note_sizes[0],
             note_sizes[19]
+        );
+        println!(
+            "{weights:?}: int6 low-rank card bytes at 1, 2, 16, 20 answers: {} {} {} {}; \
+             note bytes (one card's answers) at 1, 20: {} {}",
+            card_sizes6[0],
+            card_sizes6[1],
+            card_sizes6[15],
+            card_sizes6[19],
+            note_sizes6[0],
+            note_sizes6[19]
         );
     }
 }
