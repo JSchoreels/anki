@@ -29,7 +29,7 @@ use rusqlite::MAIN_DB;
 use crate::card::CardType;
 use crate::rwkv::answer_time as answer_time_items;
 use crate::rwkv::answer_time::set_answer_time_elapsed;
-use crate::rwkv::answer_time::ANSWER_TIME_FORMAT_VERSION;
+use crate::rwkv::answer_time::ANSWER_TIME_FORMAT_VERSIONS;
 use crate::scheduler::rwkv::relative_overdueness;
 
 #[path = "architecture.rs"]
@@ -46,12 +46,15 @@ mod instant_workload_forecast;
 #[cfg(test)]
 #[path = "model_bench.rs"]
 mod model_bench;
+#[path = "lowrank.rs"]
+mod lowrank;
 #[path = "precision.rs"]
 mod precision;
 #[path = "workload_comparison.rs"]
 mod workload_comparison;
 #[path = "workload_forecast.rs"]
 mod workload_forecast;
+pub use lowrank::RankSchedule;
 pub use precision::StatePrecision;
 #[cfg(test)]
 #[path = "collection_benchmark.rs"]
@@ -736,7 +739,8 @@ impl RwkvInference {
             max_interval_days,
             precision,
         );
-        engine.answer_time_head = AnswerTimeHead::load_beside(&path)?.map(Arc::new);
+        let inputs = answer_time_inputs(engine.model.layer_plan);
+        engine.answer_time_head = AnswerTimeHead::load_beside(&path, inputs)?.map(Arc::new);
         Ok(engine)
     }
 
@@ -749,6 +753,13 @@ impl RwkvInference {
     /// smaller instant-only model, SM101), 2 for the other small models.
     pub fn card_layers(&self) -> usize {
         self.model.card_layers()
+    }
+
+    /// Layer counts per stream (card, deck, note, preset, user) of the
+    /// loaded checkpoint: its layer plan (the engine's, the tiny model's or
+    /// the six-layer Tiny (SM130)'s).
+    pub fn module_layers(&self) -> [usize; 5] {
+        self.model.layer_plan.module_layers
     }
 
     /// Predicts the answer time of each query from the frozen trunk and the
@@ -781,7 +792,7 @@ impl RwkvInference {
                 ));
             }
             let elapsed = elapsed_days(&request.input, elapsed_seconds(&request.input));
-            if elapsed < 1 {
+            if elapsed < head.min_elapsed_days() {
                 out.push(None);
                 continue;
             }
@@ -811,10 +822,7 @@ impl RwkvInference {
         max_interval_days: u32,
         precision: StatePrecision,
     ) -> Self {
-        let (card_precision, note_precision) = match precision {
-            StatePrecision::Int4CardsInt8Notes => (StatePrecision::Int4, StatePrecision::Int8),
-            precision => (precision, precision),
-        };
+        let (card_precision, note_precision) = precision.module_precisions();
         model.modules[0].precision = card_precision;
         model.modules[2].precision = note_precision;
         Self {
@@ -3984,22 +3992,28 @@ impl Default for ReviewRetrievabilityScratch {
     }
 }
 
-/// The tiny model is the small architecture without the card's second
-/// layer: its weights hold no `rwkv_modules.0.blocks.1.` tensor at all. Any
-/// other checkpoint keeps the engine's layers (a partly missing layer fails
-/// to load as before).
+/// The small engine's plan whose layer counts the weights hold: the tiny
+/// model has no `rwkv_modules.0.blocks.1.` tensor at all (one card layer),
+/// the six-layer Tiny (SM130) also lacks the trailing deck, preset and user
+/// layers. A layer counts when any tensor of it is present. Any other
+/// checkpoint keeps the engine's layers (a partly missing layer fails to
+/// load as before), and the big engine always does.
 fn layer_plan_for(weights: &WeightMap) -> LayerPlan {
-    let card_second_layer = "rwkv_modules.0.blocks.1.";
-    if SMALL_MODEL
-        && !weights
-            .tensors
-            .keys()
-            .any(|name| name.starts_with(card_second_layer))
-    {
-        TINY_LAYER_PLAN
-    } else {
-        ENGINE_LAYER_PLAN
+    if !SMALL_MODEL {
+        return ENGINE_LAYER_PLAN;
     }
+    let layers: [usize; 5] = std::array::from_fn(|module_id| {
+        (0..MODULE_LAYERS[module_id])
+            .take_while(|layer_id| {
+                let prefix = format!("rwkv_modules.{module_id}.blocks.{layer_id}.");
+                weights.tensors.keys().any(|name| name.starts_with(&prefix))
+            })
+            .count()
+    });
+    SMALL_LAYER_PLANS
+        .into_iter()
+        .find(|plan| plan.module_layers == layers)
+        .unwrap_or(ENGINE_LAYER_PLAN)
 }
 
 impl SrsModel {
@@ -4336,7 +4350,7 @@ impl SrsModel {
         ];
         let decoded: Vec<_> = states
             .iter()
-            .map(|state| state.map(ModuleState::decoded))
+            .map(|state| state.and_then(ModuleState::decoded_or_fresh))
             .collect();
         let mut x = x;
         let mut v0 = [const { Vec::new() }; 5];
@@ -4345,8 +4359,12 @@ impl SrsModel {
             let previous = decoded[module_id]
                 .as_ref()
                 .and_then(|state| state.layers.get(layer_id));
-            let (out, value, layer_state) =
-                self.modules[module_id].layers[layer_id].run(&x, &v0[module_id], previous);
+            let (out, value, layer_state) = self.modules[module_id].layers[layer_id].run(
+                &x,
+                &v0[module_id],
+                previous,
+                self.modules[module_id].precision,
+            );
             x = out;
             v0[module_id] = value;
             next[module_id].push(layer_state);
@@ -4390,9 +4408,10 @@ impl SrsModel {
 
     /// The answer-time head's frozen inputs at a query and the instant head's
     /// grade probabilities. Runs the same trunk as [`Self::review_features`]
-    /// and keeps the residual after the input encoder and after each layer
-    /// round, layer-normalised without affine parameters, then the instant
-    /// head's hidden layer.
+    /// and keeps the residual after the input encoder and after each schedule
+    /// unit (a layer round of the small models' interleaved schedule, a
+    /// stream of the big models' sequential one), layer-normalised without
+    /// affine parameters, then the instant head's hidden layer.
     fn answer_time_inputs(&self, features: &[f32], state: SrsStateRef<'_>) -> (Vec<f32>, [f32; 4]) {
         let unit = Norm {
             groups: 1,
@@ -4401,7 +4420,7 @@ impl SrsModel {
             weight: vec![1.0; D_MODEL],
             bias: vec![0.0; D_MODEL],
         };
-        let mut out = Vec::with_capacity(AnswerTimeHead::FROZEN);
+        let mut out = Vec::with_capacity(answer_time_frozen(self.layer_plan));
         let mut x = self.feature_mlp(features);
         out.extend(unit.apply(&x));
         let states = [
@@ -4413,7 +4432,7 @@ impl SrsModel {
         ];
         let decoded: Vec<_> = states
             .iter()
-            .map(|state| state.map(ModuleState::decoded))
+            .map(|state| state.and_then(ModuleState::decoded_or_fresh))
             .collect();
         let mut v0 = [const { Vec::new() }; 5];
         let steps = self.layer_plan.steps;
@@ -4421,11 +4440,16 @@ impl SrsModel {
             let previous = decoded[module_id]
                 .as_ref()
                 .and_then(|state| state.layers.get(layer_id));
-            let (next, value, _) =
-                self.modules[module_id].layers[layer_id].run(&x, &v0[module_id], previous);
+            // The stored state is discarded: no state rounding.
+            let (next, value, _) = self.modules[module_id].layers[layer_id].run(
+                &x,
+                &v0[module_id],
+                previous,
+                StatePrecision::F32,
+            );
             x = next;
             v0[module_id] = value;
-            if index + 1 == steps.len() || steps[index + 1].1 != layer_id {
+            if answer_time_unit_ends(steps, index) {
                 out.extend(unit.apply(&x));
             }
         }
@@ -4490,49 +4514,78 @@ impl SrsModel {
 /// affine parameters), the instant head's hidden layer, and the history
 /// features.
 struct AnswerTimeHead {
+    /// Frozen inputs plus history features: 474 for the small and tiny
+    /// plans, 346 for the six-layer Tiny (SM130), 1,306 for the big engine
+    /// (see [`answer_time_inputs`]).
+    inputs: usize,
     hidden: Linear,
     out: Linear,
+    /// Format 2 heads (trained on show-time inputs with same-day reviews
+    /// included) answer every query but a card's first review; format 1
+    /// heads only queries on a later day than the card's previous review.
+    same_day: bool,
 }
 
 impl AnswerTimeHead {
-    const FROZEN: usize = (ANSWER_TIME_ROUNDS + 1) * D_MODEL + HEAD_DIM;
-    const INPUTS: usize = Self::FROZEN + answer_time_items::ANSWER_TIME_FEATURES;
+    /// The frozen inputs and the input count of the engine's own plan (the
+    /// tests' reference widths; each engine compiles only some of the tests).
+    #[cfg(test)]
+    #[allow(dead_code)]
+    const FROZEN: usize = answer_time_frozen(ENGINE_LAYER_PLAN);
+    #[cfg(test)]
+    #[allow(dead_code)]
+    const INPUTS: usize = answer_time_inputs(ENGINE_LAYER_PLAN);
 
-    /// Loads `time_head.f32.bin` (or `time_head.int8.bin` beside INT8
-    /// weights) from the folder of the weights; `None` when the folder has
-    /// none or the engine is not the small one.
-    fn load_beside(weights: &Path) -> io::Result<Option<Self>> {
-        if !SMALL_MODEL {
+    /// Loads the head beside the weights: `<weights file name without
+    /// .bin>.time_head.f32.bin` (the show-time big model (SM91s2)'s weights
+    /// file has no folder of its own), else `time_head.f32.bin` in the folder
+    /// of the weights; `.int8.bin` instead beside INT8 weights. `None` when
+    /// neither exists. A head must take `inputs` values, the count of the
+    /// model it sits beside (a head of another layer plan is refused).
+    fn load_beside(weights: &Path, inputs: usize) -> io::Result<Option<Self>> {
+        let Some(name) = weights.file_name().and_then(|name| name.to_str()) else {
             return Ok(None);
+        };
+        let format = if name.contains("int8") { "int8" } else { "f32" };
+        let stem = name.strip_suffix(".bin").unwrap_or(name);
+        for candidate in [
+            format!("{stem}.time_head.{format}.bin"),
+            format!("time_head.{format}.bin"),
+        ] {
+            let path = weights.with_file_name(candidate);
+            if path.is_file() {
+                let head = Self::load(&path)?;
+                if head.inputs != inputs {
+                    return Err(io::Error::new(
+                        io::ErrorKind::InvalidData,
+                        format!(
+                            "RWKV answer-time head takes {} inputs, its model gives {inputs}",
+                            head.inputs
+                        ),
+                    ));
+                }
+                return Ok(Some(head));
+            }
         }
-        let int8 = weights
-            .file_name()
-            .and_then(|name| name.to_str())
-            .is_some_and(|name| name.contains("int8"));
-        let path = weights.with_file_name(if int8 {
-            "time_head.int8.bin"
-        } else {
-            "time_head.f32.bin"
-        });
-        if !path.is_file() {
-            return Ok(None);
-        }
-        Self::load(&path).map(Some)
+        Ok(None)
     }
 
     fn load(path: &PathBuf) -> io::Result<Self> {
         let weights = WeightMap::load(path)?;
         let version = weights.tensor("time_head.format_version", &[1])?.values[0];
-        if version != ANSWER_TIME_FORMAT_VERSION {
+        if !ANSWER_TIME_FORMAT_VERSIONS.contains(&version) {
             return Err(io::Error::new(
                 io::ErrorKind::InvalidData,
                 format!("unsupported RWKV answer-time head format {version}"),
             ));
         }
-        let hidden = weights
+        let (hidden, inputs) = weights
             .tensors
             .get("time_mlps.0.hidden.weight")
-            .map(|tensor| tensor.shape[0])
+            .and_then(|tensor| match tensor.shape[..] {
+                [hidden, inputs] => Some((hidden, inputs)),
+                _ => None,
+            })
             .ok_or_else(|| {
                 io::Error::new(
                     io::ErrorKind::InvalidData,
@@ -4540,18 +4593,29 @@ impl AnswerTimeHead {
                 )
             })?;
         Ok(Self {
-            hidden: weights.linear("time_mlps.0.hidden", Self::INPUTS, hidden, true)?,
+            inputs,
+            hidden: weights.linear("time_mlps.0.hidden", inputs, hidden, true)?,
             out: weights.linear(
                 "time_mlps.0.out",
                 hidden,
                 4 * answer_time_items::ANSWER_TIME_BINS,
                 true,
             )?,
+            same_day: version >= 2.0,
         })
     }
 
+    /// The smallest elapsed days of a query this head predicts.
+    fn min_elapsed_days(&self) -> i64 {
+        if self.same_day {
+            0
+        } else {
+            1
+        }
+    }
+
     fn logits(&self, frozen: &[f32], explicit: &[f32]) -> Vec<f32> {
-        let mut inputs = Vec::with_capacity(Self::INPUTS);
+        let mut inputs = Vec::with_capacity(self.inputs);
         inputs.extend_from_slice(frozen);
         inputs.extend_from_slice(explicit);
         let mut hidden = self.hidden.apply(&inputs);
@@ -4569,23 +4633,58 @@ impl AnswerTimeHead {
     }
 }
 
-/// Layer rounds of the interleaved schedule (the small model: 4). A round
-/// ends where the next step starts another layer index.
-const ANSWER_TIME_ROUNDS: usize = layer_rounds(LAYER_STEPS);
-// The tiny model drops one step of round 2, not a round: an answer-time head
-// beside it would read the same number of residuals.
-const _: () = assert!(!SMALL_MODEL || layer_rounds(TINY_LAYER_STEPS) == ANSWER_TIME_ROUNDS);
+/// Whether step `index` ends a unit of the schedule, where the answer-time
+/// head reads the residual: a layer round of the small models' interleaved
+/// schedule (the next step starts another layer index), a stream of the big
+/// models' sequential one (the next step starts another module).
+const fn answer_time_unit_ends(steps: &[(usize, usize)], index: usize) -> bool {
+    if index + 1 == steps.len() {
+        return true;
+    }
+    if SMALL_MODEL {
+        steps[index + 1].1 != steps[index].1
+    } else {
+        steps[index + 1].0 != steps[index].0
+    }
+}
 
-const fn layer_rounds(steps: &[(usize, usize)]) -> usize {
-    let mut rounds = 0;
+const fn answer_time_units(steps: &[(usize, usize)]) -> usize {
+    let mut units = 0;
     let mut index = 0;
     while index < steps.len() {
-        if index + 1 == steps.len() || steps[index + 1].1 != steps[index].1 {
-            rounds += 1;
+        if answer_time_unit_ends(steps, index) {
+            units += 1;
         }
         index += 1;
     }
-    rounds
+    units
+}
+
+/// Schedule units the answer-time head reads after: 4 layer rounds in the
+/// small model, 5 streams in the big one.
+const ANSWER_TIME_UNITS: usize = answer_time_units(LAYER_STEPS);
+// The tiny model drops one step of round 2, not a round: an answer-time head
+// beside it reads the same number of residuals.
+const _: () = assert!(!SMALL_MODEL || answer_time_units(TINY_LAYER_STEPS) == ANSWER_TIME_UNITS);
+const _: () = assert!(ANSWER_TIME_UNITS == if SMALL_MODEL { 4 } else { 5 });
+// The six-layer Tiny (SM130) keeps 2 layer rounds: its heads take 346
+// inputs (3 x 64 residuals, the 128-wide instant hidden layer, 26 history
+// features) instead of 474.
+const _: () = assert!(!SMALL_MODEL || answer_time_units(SIX_LAYER_STEPS) == 2);
+const _: () = assert!(!SMALL_MODEL || answer_time_inputs(SIX_LAYER_PLAN) == 346);
+const _: () = assert!(!SMALL_MODEL || answer_time_inputs(TINY_LAYER_PLAN) == 474);
+
+/// The answer-time head's frozen inputs on a plan: the residual after the
+/// input encoder and after each schedule unit, then the instant head's
+/// hidden layer.
+const fn answer_time_frozen(plan: LayerPlan) -> usize {
+    (answer_time_units(plan.steps) + 1) * D_MODEL + HEAD_DIM
+}
+
+/// The answer-time head's input count on a plan: the frozen inputs and the
+/// history features.
+const fn answer_time_inputs(plan: LayerPlan) -> usize {
+    answer_time_frozen(plan) + answer_time_items::ANSWER_TIME_FEATURES
 }
 
 struct ReviewHeads {
@@ -6567,10 +6666,14 @@ impl RwkvLayer {
         input: &[f32],
         v0: &[f32],
         state: Option<&LayerState>,
+        precision: StatePrecision,
     ) -> (Vec<f32>, Vec<f32>, LayerState) {
-        let (x, v0, time_state) =
-            self.time_mixer
-                .run(input, v0, state.and_then(|state| state.time.as_ref()));
+        let (x, v0, time_state) = self.time_mixer.run(
+            input,
+            v0,
+            state.and_then(|state| state.time.as_ref()),
+            precision,
+        );
         let (x, channel_shift) = match &self.channel_mixer {
             Some(mixer) => {
                 let (x, shift) =
@@ -6812,6 +6915,7 @@ impl TimeMixer {
         input: &[f32],
         v0: &[f32],
         state: Option<&TimeState>,
+        precision: StatePrecision,
     ) -> (Vec<f32>, Vec<f32>, TimeState) {
         #[cfg(test)]
         let profile_started = rwkv_warmup_profile_start();
@@ -6836,7 +6940,7 @@ impl TimeMixer {
             &parts.k_deformed,
         );
 
-        let (out, next_matrix) = single_timestep(
+        let (out, mut next_matrix) = single_timestep(
             &parts.r,
             &parts.k,
             &parts.v,
@@ -6846,6 +6950,19 @@ impl TimeMixer {
             state_matrix,
         );
         let out = self.mix_output(&parts, out, input);
+        // The answer's output used the float update; a low-rank state is
+        // factored here, where the previous factors and the value vector are
+        // at hand (other formats round when the module state is compacted).
+        let mut packed_matrix = None;
+        if precision.is_lowrank() {
+            packed_matrix = state.and_then(|state| state.packed_matrix.clone());
+            precision.round_written_matrix(
+                &mut next_matrix,
+                &mut packed_matrix,
+                state_matrix,
+                &parts.v,
+            );
+        }
 
         let output = (
             out,
@@ -6853,7 +6970,7 @@ impl TimeMixer {
             TimeState {
                 x_shift: x,
                 matrix: next_matrix,
-                packed_matrix: None,
+                packed_matrix,
             },
         );
         #[cfg(test)]
@@ -11124,7 +11241,11 @@ order by e.id, e.cid
                     review.current_elapsed_seconds.map(|seconds| seconds.max(0));
             }
         }
-        for precision in [StatePrecision::F32, StatePrecision::Int4CardsInt8Notes] {
+        for precision in [
+            StatePrecision::F32,
+            StatePrecision::Int4CardsInt8Notes,
+            StatePrecision::CompactCardsInt8,
+        ] {
             for after in [false, true] {
                 let queries: Vec<_> = reviews
                     .iter()
@@ -11252,6 +11373,8 @@ order by e.id, e.cid
             StatePrecision::F32,
             StatePrecision::Int8,
             StatePrecision::Int4CardsInt8Notes,
+            StatePrecision::CompactCardsInt8,
+            StatePrecision::CompactCardsInt4,
         ] {
             let mut sequential =
                 RwkvInference::load_with_precision(weights.clone(), 0.9, 36_500, precision)
@@ -12863,7 +12986,11 @@ order by e.id, e.cid
             eprintln!("skipping: embedded RWKV weights not found");
             return;
         };
-        for precision in [StatePrecision::F32, StatePrecision::Int4CardsInt8Notes] {
+        for precision in [
+            StatePrecision::F32,
+            StatePrecision::Int4CardsInt8Notes,
+            StatePrecision::CompactCardsInt8,
+        ] {
             let mut inference =
                 RwkvInference::load_with_precision(weights.clone(), 0.9, 36_500, precision)
                     .unwrap();

@@ -29,7 +29,7 @@ import anki.collection  # Initialize collection before the cards/decks import cy
 from anki import cards_pb2, collection_pb2, deck_config_pb2, scheduler_pb2
 from anki.decks import DeckId, FilteredDeckConfig
 from anki.scheduler.v3 import SchedulingState, SchedulingStates
-from aqt import rwkv_scheduler
+from aqt import rwkv_answer_time, rwkv_scheduler
 from aqt.rwkv_scheduler import (
     RwkvBackendCacheSnapshot,
     RwkvIntervalOverride,
@@ -6887,6 +6887,94 @@ def test_rwkv_review_input_uses_exact_elapsed_for_filtered_cards(
     assert review_input.current_elapsed_seconds == 30
 
 
+@pytest.mark.parametrize(
+    ("last_review_age", "state_elapsed_secs", "expected_days"),
+    [
+        # Same-day step: the state's elapsed time is rebuilt from the due time
+        # and differs from the real time since the previous answer.
+        (30, 600, 0),
+        # Day-learning card shown on the next day, just after the rollover: the
+        # state holds whole days times 86,400 seconds, the real interval is
+        # about an hour.
+        (4_000, 86_400, 1),
+        # Real interval of 2 days and 5 seconds against 3 whole days.
+        (2 * 86_400 + 5, 3 * 86_400, 2),
+    ],
+)
+def test_rwkv_review_input_uses_exact_elapsed_for_learning_cards(
+    monkeypatch: pytest.MonkeyPatch,
+    last_review_age: int,
+    state_elapsed_secs: int,
+    expected_days: int,
+) -> None:
+    now = 42 * 86_400 + 100
+    monkeypatch.setattr(rwkv_scheduler.time, "time", lambda: float(now))
+    reviewer = _rwkv_reviewer()
+    reviewer._v3.states.current.Clear()
+    reviewer._v3.states.current.normal.learning.elapsed_secs = state_elapsed_secs
+    card = _rwkv_card(
+        card_id=1,
+        note_id=10,
+        duration_millis=1234,
+        last_review_time=now - last_review_age,
+    )
+    card.type = 1
+    card.queue = 3
+
+    for ease in (None, 3):
+        review_input = rwkv_review_input(
+            reviewer=reviewer,
+            card=card,
+            identity=RwkvReviewIdentity(
+                card_id=1, note_id=10, deck_id=100, preset_id=1000
+            ),
+            ease=ease,
+        )
+
+        assert review_input.card_type == int(RwkvReviewState.LEARNING)
+        assert review_input.current_state_kind == "normal"
+        assert review_input.current_normal_state_kind == "learning"
+        assert review_input.current_elapsed_days == expected_days
+        assert review_input.current_elapsed_seconds == last_review_age
+
+
+def test_rwkv_review_input_learning_elapsed_falls_back_to_latest_eligible_review() -> (
+    None
+):
+    now = 42 * 86_400 + 100
+    previous_review_time = 40 * 86_400 + 50
+
+    class DB:
+        def first(
+            self, sql: str, card_id: int, reset_card_id: int
+        ) -> tuple[int, int, int]:
+            assert "from revlog" in sql
+            return previous_review_time * 1000, 3, 0
+
+    reviewer = _rwkv_reviewer()
+    reviewer.mw.col.db = DB()
+    reviewer._v3.states.current.Clear()
+    reviewer._v3.states.current.normal.learning.elapsed_secs = 5 * 86_400
+    card = _rwkv_card(card_id=1, note_id=10, duration_millis=1234)
+    card.type = 1
+    card.queue = 3
+
+    with pytest.MonkeyPatch.context() as monkeypatch:
+        monkeypatch.setattr(rwkv_scheduler.time, "time", lambda: float(now))
+        review_input = rwkv_review_input(
+            reviewer=reviewer,
+            card=card,
+            identity=RwkvReviewIdentity(
+                card_id=1, note_id=10, deck_id=100, preset_id=1000
+            ),
+            ease=None,
+        )
+
+    assert review_input.card_type == int(RwkvReviewState.LEARNING)
+    assert review_input.current_elapsed_days == 2
+    assert review_input.current_elapsed_seconds == 2 * 86_400 + 50
+
+
 def test_rwkv_review_input_falls_back_to_latest_eligible_review_time(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
@@ -7041,6 +7129,43 @@ def test_rwkv_stats_graph_review_input_uses_exact_elapsed_seconds(
 
     assert review_input is not None
     assert review_input.current_elapsed_seconds == 30
+
+
+def test_rwkv_stats_graph_learning_input_uses_calendar_elapsed_days(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    now = 42 * 86_400 + 100
+    monkeypatch.setattr(rwkv_scheduler.time, "time", lambda: float(now))
+    card = rwkv_scheduler.RwkvStatsGraphCard(
+        id=1,
+        nid=10,
+        did=100,
+        odid=0,
+        type=1,
+        queue=3,
+        due=50,
+        odue=0,
+        ivl=0,
+        factor=0,
+        reps=1,
+        lapses=0,
+        last_review_time=now - 4_000,
+    )
+
+    review_input = rwkv_scheduler._rwkv_review_input_for_stats_graph_card(
+        card=card,
+        deck_config={"id": 1000, "rwkvReviewEnabled": True},
+        timing=SimpleNamespace(
+            now=now,
+            days_elapsed=42,
+            next_day_at=43 * 86_400,
+        ),
+    )
+
+    assert review_input is not None
+    assert review_input.current_normal_state_kind == "learning"
+    assert review_input.current_elapsed_days == 1
+    assert review_input.current_elapsed_seconds == 4_000
 
 
 def test_rwkv_stats_graph_review_input_uses_card_creation_elapsed_by_default() -> None:
@@ -10698,7 +10823,10 @@ def test_reviewer_rwkv_cache_rebuilds_when_replay_semantics_change(
     assert rebuilt_runtime.answered_inputs[0].current_elapsed_seconds == -1
 
 
-@pytest.mark.parametrize("next_mode", ["f32", "cards_int4_notes_int8"])
+@pytest.mark.parametrize(
+    "next_mode",
+    ["f32", "cards_int4_notes_int8", "compact_cards_int8", "compact_lowrank_int8"],
+)
 def test_reviewer_rwkv_precision_change_replays_history_instead_of_upcasting(
     monkeypatch, tmp_path, next_mode
 ) -> None:
@@ -12586,7 +12714,7 @@ def test_template_edit_then_answer_restores_rwkv_once(
         model = Path(__file__).parents[1] / "aqt/rwkv_inference/sm72e25/weights.f32.bin"
         backend = EmbeddedRwkvReviewerBackend(
             model_path=model,
-            state_precision="cards_int4_notes_int8",
+            state_precision="compact_cards_int8",
             model="sm72e25",
         )
         set_reviewer_backend(backend)
@@ -12618,7 +12746,7 @@ def test_template_edit_then_answer_restores_rwkv_once(
         after_answer = backend.cache_snapshot()
         rebuilt = EmbeddedRwkvReviewerBackend(
             model_path=model,
-            state_precision="cards_int4_notes_int8",
+            state_precision="compact_cards_int8",
             model="sm72e25",
         )
         set_reviewer_backend(rebuilt)
@@ -23933,7 +24061,7 @@ def test_card_info_configures_embedded_backend_for_rwkv_enabled_card(
             "model_path": model_path,
             "device": "cpu",
             "dtype": "float",
-            "state_precision": "cards_int4_notes_int8",
+            "state_precision": "compact_cards_int8",
             # Small without RWKV-Instant: its two-head model, the show-time
             # retrain (SM92), since the family wiring (SM114).
             "model": "sm92",
@@ -25102,7 +25230,7 @@ def test_configure_reviewer_backend_uses_embedded_default(
             "model_path": model_path,
             "device": "cpu",
             "dtype": "float",
-            "state_precision": "cards_int4_notes_int8",
+            "state_precision": "compact_cards_int8",
             # Small without RWKV-Instant: its two-head model, the show-time
             # retrain (SM92), since the family wiring (SM114).
             "model": "sm92",
@@ -25178,7 +25306,7 @@ def test_configure_reviewer_backend_uses_model_env_with_embedded_runner(
             "model_path": Path("/tmp/custom-rwkv.pth"),
             "device": "mps",
             "dtype": "bfloat16",
-            "state_precision": "cards_int4_notes_int8",
+            "state_precision": "compact_cards_int8",
             # A custom checkpoint replaces Small's two-head model, the show-time
             # retrain (SM92), since the family wiring (SM114).
             "model": "sm92",
@@ -27385,14 +27513,20 @@ def test_rwkv_workload_forecast_job_reports_progress_and_result(
     )
 
 
+@pytest.mark.parametrize("answer_time_head", [False, True])
 @pytest.mark.parametrize("curve_preset", [False, True])
-def test_card_info_without_curve_model_omits_curve_and_answer_time_rows(
+def test_card_info_without_curve_model_omits_curve_rows(
     curve_preset: bool,
+    monkeypatch: pytest.MonkeyPatch,
+    answer_time_head: bool,
 ) -> None:
-    """The show-time instant-only model, stage 2 (SM98) alone: RWKV-Instant's
-    recall, buttons and after-review rows only. No RWKV-Curve S90 rows and no
-    answer-time rows, even for a preset that turned on RWKV-Curve before the
-    runtime is reopened; FSRS rows come from the card's own stats."""
+    """An Instant-Only model alone (the longer Small Instant-Only model
+    (SM113)): RWKV-Instant's recall, buttons and after-review rows, and the
+    answer-time rows only when the runtime has an answer-time head (an
+    instant-only model alone answers with its own head since the time heads
+    for the family (SM117)). No RWKV-Curve S90 rows, even for a preset that
+    turned on RWKV-Curve before the runtime is reopened; FSRS rows come from
+    the card's own stats."""
 
     expected_snapshot = RwkvBackendCacheSnapshot(
         card_states={},
@@ -27404,7 +27538,7 @@ def test_card_info_without_curve_model_omits_curve_and_answer_time_rows(
     )
 
     class InstantOnlyBackend:
-        model_name = "sm98"
+        model_name = "sm113"
         instant_model_name = None
 
         def predict_review(
@@ -27420,10 +27554,16 @@ def test_card_info_without_curve_model_omits_curve_and_answer_time_rows(
             )
 
         def has_answer_time_head(self) -> bool:
-            return True
+            return answer_time_head
 
         def predict_answer_time(self, *_args: object) -> object:
-            raise AssertionError("no answer time without a curve model")
+            if not answer_time_head:
+                raise AssertionError("no answer time without a head")
+            return rwkv_answer_time.RwkvAnswerTimePrediction(
+                median_seconds=(9.0, 7.0, 5.0, 3.0),
+                fast_probabilities=(0.1, 0.2, 0.3, 0.4),
+                mixed_median_seconds=6.0,
+            )
 
         def cache_snapshot(self) -> RwkvBackendCacheSnapshot:
             return expected_snapshot
@@ -27448,6 +27588,11 @@ def test_card_info_without_curve_model_omits_curve_and_answer_time_rows(
                 for answer in answers
             ]
 
+    monkeypatch.setattr(
+        rwkv_scheduler,
+        "_rwkv_answer_time_history_features",
+        lambda _reviewer, _card_id: [0.0] * 26,
+    )
     backend = InstantOnlyBackend()
     set_reviewer_backend(backend)
     assert not rwkv_scheduler.rwkv_workload_simulation_available()
@@ -27466,16 +27611,28 @@ def test_card_info_without_curve_model_omits_curve_and_answer_time_rows(
         fallback_source="FSRS",
     )
 
+    answer_time_rows = (
+        [
+            (
+                "RWKV : Answer Time by Button",
+                "Again:9.0s Hard:7.0s Good:5.0s Easy:3.0s",
+            ),
+            ("RWKV : Expected Answer Time", "6.0s (Good under 3.9s: 30%)"),
+        ]
+        if answer_time_head
+        else []
+    )
     assert rows == [
         ("RWKV computed R", "45%"),
         RWKV_BUTTON_PROBABILITY_ROW,
         ("Retrievability source", "RWKV"),
+        *answer_time_rows,
         ("RWKV : R After Review", "Again:65% Hard:70% Good:75% Easy:80%"),
         ("RWKV : R After 10min", "Again:66% Hard:71% Good:76% Easy:81%"),
     ]
     labels = {label for label, _ in rows}
     assert not labels & {"RWKV Curve Next S90", "FSRS Next S90"}
-    assert not any("answer time" in label.lower() for label in labels)
+    assert any("answer time" in label.lower() for label in labels) == answer_time_head
 
 
 def test_instant_only_prediction_keeps_fsrs_scheduling_states() -> None:

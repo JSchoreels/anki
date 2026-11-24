@@ -262,7 +262,9 @@ _RWKV_CALIBRATION_EPOCH_KEYS = (
 )
 _EMBEDDED_RWKV_MODEL_FILENAME = "weights.f32.bin"
 _RWKV_MODEL_KEY_HASH_CHUNK_SIZE = 1024 * 1024
-_RWKV_STATE_CACHE_VERSION = 13
+# 14: the compact card / note state (compact_cards_int8) became the default.
+# 15: the low-rank card / note state (compact_lowrank_int8) became the default.
+_RWKV_STATE_CACHE_VERSION = 15
 _RWKV_STATE_CACHE_LEGACY_JSON_VERSION = 2
 _RWKV_PRESET_REPLAY_SEMANTICS_VERSION = 7
 _RWKV_STATE_CACHE_DIR = "rwkv-state-cache"
@@ -8688,16 +8690,17 @@ def _rwkv_card_info_answer_time_prediction(
     candidate: RwkvReviewCandidate,
     wait_for_backend: bool,
 ) -> RwkvAnswerTimePrediction | None:
-    """Predicted answer times from the model's optional answer-time head; no
-    rows without the head, for a card last reviewed today or a new card."""
+    """Predicted answer times from the runtime's optional answer-time head
+    (an instant-only model alone uses its own head; a pair uses its instant
+    model's head when it has one, else its two-head model's); no rows
+    without a head or for a new card, and with an older head (format 1) for
+    a card last reviewed today. The answer time is front + back: question
+    shown -> grade press, capped at the preset's maximum answer seconds."""
     backend = _reviewer_backend
     card_id = _card_id(card)
     has_head = getattr(backend, "has_answer_time_head", None)
     predict = getattr(backend, "predict_answer_time", None)
     if card_id is None or not callable(has_head) or not callable(predict):
-        return None
-    if not _rwkv_runtime_has_curve():
-        # The head reads the release's state; an instant-only model has none.
         return None
     try:
         if not has_head() or not _prepare_reviewer_backend_for_card_info(reviewer):
@@ -9256,6 +9259,7 @@ def rwkv_review_input(
         )
 
     if review_state in (
+        int(RwkvReviewState.LEARNING),
         int(RwkvReviewState.REVIEW),
         int(RwkvReviewState.RELEARNING),
         int(RwkvReviewState.FILTERED),
@@ -28885,10 +28889,14 @@ def _rwkv_state_fields_for_stats_graph_values(
         int(QUEUE_TYPE_LRN),
         int(QUEUE_TYPE_DAY_LEARN_RELEARN),
     ):
+        elapsed_days = _stats_graph_elapsed_days_for_review_time(
+            last_review_time,
+            timing,
+        )
         elapsed_seconds = _stats_graph_elapsed_seconds_for_review_time(last_review_time)
-        if elapsed_seconds is None:
+        if elapsed_days is None or elapsed_seconds is None:
             return None, None, None, None
-        return "normal", "learning", None, elapsed_seconds
+        return "normal", "learning", elapsed_days, elapsed_seconds
 
     if card_type == int(CARD_TYPE_RELEARNING) and queue in (
         int(QUEUE_TYPE_LRN),

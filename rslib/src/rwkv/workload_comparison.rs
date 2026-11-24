@@ -137,7 +137,7 @@ impl BackgroundReplay {
                 worker.apply_simulation_answer(answer, states)?;
             }
         } else {
-            replay_background_batch(&answers, worker, states);
+            replay_background_batch(&answers, worker, states)?;
         }
         *cursor = end;
         Ok(())
@@ -148,7 +148,7 @@ fn replay_background_batch(
     answers: &[ReviewInput],
     worker: &mut RwkvInference,
     states: &mut SimulationStates<'_>,
-) {
+) -> io::Result<()> {
     fn import(
         own: &mut HashMap<i64, ModuleState>,
         base: &HashMap<i64, ModuleState>,
@@ -174,12 +174,13 @@ fn replay_background_batch(
         global: states.global.take().or_else(|| states.base.global.clone()),
         ..Default::default()
     };
-    bulk::replay_simulation_background(worker, &mut replay_states, answers);
+    let result = bulk::replay_simulation_background(worker, &mut replay_states, answers);
     states.card = replay_states.card;
     states.note = replay_states.note;
     states.deck = replay_states.deck;
     states.preset = replay_states.preset;
     states.global = replay_states.global;
+    result
 }
 
 impl RwkvInference {
@@ -1062,7 +1063,11 @@ mod tests {
 
     #[test]
     fn batched_background_preserves_sequential_state_and_features() {
-        for precision in [StatePrecision::F32, StatePrecision::Int4CardsInt8Notes] {
+        for precision in [
+            StatePrecision::F32,
+            StatePrecision::Int4CardsInt8Notes,
+            StatePrecision::CompactCardsInt8,
+        ] {
             check_batched_background_state(precision);
         }
     }
@@ -1092,7 +1097,7 @@ mod tests {
                 .apply_simulation_answer(answer, &mut sequential_states)
                 .unwrap();
         }
-        replay_background_batch(&answers, &mut batched, &mut batched_states);
+        replay_background_batch(&answers, &mut batched, &mut batched_states).unwrap();
         assert_eq!(sequential.cache_state(), batched.cache_state());
         for input in &inputs {
             let query = &input.input.review_input;

@@ -78,8 +78,20 @@ pub(super) const TINY_LAYER_STEPS: &[(usize, usize)] = &[
     (4, 2),
     (1, 3),
 ];
+/// The six-layer Tiny (SM130, arch `w64-c1-d2p1u1`): the tiny model's card
+/// and note layers with the deck, preset and user streams cut to 2 / 1 / 1
+/// layers. Its schedule is the first two rounds of [`TINY_LAYER_STEPS`] (an
+/// exact subsequence of it), so an answer-time head beside it reads 2 layer
+/// rounds instead of 4 (346 inputs instead of 474). Only the small engine
+/// loads it; every other dimension is the small model's, and the channel
+/// mixers it keeps (card 0, deck 0, note 0) are the tiny model's.
+pub(super) const SIX_LAYER_MODULE_LAYERS: [usize; 5] = [1, 2, 1, 1, 1];
+/// The interleaved schedule of [`SIX_LAYER_MODULE_LAYERS`].
+pub(super) const SIX_LAYER_STEPS: &[(usize, usize)] =
+    &[(0, 0), (1, 0), (2, 0), (3, 0), (4, 0), (1, 1)];
 /// The per-module layer counts and the layer schedule of one loaded model:
-/// the engine's own, or the tiny model's in the small engine.
+/// the engine's own, or the tiny or six-layer Tiny model's in the small
+/// engine.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub(super) struct LayerPlan {
     pub(super) module_layers: [usize; 5],
@@ -93,6 +105,14 @@ pub(super) const TINY_LAYER_PLAN: LayerPlan = LayerPlan {
     module_layers: TINY_MODULE_LAYERS,
     steps: TINY_LAYER_STEPS,
 };
+pub(super) const SIX_LAYER_PLAN: LayerPlan = LayerPlan {
+    module_layers: SIX_LAYER_MODULE_LAYERS,
+    steps: SIX_LAYER_STEPS,
+};
+/// The plans the small engine loads, told apart by the layer counts of the
+/// weights; the big engine loads only its own.
+pub(super) const SMALL_LAYER_PLANS: [LayerPlan; 3] =
+    [ENGINE_LAYER_PLAN, TINY_LAYER_PLAN, SIX_LAYER_PLAN];
 pub(super) fn channel_mixer_present(module: usize, layer: usize) -> bool {
     !SMALL_MODEL || matches!((module, layer), (0, 0) | (1, 0) | (1, 3) | (2, 0))
 }

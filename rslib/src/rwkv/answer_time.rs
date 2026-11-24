@@ -1,8 +1,11 @@
 // Copyright: Ankitects Pty Ltd and contributors
 // License: GNU AGPL, version 3 or later; http://www.gnu.org/licenses/agpl.html
 
-//! Answer-time prediction for the small model's optional answer-time head
-//! (`time_head.f32.bin` next to the weights).
+//! Answer-time prediction for a model's optional answer-time head
+//! (`time_head.f32.bin` next to the weights). The answer time is the whole
+//! time on the card, front and back: from the question shown to the grade
+//! press, capped at the preset's maximum answer seconds ("recalled and
+//! answered within S s" includes reading the back).
 //!
 //! The head reads the frozen trunk at a query plus 26 causal features of the
 //! history before it. [`AnswerTimeHistory`] computes those features with the
@@ -24,8 +27,12 @@ pub const ANSWER_TIME_BINS: usize = 16;
 pub const ANSWER_TIME_FAST_BINS: usize = 7;
 /// Index of the elapsed-days feature; the next one is the new-card flag.
 pub(crate) const ANSWER_TIME_ELAPSED_FEATURE: usize = 23;
-/// The only answer-time head file format this runtime reads.
-pub(crate) const ANSWER_TIME_FORMAT_VERSION: f32 = 1.0;
+/// The answer-time head file formats this runtime reads: 1, heads trained on
+/// normal inputs and later-day reviews only (they predict queries on a later
+/// day than the card's previous review); 2, heads trained on show-time inputs
+/// with same-day reviews included (they predict every query but a card's
+/// first review).
+pub(crate) const ANSWER_TIME_FORMAT_VERSIONS: [f32; 2] = [1.0, 2.0];
 
 /// ln 8 s: the centre of every ln-time feature (Python `math.log(8.0)`).
 const LN8: f64 = 2.0794415416798357;

@@ -45,7 +45,7 @@ def test_comparison_bridge_runs_both_schedulers_with_a_shared_learner(
         model_path=model,
         target_retention=0.9,
         max_interval_days=36500,
-        state_precision="cards_int4_notes_int8",
+        state_precision="compact_cards_int8",
         model="sm56",
     )
     answer = RwkvReviewInput(

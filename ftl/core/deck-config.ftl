@@ -384,6 +384,7 @@ deck-config-rwkv-model-size-heading = Model size
 deck-config-rwkv-model-estimate-summary = Estimated model state for { $cards } cards and { $notes } notes.
 deck-config-rwkv-model-estimate-no-counts = Estimated model state
 deck-config-rwkv-model-per-card-note = { $size } per card + note
+deck-config-rwkv-model-per-card-note-range = Average over benchmark collections. The stored state grows with a card's answers: about { $low } after its first answer, up to { $high } from its 16th answer.
 deck-config-rwkv-model-state-ram-disk = Estimated state RAM / disk
 deck-config-rwkv-model-state-unavailable = Estimate unavailable
 deck-config-rwkv-model-both-separate = Both schedulers · separate models

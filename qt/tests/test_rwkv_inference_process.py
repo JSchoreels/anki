@@ -634,6 +634,21 @@ def _load_rsbridge_runtime(
         # beside the Tiny Instant-Only model (SM101).
         ("sm92+sm98", "sm92/weights.f32.bin"),
         ("sm106+sm101", "sm106/weights.f32.bin"),
+        # The Instant-Only models since 2026-11-16, alone (instant-only) and
+        # in their family pairs: the longer Small Instant-Only model (SM113)
+        # and the longer cool-down for Tiny (SM115, one card layer).
+        ("sm113", "sm113/weights.f32.bin"),
+        ("sm115", "sm115/weights.f32.bin"),
+        ("sm92+sm113", "sm92/weights.f32.bin"),
+        ("sm106+sm115", "sm106/weights.f32.bin"),
+        # The release candidate's Small and Tiny (2026-11): the show-time
+        # two-head cool-down for Small (SM118) and the six-layer Tiny (SM130,
+        # arch w64-c1-d2p1u1), alone and in their family pairs.
+        ("sm118", "sm118/weights.f32.bin"),
+        ("sm130th", "sm130th/weights.f32.bin"),
+        ("sm130io", "sm130io/weights.f32.bin"),
+        ("sm118+sm113", "sm118/weights.f32.bin"),
+        ("sm130th+sm130io", "sm130th/weights.f32.bin"),
         # Big's RWKV-Instant model, the show-time instant-only big model
         # (SM99): alone only as instant-only, and beside the show-time big
         # model (SM91s2) on the big engine.
@@ -641,7 +656,17 @@ def _load_rsbridge_runtime(
         ("legacy+sm99", "RWKV_trained_on_5000_10000.bin"),
     ],
 )
-@pytest.mark.parametrize("state_precision", ["f32", "int8", "cards_int4_notes_int8"])
+@pytest.mark.parametrize(
+    "state_precision",
+    [
+        "f32",
+        "int8",
+        "cards_int4_notes_int8",
+        "compact_cards_int8",
+        "compact_cards_int4",
+        "compact_lowrank_int8",
+    ],
+)
 def test_rsbridge_rwkv_checkpoint_is_readable_and_prunable_by_desktop(
     tmp_path, model_name, filename, state_precision
 ) -> None:
@@ -741,7 +766,17 @@ def test_rsbridge_rwkv_checkpoint_is_readable_and_prunable_by_desktop(
         ("sm92", "sm92/weights.f32.bin"),
     ],
 )
-@pytest.mark.parametrize("state_precision", ["f32", "int8", "cards_int4_notes_int8"])
+@pytest.mark.parametrize(
+    "state_precision",
+    [
+        "f32",
+        "int8",
+        "cards_int4_notes_int8",
+        "compact_cards_int8",
+        "compact_cards_int4",
+        "compact_lowrank_int8",
+    ],
+)
 def test_rsbridge_rwkv_predictions_survive_state_and_workload_roundtrips(
     model_name, filename, state_precision
 ) -> None:
@@ -1148,7 +1183,20 @@ def test_rsbridge_rwkv_answer_time_head_is_optional() -> None:
     with_head = load("sm72e25/weights.f32.bin", "sm72e25")
     without_head = load("sm72e20/weights.f32.bin", "sm72e20")
     assert with_head.has_answer_time_head()
-    assert load("sm92/weights.f32.bin", "sm92").has_answer_time_head()
+    # The time heads for the family (SM117): every two-head model and the
+    # show-time instant-only big model (SM99) alone.
+    for filename, model in (
+        ("sm92/weights.f32.bin", "sm92"),
+        ("sm106/weights.f32.bin", "sm106"),
+        ("sm113/weights.f32.bin", "sm113"),
+        ("sm115/weights.f32.bin", "sm115"),
+        ("sm118/weights.f32.bin", "sm118"),
+        ("sm130th/weights.f32.bin", "sm130th"),
+        ("sm130io/weights.f32.bin", "sm130io"),
+        ("RWKV_trained_on_5000_10000.bin", "legacy"),
+        ("sm99/weights.f32.bin", "sm99"),
+    ):
+        assert load(filename, model).has_answer_time_head(), model
     assert not without_head.has_answer_time_head()
     later_day = request(dict(_RWKV_REVIEWS[3], elapsed_days=3, elapsed_seconds=259200))
     same_day = request(dict(_RWKV_REVIEWS[3], elapsed_days=0, elapsed_seconds=600))
@@ -1189,6 +1237,11 @@ def test_rsbridge_rwkv_answer_time_head_is_optional() -> None:
         with_head.predict_answer_times_with_thresholds([later_day], history, [0.4])
     assert with_head.predict_answer_times([same_day], history) == [None]
     assert without_head.predict_answer_times([later_day], history) == [None]
+    # The SM117 heads (format 2) also answer a same-day query.
+    (same_day_time,) = load("sm92/weights.f32.bin", "sm92").predict_answer_times(
+        [same_day], history
+    )
+    assert same_day_time is not None
     with pytest.raises(Exception, match="26 values"):
         with_head.predict_answer_times([later_day], [[0.0] * 25])
 
@@ -1248,18 +1301,41 @@ def test_rsbridge_rwkv_instant_model_serves_instant_and_release_keeps_curve(
 
 
 @pytest.mark.parametrize(
-    "two_head,instant_model", [("sm92", "sm98"), ("sm106", "sm101")]
+    "two_head,instant_model",
+    [
+        ("sm118", "sm113"),
+        ("sm130th", "sm130io"),
+        ("sm92", "sm113"),
+        ("sm106", "sm115"),
+        ("sm92", "sm98"),
+        ("sm106", "sm101"),
+    ],
 )
-@pytest.mark.parametrize("state_precision", ["f32", "int8", "cards_int4_notes_int8"])
+@pytest.mark.parametrize(
+    "state_precision",
+    [
+        "f32",
+        "int8",
+        "cards_int4_notes_int8",
+        "compact_cards_int8",
+        "compact_cards_int4",
+        "compact_lowrank_int8",
+    ],
+)
 def test_rsbridge_rwkv_family_pair_serves_instant_and_two_head_keeps_curve(
     two_head: str, instant_model: str, state_precision: str
 ) -> None:
-    # The family wiring (SM114): Small pairs the show-time retrain (SM92) with
-    # the Small Instant-Only model (SM98), Tiny the Tiny two-head model
-    # (SM106) with the Tiny Instant-Only model (SM101). Instant recall and
-    # buttons come from the Instant-Only model, the curve recall, intervals
-    # and S90 from the two-head model, which also decides the answer-time
-    # head (SM92 has one, SM106 none).
+    # The release candidate (2026-11): Small pairs the show-time two-head
+    # cool-down for Small (SM118) with SM113, Tiny the six-layer Tiny two-head
+    # model (SM130) with the six-layer Tiny Instant-Only model (SM130, both
+    # with 346-input heads). Earlier pairs, still checked:
+    # the family wiring (SM114): Small pairs the show-time retrain (SM92) with
+    # the longer Small Instant-Only model (SM113), Tiny the Tiny two-head
+    # model (SM106) with the longer cool-down for Tiny (SM115) (until
+    # 2026-11-16: SM98 and SM101). Instant recall and buttons come from the
+    # Instant-Only model, the curve recall, intervals and S90 from the
+    # two-head model. The longer Instant-Only models (SM113, SM115) have
+    # their own answer-time head (SM119), the older ones (SM98, SM101) not.
     root = Path(__file__).resolve().parents[2]
     rsbridge = _import_rsbridge(root)
 
@@ -1272,9 +1348,10 @@ def test_rsbridge_rwkv_family_pair_serves_instant_and_two_head_keeps_curve(
     instant = load(instant_model, f"{instant_model}/weights.f32.bin")
     paired = load(f"{two_head}+{instant_model}", f"{two_head}/weights.f32.bin")
     assert paired.is_paired() and not alone.is_paired() and not instant.is_paired()
-    assert paired.has_answer_time_head() == alone.has_answer_time_head()
-    assert alone.has_answer_time_head() == (two_head == "sm92")
-    assert not instant.has_answer_time_head()
+    assert paired.has_answer_time_head() and alone.has_answer_time_head()
+    assert instant.has_answer_time_head() == (
+        instant_model in ("sm113", "sm115", "sm130io")
+    )
 
     def args(review: dict[str, int], is_query: bool) -> tuple[object, ...]:
         return (
@@ -1362,7 +1439,9 @@ def test_rsbridge_rwkv_big_pair_serves_sm99_instant_and_big_model_keeps_curve() 
     instant = load("sm99", "sm99/weights.f32.bin")
     paired = load("legacy+sm99", "RWKV_trained_on_5000_10000.bin")
     assert paired.is_paired() and not release.is_paired() and not instant.is_paired()
-    assert not paired.has_answer_time_head() and not instant.has_answer_time_head()
+    # Both big models have an answer-time head (SM117); the pair answers with
+    # the instant model's.
+    assert paired.has_answer_time_head() and instant.has_answer_time_head()
     with pytest.raises(Exception):
         # A big model never pairs with a small one.
         rsbridge.RwkvInference(

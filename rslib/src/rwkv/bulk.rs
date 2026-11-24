@@ -25,6 +25,7 @@
 //! replay to the same states as one large call.
 
 use std::collections::HashMap;
+use std::collections::HashSet;
 use std::sync::Mutex;
 
 use rayon::prelude::*;
@@ -75,10 +76,11 @@ pub(super) fn replay_simulation_background(
     inference: &mut RwkvInference,
     states: &mut ReviewStateMaps,
     inputs: &[ReviewInput],
-) {
+) -> io::Result<()> {
     if inputs.is_empty() {
-        return;
+        return Ok(());
     }
+    validate_stream_states(states, inputs.iter())?;
     let mut features = Vec::with_capacity(inputs.len() * CARD_FEATURES);
     for input in inputs {
         features.extend(inference.features.features_for(input));
@@ -95,9 +97,9 @@ pub(super) fn replay_simulation_background(
             None,
             BULK_CHUNK_ROWS,
             QueryRecurrence::Exact,
-        );
+        )
     } else {
-        run_state_only_module_wavefront(&model, inputs, states, x, BULK_CHUNK_ROWS);
+        run_state_only_module_wavefront(&model, inputs, states, x, BULK_CHUNK_ROWS).map(|_| ())
     }
 }
 
@@ -213,6 +215,10 @@ fn warm_up_reviews_bulk_impl(
     query_recurrence: QueryRecurrence,
     custom_queries: Option<&[ReviewInput]>,
 ) -> io::Result<Vec<(usize, f32)>> {
+    validate_stream_states(
+        &inference.warm_up_states,
+        reviews.iter().filter(|input| input.ease.is_some()),
+    )?;
     // Feature prepass, in review order. Query features are assigned before
     // answer features for each review so first-seen ID encodings keep the
     // same benchmark-compatible order as the per-review path.
@@ -274,7 +280,7 @@ fn warm_up_reviews_bulk_impl(
             x_query.as_deref_mut(),
             chunk_size,
             query_recurrence,
-        );
+        )?;
     } else if record_predictions {
         for (module_id, module) in model.modules.iter().enumerate() {
             #[cfg(test)]
@@ -288,7 +294,7 @@ fn warm_up_reviews_bulk_impl(
                 x_query.as_deref_mut(),
                 chunk_size,
                 query_recurrence,
-            );
+            )?;
             #[cfg(test)]
             rwkv_warmup_profile_record(module_profile_bucket(module_id), profile_started);
         }
@@ -299,7 +305,7 @@ fn warm_up_reviews_bulk_impl(
             &mut inference.warm_up_states,
             x,
             chunk_size,
-        );
+        )?;
     }
 
     // Recall curves: the per-review path stores one curve per answered
@@ -373,7 +379,7 @@ fn run_interleaved(
     mut x_query: Option<&mut [f32]>,
     chunk_size: usize,
     query_recurrence: QueryRecurrence,
-) {
+) -> io::Result<()> {
     let rows = inputs.len();
     let plans: Vec<_> = model
         .modules
@@ -399,9 +405,9 @@ fn run_interleaved(
                         model.modules[id].layers.len(),
                     )
                 })
-                .collect()
+                .collect::<io::Result<Vec<_>>>()
         })
-        .collect();
+        .collect::<io::Result<_>>()?;
     let mut v0: [Vec<f32>; 5] = std::array::from_fn(|_| vec![0.0; rows * D_MODEL]);
     let mut v0_query: [Option<Vec<f32>>; 5] =
         std::array::from_fn(|_| x_query.as_ref().map(|_| vec![0.0; rows * D_MODEL]));
@@ -442,6 +448,7 @@ fn run_interleaved(
             v0_query[id] = None;
         }
     }
+    Ok(())
 }
 
 fn feature_mlp_rows(model: &SrsModel, features: &[f32], rows: usize) -> Vec<f32> {
@@ -469,7 +476,7 @@ fn run_state_only_module_wavefront(
     states: &mut ReviewStateMaps,
     mut x: Vec<f32>,
     chunk_size: usize,
-) -> Vec<f32> {
+) -> io::Result<Vec<f32>> {
     debug_assert_eq!(model.modules.len(), 5);
     let chunk_size = chunk_size.max(1);
     let chunks: Vec<Mutex<&mut [f32]>> =
@@ -477,6 +484,7 @@ fn run_state_only_module_wavefront(
     let module_states: Vec<Mutex<ReviewStateMaps>> = (0..model.modules.len())
         .map(|module_id| Mutex::new(take_module_states(states, module_id)))
         .collect();
+    let failure: Mutex<Option<io::Error>> = Mutex::new(None);
 
     for diagonal in 0..chunks.len() + model.modules.len() - 1 {
         (0..model.modules.len())
@@ -486,6 +494,13 @@ fn run_state_only_module_wavefront(
                     return;
                 };
                 if chunk_index >= chunks.len() {
+                    return;
+                }
+                if failure
+                    .lock()
+                    .expect("RWKV replay failure lock poisoned")
+                    .is_some()
+                {
                     return;
                 }
 
@@ -499,7 +514,7 @@ fn run_state_only_module_wavefront(
                     .expect("RWKV replay chunk lock poisoned");
                 #[cfg(test)]
                 let profile_started = rwkv_warmup_profile_start();
-                run_module(
+                if let Err(err) = run_module(
                     &model.modules[module_id],
                     module_id,
                     &inputs[input_start..input_end],
@@ -508,7 +523,12 @@ fn run_state_only_module_wavefront(
                     None,
                     chunk_size,
                     QueryRecurrence::Exact,
-                );
+                ) {
+                    failure
+                        .lock()
+                        .expect("RWKV replay failure lock poisoned")
+                        .get_or_insert(err);
+                }
                 #[cfg(test)]
                 rwkv_warmup_profile_record(module_profile_bucket(module_id), profile_started);
             });
@@ -525,7 +545,13 @@ fn run_state_only_module_wavefront(
     }
 
     drop(chunks);
-    x
+    match failure
+        .into_inner()
+        .expect("RWKV replay failure lock poisoned")
+    {
+        Some(err) => Err(err),
+        None => Ok(x),
+    }
 }
 
 fn take_module_states(states: &mut ReviewStateMaps, module_id: usize) -> ReviewStateMaps {
@@ -653,10 +679,47 @@ impl ModulePlan {
     }
 }
 
-fn layer_states(initial: Option<ModuleState>, layer_count: usize) -> Vec<LayerState> {
-    let mut layers = initial
-        .map(|state| state.into_decoded().layers)
-        .unwrap_or_default();
+/// Decodes every stored state a replay will read before anything changes, so
+/// a state that cannot be decoded fails the call without advancing features
+/// or states. The caller then discards the cache and replays from scratch.
+fn validate_stream_states<'a>(
+    states: &ReviewStateMaps,
+    inputs: impl Iterator<Item = &'a ReviewInput>,
+) -> io::Result<()> {
+    let mut seen: [HashSet<i64>; 5] = Default::default();
+    for input in inputs {
+        for (module_id, seen) in seen.iter_mut().enumerate() {
+            let Some(key) = stream_key(module_id, input) else {
+                continue;
+            };
+            if !seen.insert(key) {
+                continue;
+            }
+            let state = match module_id {
+                0 => states.card.get(&key),
+                1 => states.deck.get(&key),
+                2 => states.note.get(&key),
+                3 => states.preset.get(&key),
+                _ => states.global.as_ref(),
+            };
+            if let Some(state) = state {
+                state.try_decoded().map_err(|err| {
+                    io::Error::new(
+                        err.kind(),
+                        format!("{err} (RWKV module {module_id} state of id {key})"),
+                    )
+                })?;
+            }
+        }
+    }
+    Ok(())
+}
+
+fn layer_states(initial: Option<ModuleState>, layer_count: usize) -> io::Result<Vec<LayerState>> {
+    let mut layers = match initial {
+        Some(state) => state.try_into_decoded()?.layers,
+        None => Vec::new(),
+    };
     layers.truncate(layer_count);
     while layers.len() < layer_count {
         layers.push(LayerState {
@@ -664,7 +727,7 @@ fn layer_states(initial: Option<ModuleState>, layer_count: usize) -> Vec<LayerSt
             channel_shift: None,
         });
     }
-    layers
+    Ok(layers)
 }
 
 #[allow(clippy::too_many_arguments)]
@@ -677,7 +740,7 @@ fn run_module(
     mut x_query: Option<&mut [f32]>,
     chunk_size: usize,
     query_recurrence: QueryRecurrence,
-) {
+) -> io::Result<()> {
     let rows = inputs.len();
     let mut plan = ModulePlan::build(module_id, inputs);
     plan.precision = module.precision;
@@ -692,7 +755,7 @@ fn run_module(
                 .and_then(|key| take_stream_state(states, module_id, key));
             layer_states(initial, layer_count)
         })
-        .collect();
+        .collect::<io::Result<_>>()?;
 
     let mut v0 = vec![0.0; rows * D_MODEL];
     let mut v0_query = x_query.as_ref().map(|_| vec![0.0; rows * D_MODEL]);
@@ -727,6 +790,7 @@ fn run_module(
             );
         }
     }
+    Ok(())
 }
 
 struct LayerChunks<'a> {
@@ -1045,11 +1109,14 @@ fn finish_layer_time_stage(output: LayerTimeStageOutput<'_>) {
                 return None;
             }
             let layer_state = &mut layers[layer_id];
-            let mut matrix = match layer_state.time.take() {
-                Some(time) => time.matrix,
-                None => vec![0.0; HEADS * HEAD_SIZE * HEAD_SIZE],
+            let (mut matrix, mut packed_matrix) = match layer_state.time.take() {
+                // A low-rank write needs the previous write's factors.
+                Some(time) => (
+                    time.matrix,
+                    time.packed_matrix.filter(|_| plan.precision.is_lowrank()),
+                ),
+                None => (vec![0.0; HEADS * HEAD_SIZE * HEAD_SIZE], None),
             };
-            let mut packed_matrix = None;
             // Separate source/destination matrices let the recurrence kernel
             // vectorize, while swapping reuses both allocations per stream.
             let mut next_matrix = vec![0.0; HEADS * HEAD_SIZE * HEAD_SIZE];
@@ -1110,7 +1177,12 @@ fn finish_layer_time_stage(output: LayerTimeStageOutput<'_>) {
                     &mut next_matrix,
                 );
                 std::mem::swap(&mut matrix, &mut next_matrix);
-                plan.precision.round_matrix(&mut matrix, &mut packed_matrix);
+                plan.precision.round_written_matrix(
+                    &mut matrix,
+                    &mut packed_matrix,
+                    &next_matrix,
+                    row(&parts.v, index),
+                );
                 if query_recurrence.after() {
                     if let Some(parts_query) = &parts_query {
                         let out_query =

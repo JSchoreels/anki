@@ -626,7 +626,11 @@ impl Collection {
                     normal_state_kind: elapsed_seconds
                         .map(|_| "learning".to_string())
                         .unwrap_or_default(),
-                    elapsed_days: None,
+                    elapsed_days: elapsed_since.map(|last_review_time| {
+                        timing
+                            .next_day_at
+                            .elapsed_days_since_clamped(last_review_time)
+                    }),
                     elapsed_seconds,
                     elapsed_since,
                 }))
@@ -1731,6 +1735,34 @@ mod test {
         assert_eq!(response.rows.len(), 1);
         assert_eq!(response.rows[0].current_elapsed_seconds, None);
         assert_eq!(response.rows[0].current_elapsed_since_secs, None);
+        Ok(())
+    }
+
+    #[test]
+    fn review_input_rows_give_learning_cards_calendar_elapsed_days() -> Result<()> {
+        let mut col = Collection::new();
+        col.update_default_deck_config(|config| {
+            config.rwkv_review_enabled = true;
+        });
+        let timing = col.timing_today()?;
+        let mut card = Card::new(NoteId(10), 0, DeckId(1), timing.days_elapsed as i32);
+        card.ctype = CardType::Learn;
+        card.queue = CardQueue::DayLearn;
+        card.last_review_time = Some(timing.next_day_at.adding_secs(-2 * 86_400 - 5));
+        col.add_card(&mut card)?;
+
+        let response =
+            col.rwkv_review_input_rows_for_cards(RwkvReviewInputRowsForCardsRequest {
+                card_ids: vec![card.id.0],
+                include_suspended_review: false,
+                include_disabled_decks: false,
+                include_new_cards: false,
+            })?;
+
+        assert_eq!(response.rows.len(), 1);
+        assert_eq!(response.rows[0].current_normal_state_kind, "learning");
+        assert_eq!(response.rows[0].current_elapsed_days, Some(2));
+        assert!(response.rows[0].current_elapsed_seconds.is_some());
         Ok(())
     }
 
