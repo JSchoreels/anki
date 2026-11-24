@@ -6886,6 +6886,94 @@ def test_rwkv_review_input_uses_exact_elapsed_for_filtered_cards(
     assert review_input.current_elapsed_seconds == 30
 
 
+@pytest.mark.parametrize(
+    ("last_review_age", "state_elapsed_secs", "expected_days"),
+    [
+        # Same-day step: the state's elapsed time is rebuilt from the due time
+        # and differs from the real time since the previous answer.
+        (30, 600, 0),
+        # Day-learning card shown on the next day, just after the rollover: the
+        # state holds whole days times 86,400 seconds, the real interval is
+        # about an hour.
+        (4_000, 86_400, 1),
+        # Real interval of 2 days and 5 seconds against 3 whole days.
+        (2 * 86_400 + 5, 3 * 86_400, 2),
+    ],
+)
+def test_rwkv_review_input_uses_exact_elapsed_for_learning_cards(
+    monkeypatch: pytest.MonkeyPatch,
+    last_review_age: int,
+    state_elapsed_secs: int,
+    expected_days: int,
+) -> None:
+    now = 42 * 86_400 + 100
+    monkeypatch.setattr(rwkv_scheduler.time, "time", lambda: float(now))
+    reviewer = _rwkv_reviewer()
+    reviewer._v3.states.current.Clear()
+    reviewer._v3.states.current.normal.learning.elapsed_secs = state_elapsed_secs
+    card = _rwkv_card(
+        card_id=1,
+        note_id=10,
+        duration_millis=1234,
+        last_review_time=now - last_review_age,
+    )
+    card.type = 1
+    card.queue = 3
+
+    for ease in (None, 3):
+        review_input = rwkv_review_input(
+            reviewer=reviewer,
+            card=card,
+            identity=RwkvReviewIdentity(
+                card_id=1, note_id=10, deck_id=100, preset_id=1000
+            ),
+            ease=ease,
+        )
+
+        assert review_input.card_type == int(RwkvReviewState.LEARNING)
+        assert review_input.current_state_kind == "normal"
+        assert review_input.current_normal_state_kind == "learning"
+        assert review_input.current_elapsed_days == expected_days
+        assert review_input.current_elapsed_seconds == last_review_age
+
+
+def test_rwkv_review_input_learning_elapsed_falls_back_to_latest_eligible_review() -> (
+    None
+):
+    now = 42 * 86_400 + 100
+    previous_review_time = 40 * 86_400 + 50
+
+    class DB:
+        def first(
+            self, sql: str, card_id: int, reset_card_id: int
+        ) -> tuple[int, int, int]:
+            assert "from revlog" in sql
+            return previous_review_time * 1000, 3, 0
+
+    reviewer = _rwkv_reviewer()
+    reviewer.mw.col.db = DB()
+    reviewer._v3.states.current.Clear()
+    reviewer._v3.states.current.normal.learning.elapsed_secs = 5 * 86_400
+    card = _rwkv_card(card_id=1, note_id=10, duration_millis=1234)
+    card.type = 1
+    card.queue = 3
+
+    with pytest.MonkeyPatch.context() as monkeypatch:
+        monkeypatch.setattr(rwkv_scheduler.time, "time", lambda: float(now))
+        review_input = rwkv_review_input(
+            reviewer=reviewer,
+            card=card,
+            identity=RwkvReviewIdentity(
+                card_id=1, note_id=10, deck_id=100, preset_id=1000
+            ),
+            ease=None,
+        )
+
+    assert review_input.card_type == int(RwkvReviewState.LEARNING)
+    assert review_input.current_elapsed_days == 2
+    assert review_input.current_elapsed_seconds == 2 * 86_400 + 50
+
+
 def test_rwkv_review_input_falls_back_to_latest_eligible_review_time(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
@@ -7040,6 +7128,43 @@ def test_rwkv_stats_graph_review_input_uses_exact_elapsed_seconds(
 
     assert review_input is not None
     assert review_input.current_elapsed_seconds == 30
+
+
+def test_rwkv_stats_graph_learning_input_uses_calendar_elapsed_days(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    now = 42 * 86_400 + 100
+    monkeypatch.setattr(rwkv_scheduler.time, "time", lambda: float(now))
+    card = rwkv_scheduler.RwkvStatsGraphCard(
+        id=1,
+        nid=10,
+        did=100,
+        odid=0,
+        type=1,
+        queue=3,
+        due=50,
+        odue=0,
+        ivl=0,
+        factor=0,
+        reps=1,
+        lapses=0,
+        last_review_time=now - 4_000,
+    )
+
+    review_input = rwkv_scheduler._rwkv_review_input_for_stats_graph_card(
+        card=card,
+        deck_config={"id": 1000, "rwkvReviewEnabled": True},
+        timing=SimpleNamespace(
+            now=now,
+            days_elapsed=42,
+            next_day_at=43 * 86_400,
+        ),
+    )
+
+    assert review_input is not None
+    assert review_input.current_normal_state_kind == "learning"
+    assert review_input.current_elapsed_days == 1
+    assert review_input.current_elapsed_seconds == 4_000
 
 
 def test_rwkv_stats_graph_review_input_uses_card_creation_elapsed_by_default() -> None:
