@@ -9061,6 +9061,7 @@ def rwkv_review_input(
         )
 
     if review_state in (
+        int(RwkvReviewState.LEARNING),
         int(RwkvReviewState.REVIEW),
         int(RwkvReviewState.RELEARNING),
         int(RwkvReviewState.FILTERED),
@@ -28658,10 +28659,14 @@ def _rwkv_state_fields_for_stats_graph_values(
         int(QUEUE_TYPE_LRN),
         int(QUEUE_TYPE_DAY_LEARN_RELEARN),
     ):
+        elapsed_days = _stats_graph_elapsed_days_for_review_time(
+            last_review_time,
+            timing,
+        )
         elapsed_seconds = _stats_graph_elapsed_seconds_for_review_time(last_review_time)
-        if elapsed_seconds is None:
+        if elapsed_days is None or elapsed_seconds is None:
             return None, None, None, None
-        return "normal", "learning", None, elapsed_seconds
+        return "normal", "learning", elapsed_days, elapsed_seconds
 
     if card_type == int(CARD_TYPE_RELEARNING) and queue in (
         int(QUEUE_TYPE_LRN),
