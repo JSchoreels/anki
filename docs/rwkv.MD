@@ -95,13 +95,16 @@ still a profile value of its own), the Tiny two-head model (SM106), the longer
 cool-down for Tiny (SM115), and the older Small Instant-Only model (SM98) and Tiny
 Instant-Only model (SM101).
 
-**State format** (2026-11 release candidate,
-[report](rwkv-rc-state-format-2026-11-21.MD)): every size stores card and note state
-as int8 rows with float16 row scales and int8 shift vectors (`compact_cards_int8`,
-the default). Per card and per note, one model: Big 13,891 / 9,267 B, Small 2,545 /
-1,315 B, Tiny 1,315 / 1,315 B (the six-layer Tiny keeps the Tiny card and note
-layers, so its state per card and note is the Tiny one; its cut deck, preset and
-user layers are per deck, preset and collection).
+**State format** (since 2026-11-23,
+[report](rwkv-lowrank-state-2026-11-23.MD)): every size stores each card and note
+head as a rank-2 product below 16 answers and a rank-4 product from the 16th answer,
+with int8 factor vectors and int8 shift vectors (`compact_lowrank_int8`, the
+default). Mean per card and per note over benchmark answer counts, one model: Big
+2,524 / 1,720 B, Small 839 / 470 B, Tiny 462 / 470 B. The release candidate's int8
+rows (`compact_cards_int8`, [report](rwkv-rc-state-format-2026-11-21.MD)) stored Big
+13,891 / 9,267 B, Small 2,545 / 1,315 B, Tiny 1,315 / 1,315 B (the six-layer Tiny
+keeps the Tiny card and note layers, so its state per card and note is the Tiny
+one; its cut deck, preset and user layers are per deck, preset and collection).
 
 **Answer time in every size** (since 2026-11-16, the time heads for the family
 (SM117); [report](rwkv-time-heads-2026-11-16.MD)). The answer time is the whole time
@@ -740,13 +743,16 @@ sequence.
 The persisted state cache is collection-wide; deck- or preset-scoped replay
 histories are transient and must not be written to the profile-local cache.
 Storage precision is a hidden setting for the whole local profile:
-`compact_cards_int8` (default since 2026-11-21: INT8 card and note rows with
-float16 row scales and INT8 shift vectors), `compact_cards_int4` (INT4 card
-rows, the same notes), `int8` (INT8 rows with f32 scales and f16 shifts), or
-`f32` (the original full-precision fallback). All models support every mode.
-The profile key is `rwkvStatePrecision`; absent or unsupported values default
-to `compact_cards_int8` in both new and existing profiles
-(`RWKV_STATE_PRECISION_DEFAULT` in `qt/aqt/rwkv_precision.py`). The former
+`compact_lowrank_int8` (default since 2026-11-23: rank-2 / rank-4 int8 factors
+per card and note head, INT8 shift vectors), `compact_cards_int4` (INT4 card
+rows with float16 scales, INT8 notes), `int8` (INT8 rows with f32 scales and
+f16 shifts), or `f32` (the original full-precision fallback). All models support
+every mode. The profile key is `rwkvStatePrecision`; absent or unsupported
+values default to `compact_lowrank_int8` in both new and existing profiles
+(`RWKV_STATE_PRECISION_DEFAULT` in `qt/aqt/rwkv_precision.py`). The release
+candidate's default `compact_cards_int8` (INT8 card and note rows with float16
+row scales) is no longer a profile value: profiles that saved it move to the
+default, and the state cache (version 15) rebuilds once. The former
 default `cards_int4_notes_int8` (INT4 cards with f32 row scales) overflowed on
 cards with thousands of answers; profiles that still store it, or the removed
 full `int4` mode, use the default, and the new value rebuilds the state cache

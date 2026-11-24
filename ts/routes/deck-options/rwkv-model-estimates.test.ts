@@ -12,7 +12,11 @@ describe("RWKV model estimates", () => {
         const paired = rwkvModelEstimates(usage, false, "compact_cards_int8", counts);
         expect(paired.map(({ perCardAndNote }) => perCardAndNote)).toEqual([46_354, 7_758, 5_298]);
         expect(paired.map(({ totalStateBytes }) => totalStateBytes)).toEqual([37_077_500, 6_433_500, 3_973_500]);
-        expect(paired.map(({ replaySaving }) => replaySaving)).toEqual([0, 77, 88]);
+        // Replay savings are measured at the default (the low-rank state) only.
+        expect(paired.map(({ replaySaving }) => replaySaving)).toEqual([undefined, undefined, undefined]);
+        expect(
+            rwkvModelEstimates(usage, false, "compact_lowrank_int8", counts).map(({ replaySaving }) => replaySaving),
+        ).toEqual([0, 72, 84]);
         const shared = rwkvModelEstimates(usage, true, "compact_cards_int8", counts);
         expect(shared.map(({ totalStateBytes }) => totalStateBytes)).toEqual([18_524_500, 3_202_500, 1_972_500]);
         expect(shared.map(({ curveLoss }) => curveLoss)).toEqual(paired.map(({ curveLoss }) => curveLoss));
@@ -34,9 +38,29 @@ describe("RWKV model estimates", () => {
                 replaySaving
             ),
         ).toEqual([undefined, undefined, undefined]);
-        // Unknown values use the default.
+        // Unknown values use the default (the low-rank state: mean bytes over
+        // the answer counts of the benchmark users).
         expect(rwkvModelEstimates(usage, false, "unknown", undefined).map(({ perCardAndNote }) => perCardAndNote))
-            .toEqual([23_158, 3_860, 2_630]);
+            .toEqual([4_244, 1_309, 932]);
+        const both = { curve: true, instant: true };
+        const lowRank = rwkvModelEstimates(both, false, "compact_lowrank_int8", undefined);
+        expect(lowRank.map(({ perCardAndNote }) => perCardAndNote)).toEqual([8_526, 2_656, 1_902]);
+        // The tooltip range: rank 1 (one answer) to rank 4 (16 answers or more).
+        expect(lowRank.map(({ perCardAndNoteRange }) => perCardAndNoteRange)).toEqual([
+            [5_574, 13_734],
+            [1_722, 4_314],
+            [1_274, 3_002],
+        ]);
+        expect(
+            rwkvModelEstimates(usage, false, "compact_lowrank_int8", undefined).map(({ perCardAndNoteRange }) =>
+                perCardAndNoteRange
+            ),
+        ).toEqual([[2_768, 6_848], [842, 2_138], [618, 1_482]]);
+        expect(
+            rwkvModelEstimates(usage, false, "compact_cards_int8", undefined).map(({ perCardAndNoteRange }) =>
+                perCardAndNoteRange
+            ),
+        ).toEqual([undefined, undefined, undefined]);
         const int8 = rwkvModelEstimates(usage, false, "int8", undefined);
         expect(int8.map(({ perCardAndNote }) => perCardAndNote)).toEqual([25_698, 4_554, 3_134]);
         expect(int8.map(({ totalStateBytes }) => totalStateBytes)).toEqual([undefined, undefined, undefined]);

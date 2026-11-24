@@ -381,6 +381,15 @@ impl<E: Send> PairedRuntime<E> {
     }
 }
 
+/// The same rank schedule for the other engine (its own copy of the type).
+fn alternate_schedule(schedule: super::RankSchedule) -> super::alternate::RankSchedule {
+    super::alternate::RankSchedule {
+        low: schedule.low,
+        switch: schedule.switch,
+        high: schedule.high,
+    }
+}
+
 impl RwkvRuntime {
     pub fn load_with_precision(
         path: PathBuf,
@@ -451,6 +460,12 @@ impl RwkvRuntime {
             StatePrecision::Int4Compact => super::alternate::StatePrecision::Int4Compact,
             StatePrecision::CompactCardsInt8 => super::alternate::StatePrecision::CompactCardsInt8,
             StatePrecision::CompactCardsInt4 => super::alternate::StatePrecision::CompactCardsInt4,
+            StatePrecision::LowRankInt8(schedule) => {
+                super::alternate::StatePrecision::LowRankInt8(alternate_schedule(schedule))
+            }
+            StatePrecision::CompactLowRank(schedule) => {
+                super::alternate::StatePrecision::CompactLowRank(alternate_schedule(schedule))
+            }
         };
         let engine = super::alternate::RwkvInference::load_with_precision(
             path,

@@ -664,6 +664,7 @@ def _load_rsbridge_runtime(
         "cards_int4_notes_int8",
         "compact_cards_int8",
         "compact_cards_int4",
+        "compact_lowrank_int8",
     ],
 )
 def test_rsbridge_rwkv_checkpoint_is_readable_and_prunable_by_desktop(
@@ -773,6 +774,7 @@ def test_rsbridge_rwkv_checkpoint_is_readable_and_prunable_by_desktop(
         "cards_int4_notes_int8",
         "compact_cards_int8",
         "compact_cards_int4",
+        "compact_lowrank_int8",
     ],
 )
 def test_rsbridge_rwkv_predictions_survive_state_and_workload_roundtrips(
@@ -1317,6 +1319,7 @@ def test_rsbridge_rwkv_instant_model_serves_instant_and_release_keeps_curve(
         "cards_int4_notes_int8",
         "compact_cards_int8",
         "compact_cards_int4",
+        "compact_lowrank_int8",
     ],
 )
 def test_rsbridge_rwkv_family_pair_serves_instant_and_two_head_keeps_curve(

@@ -128,7 +128,15 @@ License: GNU AGPL, version 3 or later
                     {/if}
                 </span>
                 <span class="size-details" id="rwkv-model-size-{estimate.size}-details">
-                    <span class="per-card">
+                    <span
+                        class="per-card"
+                        title={estimate.perCardAndNoteRange
+                            ? tr.deckConfigRwkvModelPerCardNoteRange({
+                                  low: formatBytes(estimate.perCardAndNoteRange[0]),
+                                  high: formatBytes(estimate.perCardAndNoteRange[1]),
+                              })
+                            : undefined}
+                    >
                         {tr.deckConfigRwkvModelPerCardNote({
                             size: formatBytes(estimate.perCardAndNote),
                         })}

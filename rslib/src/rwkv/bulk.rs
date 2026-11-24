@@ -1109,11 +1109,14 @@ fn finish_layer_time_stage(output: LayerTimeStageOutput<'_>) {
                 return None;
             }
             let layer_state = &mut layers[layer_id];
-            let mut matrix = match layer_state.time.take() {
-                Some(time) => time.matrix,
-                None => vec![0.0; HEADS * HEAD_SIZE * HEAD_SIZE],
+            let (mut matrix, mut packed_matrix) = match layer_state.time.take() {
+                // A low-rank write needs the previous write's factors.
+                Some(time) => (
+                    time.matrix,
+                    time.packed_matrix.filter(|_| plan.precision.is_lowrank()),
+                ),
+                None => (vec![0.0; HEADS * HEAD_SIZE * HEAD_SIZE], None),
             };
-            let mut packed_matrix = None;
             // Separate source/destination matrices let the recurrence kernel
             // vectorize, while swapping reuses both allocations per stream.
             let mut next_matrix = vec![0.0; HEADS * HEAD_SIZE * HEAD_SIZE];
@@ -1174,7 +1177,12 @@ fn finish_layer_time_stage(output: LayerTimeStageOutput<'_>) {
                     &mut next_matrix,
                 );
                 std::mem::swap(&mut matrix, &mut next_matrix);
-                plan.precision.round_matrix(&mut matrix, &mut packed_matrix);
+                plan.precision.round_written_matrix(
+                    &mut matrix,
+                    &mut packed_matrix,
+                    &next_matrix,
+                    row(&parts.v, index),
+                );
                 if query_recurrence.after() {
                     if let Some(parts_query) = &parts_query {
                         let out_query =
