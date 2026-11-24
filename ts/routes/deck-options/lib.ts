@@ -36,7 +36,7 @@ export const RWKV_MODEL_TINY = "tiny";
 // The profile's default stored state precision, as
 // RWKV_STATE_PRECISION_DEFAULT in qt/aqt/rwkv_precision.py (the backend always
 // sends the profile's value; this is only the fallback).
-export const RWKV_DEFAULT_STATE_PRECISION = "compact_lowrank_int8";
+export const RWKV_DEFAULT_STATE_PRECISION = "compact_lowrank";
 /** Older small models (and the default small model (SM63) by its own value):
  * still run until a save, which stores Small instead. */
 export const RWKV_OLDER_SMALL_MODELS = ["sm40", "sm36", "sm55", "sm56", "sm72", "sm72e20", "sm63"];

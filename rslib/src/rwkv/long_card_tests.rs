@@ -226,9 +226,10 @@ fn state_stats(bytes: &[u8]) -> Option<(f32, bool)> {
     let mut at = 14;
     let code = bytes[at];
     at += 1;
-    // 0x28: low-rank int8 factors (compact shifts, one float16 scale per
-    // factor vector).
-    let lowrank = code == 0x28;
+    // 0x28 / 0x26: low-rank int8 / int6 factors (compact shifts, one
+    // float16 scale per factor vector; int6 codes bit-packed, four in three
+    // bytes).
+    let lowrank = code == 0x28 || code == 0x26;
     let compact = code & 0x10 != 0 || lowrank;
     let int8 = code & 0x0f == 8;
     let scale_bytes = if compact { 2 } else { 4 };
@@ -252,18 +253,23 @@ fn state_stats(bytes: &[u8]) -> Option<(f32, bool)> {
         let values = u32_at(bytes, &mut at);
         if values > 0 && lowrank {
             let head_size = ((values / 4) as f64).sqrt() as usize;
+            let code_bytes = if code == 0x26 {
+                head_size / 4 * 3
+            } else {
+                head_size
+            };
             let rank = bytes[at + 1] as usize;
             at += 2;
             for _ in 0..4 * 2 * rank {
                 let scale = f16_at(bytes, at);
                 non_finite |= !scale.is_finite();
-                if bytes[at + 2..at + 2 + head_size]
+                if bytes[at + 2..at + 2 + code_bytes]
                     .iter()
                     .any(|&code| code != 0)
                 {
                     max_scale = max_scale.max(scale);
                 }
-                at += 2 + head_size;
+                at += 2 + code_bytes;
             }
         } else if values > 0 {
             let head_size = ((values / 4) as f64).sqrt() as usize;
@@ -310,6 +316,9 @@ struct Run {
     peak_card_scale: f32,
     peak_note_scale: f32,
     retrievability: Vec<f32>,
+    /// The last stored card and note state.
+    last_card: Option<Vec<u8>>,
+    last_note: Option<Vec<u8>>,
 }
 
 fn panic_message(panic: Box<dyn std::any::Any + Send>) -> String {
@@ -323,6 +332,8 @@ fn panic_message(panic: Box<dyn std::any::Any + Send>) -> String {
 impl Run {
     fn observe(&mut self, answer: usize, card: Option<&[u8]>, note: Option<&[u8]>, finite: bool) {
         self.answers = answer;
+        self.last_card = card.map(<[u8]>::to_vec);
+        self.last_note = note.map(<[u8]>::to_vec);
         let card = card.and_then(state_stats);
         let note = note.and_then(state_stats);
         let stored_non_finite =
@@ -469,6 +480,14 @@ fn policy_name(precision: StatePrecision) -> &'static str {
             "compact_lowrank_int8"
         }
         StatePrecision::CompactLowRank(_) => "compact_lowrank_int8:other",
+        StatePrecision::CompactLowRankInt6(schedule) if schedule == RankSchedule::DEFAULT => {
+            "compact_lowrank_int6"
+        }
+        StatePrecision::CompactLowRankInt6(_) => "compact_lowrank_int6:other",
+        StatePrecision::CompactLowRankBySize(schedule) if schedule == RankSchedule::DEFAULT => {
+            "compact_lowrank"
+        }
+        StatePrecision::CompactLowRankBySize(_) => "compact_lowrank:other",
         StatePrecision::Int4CardsInt8Notes => "cards_int4_notes_int8",
         StatePrecision::F32 => "f32",
         _ => "other",
@@ -498,6 +517,7 @@ fn rwkv_long_card_quick_compact_states_stay_finite() {
             StatePrecision::CompactCardsInt8,
             StatePrecision::CompactCardsInt4,
             StatePrecision::CompactLowRank(RankSchedule::DEFAULT),
+            StatePrecision::CompactLowRankInt6(RankSchedule::DEFAULT),
         ] {
             for run in [
                 per_answer(kind, file, precision, &reviews),
@@ -512,6 +532,53 @@ fn rwkv_long_card_quick_compact_states_stay_finite() {
     }
 }
 
+/// The live path (each answer reads the state the previous answer stored, as
+/// the app does) and a cache rebuild from the history (the bulk warm-up, in
+/// one call and in calls of 7) store the same bytes for the card and the
+/// note, for the low-rank policies on every size: the profile default
+/// (`compact_lowrank`: int6 factors for Big and Small, int8 for Tiny) and
+/// both explicit factor widths. 40 answers take the card past rank 4 (16
+/// answers).
+#[test]
+fn rwkv_long_card_live_answers_store_what_a_rebuild_stores() {
+    let answers = 40;
+    let reviews = inputs("mixed", answers);
+    for (name, kind, file) in models() {
+        for precision in [
+            StatePrecision::CompactLowRankBySize(RankSchedule::DEFAULT),
+            StatePrecision::CompactLowRankInt6(RankSchedule::DEFAULT),
+            StatePrecision::CompactLowRank(RankSchedule::DEFAULT),
+        ] {
+            let live = per_answer(kind, file, precision, &reviews);
+            assert_eq!(live.failure, None, "{name} {precision:?}");
+            let card = live.last_card.as_deref().unwrap();
+            let tiny = matches!(
+                kind,
+                ModelKind::Sm101
+                    | ModelKind::Sm106
+                    | ModelKind::Sm115
+                    | ModelKind::Sm130Th
+                    | ModelKind::Sm130Io
+            );
+            let code = match precision {
+                StatePrecision::CompactLowRank(_) => 0x28,
+                StatePrecision::CompactLowRankInt6(_) => 0x26,
+                _ if tiny => 0x28,
+                _ => 0x26,
+            };
+            assert_eq!(card[14], code, "{name} {precision:?}");
+            for chunk in [answers, 7] {
+                let rebuild = bulk(kind, file, precision, &reviews, chunk);
+                assert_eq!(rebuild.failure, None, "{name} {precision:?}");
+                assert!(
+                    rebuild.last_card == live.last_card && rebuild.last_note == live.last_note,
+                    "{name} {precision:?}: the rebuild (calls of {chunk}) stores other bytes"
+                );
+            }
+        }
+    }
+}
+
 #[test]
 #[ignore]
 fn rwkv_long_card_full() {
@@ -521,6 +588,7 @@ fn rwkv_long_card_full() {
         StatePrecision::CompactCardsInt8,
         StatePrecision::CompactCardsInt4,
         StatePrecision::CompactLowRank(RankSchedule::DEFAULT),
+        StatePrecision::CompactLowRankInt6(RankSchedule::DEFAULT),
     ];
     if std::env::var("RWKV_LONG_CARD_PLAIN").is_ok_and(|value| value == "1") {
         policies.push(StatePrecision::Int4CardsInt8Notes);

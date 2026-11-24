@@ -252,8 +252,32 @@ struct CompactVectorRow {
     skip: bool,
     elapsed: f32,
     fp32: Vec<f32>,
+    // `compact-state-big-vectors.json.gz`
+    #[serde(default)]
     compact_int8: Vec<f32>,
+    #[serde(default)]
     compact_int4: Vec<f32>,
+    // `lowrank-state-big-vectors.json.gz`
+    #[serde(default)]
+    t24: Vec<f32>,
+    #[serde(default)]
+    t24_q6: Vec<f32>,
+    /// (label_y, has_label, is_query) (`lowrank-state-big-vectors.json.gz`).
+    #[serde(default)]
+    label: Vec<f32>,
+}
+
+impl CompactVectorRow {
+    fn outputs(&self, label: &str) -> &[f32] {
+        match label {
+            "fp32" => &self.fp32,
+            "compact_int8" => &self.compact_int8,
+            "compact_int4" => &self.compact_int4,
+            "t24" => &self.t24,
+            "t24_q6" => &self.t24_q6,
+            other => panic!("unknown format {other}"),
+        }
+    }
 }
 
 #[derive(serde::Deserialize)]
@@ -311,30 +335,82 @@ fn compact_outputs(heads: &ReviewHeads, elapsed: f32, sweep: &[f32]) -> Vec<f32>
 /// step changes that effect.
 #[test]
 fn rwkv_legacy_compact_state_matches_the_scorer() {
+    let bytes = match std::env::var("ANKI_RWKV_COMPACT_BIG_VECTORS") {
+        Ok(path) => fs::read(path).unwrap(),
+        Err(_) => include_bytes!("testdata/compact-state-big-vectors.json.gz").to_vec(),
+    };
+    state_matches_the_scorer(
+        &bytes,
+        &[
+            ("fp32", StatePrecision::F32),
+            ("compact_int8", StatePrecision::CompactCardsInt8),
+            ("compact_int4", StatePrecision::CompactCardsInt4),
+        ],
+    );
+}
+
+/// The low-rank state's twin of `rwkv_legacy_compact_state_matches_the_scorer`:
+/// the scorer's outputs of the show-time big model (SM91s2) at float32,
+/// `compact_lowrank_int8` (`w8+lr2.16.4q8x8`) and `compact_lowrank_int6`
+/// (`w8+lr2.16.4q6x8`, Big's profile default since the 6-bit factors
+/// (SM162)), on the same two SYNTHETIC users (first 500 rows per user, which
+/// take cards and notes past 16 answers, so rank 4 is covered; made by
+/// `qt/tools/rwkv_lowrank_state_big_vectors.py`).
+/// `ANKI_RWKV_LOWRANK_BIG_VECTORS` points the test at other vectors.
+///
+/// Float32 and the rounding-effect gate as there. The one-ulp floor does not
+/// apply: the runtime's factored solve runs in float64, the scorer's in
+/// float32, and that difference (not an input ulp) moves a factor code now
+/// and then; a coarse int6 grid absorbs a one-ulp input change almost
+/// always, so its floor is near zero. The low-rank formats take the
+/// low-rank states end-to-end rule (SM151) instead: per user, the runtime's
+/// curve LogLoss (non-query labelled rows, curve at the row's elapsed time)
+/// and instant LogLoss (labelled query rows) within 3e-4 of the scorer's,
+/// and the mean signed difference within 1e-4.
+#[test]
+fn rwkv_legacy_lowrank_state_matches_the_scorer() {
+    let bytes = match std::env::var("ANKI_RWKV_LOWRANK_BIG_VECTORS") {
+        Ok(path) => fs::read(path).unwrap(),
+        Err(_) => include_bytes!("testdata/lowrank-state-big-vectors.json.gz").to_vec(),
+    };
+    state_matches_the_scorer(
+        &bytes,
+        &[
+            ("fp32", StatePrecision::F32),
+            ("t24", StatePrecision::CompactLowRank(RankSchedule::DEFAULT)),
+            (
+                "t24_q6",
+                StatePrecision::CompactLowRankInt6(RankSchedule::DEFAULT),
+            ),
+        ],
+    );
+}
+
+fn state_matches_the_scorer(bytes: &[u8], formats: &[(&str, StatePrecision)]) {
     let data = {
-        let bytes = match std::env::var("ANKI_RWKV_COMPACT_BIG_VECTORS") {
-            Ok(path) => fs::read(path).unwrap(),
-            Err(_) => include_bytes!("testdata/compact-state-big-vectors.json.gz").to_vec(),
-        };
         let mut data = Vec::new();
-        flate2::read::GzDecoder::new(&bytes[..])
+        flate2::read::GzDecoder::new(bytes)
             .read_to_end(&mut data)
             .unwrap();
         data
     };
     let vectors: Vec<CompactVectors> = serde_json::from_slice(&data).unwrap();
-    for (label, precision) in [
-        ("fp32", StatePrecision::F32),
-        ("compact_int8", StatePrecision::CompactCardsInt8),
-        ("compact_int4", StatePrecision::CompactCardsInt4),
-    ] {
+    for &(label, precision) in formats {
         let mut model = legacy_model();
         let (card, note) = precision.module_precisions();
         model.modules[0].precision = card;
         model.modules[2].precision = note;
         let (mut count, mut maximum, mut above) = (0usize, 0.0_f32, 0usize);
         let (mut scorer, mut ulp, mut effect, mut scorer_effect) = (0.0_f64, 0.0, 0.0, 0.0);
+        let lowrank = matches!(
+            precision,
+            StatePrecision::CompactLowRank(_) | StatePrecision::CompactLowRankInt6(_)
+        );
+        // Per user and head (curve, instant): runtime minus scorer LogLoss.
+        let mut log_loss_differences = [Vec::new(), Vec::new()];
         for user in &vectors {
+            // (label, runtime, scorer) per head
+            let mut labelled: [Vec<(f32, f32, f32)>; 2] = [Vec::new(), Vec::new()];
             let mut states = ReviewStateMaps::default();
             let mut moved_states = ReviewStateMaps::default();
             for (index, row) in user.rows.iter().enumerate() {
@@ -359,12 +435,13 @@ fn rwkv_legacy_compact_state_matches_the_scorer() {
                     || actual.clone(),
                     |moved| compact_outputs(moved, row.elapsed, &user.sweep),
                 );
-                let expected = match label {
-                    "fp32" => &row.fp32,
-                    "compact_int8" => &row.compact_int8,
-                    _ => &row.compact_int4,
-                };
+                let expected = row.outputs(label);
                 assert_eq!(actual.len(), expected.len());
+                if lowrank && row.label[1] > 0.0 {
+                    // [p_imm, 4 buttons, curve at the row's elapsed time, ...]
+                    let (head, output) = if row.label[2] > 0.0 { (1, 0) } else { (0, 5) };
+                    labelled[head].push((row.label[0], actual[output], expected[output]));
+                }
                 for (head, &a) in actual.iter().enumerate() {
                     let error = (a - expected[head]).abs();
                     if label == "fp32" {
@@ -390,6 +467,41 @@ fn rwkv_legacy_compact_state_matches_the_scorer() {
                     }
                 }
             }
+            for (head, rows) in labelled.iter().enumerate() {
+                if rows.is_empty() {
+                    continue;
+                }
+                let log_loss = |pick: fn(&(f32, f32, f32)) -> f32| {
+                    rows.iter()
+                        .map(|row| {
+                            let (y, p) = (
+                                f64::from(row.0),
+                                f64::from(pick(row)).clamp(1e-7, 1.0 - 1e-7),
+                            );
+                            -(y * p.ln() + (1.0 - y) * (1.0 - p).ln())
+                        })
+                        .sum::<f64>()
+                        / rows.len() as f64
+                };
+                log_loss_differences[head].push(log_loss(|row| row.1) - log_loss(|row| row.2));
+            }
+        }
+        if lowrank {
+            for (head, differences) in ["curve", "instant"].iter().zip(&log_loss_differences) {
+                assert_eq!(differences.len(), vectors.len(), "{label} {head}");
+                let worst = differences.iter().fold(0.0_f64, |m, d| m.max(d.abs()));
+                let mean = differences.iter().sum::<f64>() / differences.len() as f64;
+                let per_user: Vec<String> =
+                    differences.iter().map(|d| format!("{d:+.2e}")).collect();
+                println!(
+                    "{label} {head} LogLoss, runtime minus scorer: per user {}, max abs {worst:.2e}, mean {mean:+.2e}",
+                    per_user.join(" ")
+                );
+                assert!(
+                    worst <= 3e-4 && mean.abs() <= 1e-4,
+                    "{label} {head}: {differences:?}"
+                );
+            }
         }
         let n = count as f64;
         let (scorer, ulp, effect, scorer_effect) =
@@ -399,7 +511,9 @@ fn rwkv_legacy_compact_state_matches_the_scorer() {
              one-ulp input change: mean {ulp:.3e}; mean distance from float32 state: {effect:.3e} (scorer {scorer_effect:.3e})"
         );
         if label != "fp32" {
-            assert!(scorer <= 3.0 * ulp, "{label}: {scorer} > 3 x {ulp}");
+            if !lowrank {
+                assert!(scorer <= 3.0 * ulp, "{label}: {scorer} > 3 x {ulp}");
+            }
             assert!(
                 (effect - scorer_effect).abs() <= 0.05 * scorer_effect,
                 "{label}: rounding effect {effect} vs the scorer's {scorer_effect}"
@@ -447,17 +561,39 @@ fn rwkv_big_lowrank_state_end_to_end() {
             "q2",
             StatePrecision::CompactLowRank(RankSchedule::uniform(2)),
         ),
+        // Int6 factors (SM162) and the profile default, whose factor width
+        // follows the model's size (int6 for Big and Small, int8 for Tiny).
+        (
+            "t24_q6",
+            StatePrecision::CompactLowRankInt6(RankSchedule::DEFAULT),
+        ),
+        (
+            "by_size",
+            StatePrecision::CompactLowRankBySize(RankSchedule::DEFAULT),
+        ),
     ];
+    // Optional subset: `ANKI_RWKV_LOWRANK_E2E_FORMATS=compact_int8,t24,...`.
+    let selected = std::env::var("ANKI_RWKV_LOWRANK_E2E_FORMATS").ok();
+    let formats: Vec<(&str, StatePrecision)> = formats
+        .into_iter()
+        .filter(|(label, _)| {
+            selected
+                .as_deref()
+                .is_none_or(|list| list.split(',').any(|name| name == *label))
+        })
+        .collect();
     let mut out = serde_json::Map::new();
     for user in &vectors {
         let mut by_format = serde_json::Map::new();
-        for (label, precision) in formats {
+        for &(label, precision) in &formats {
             let mut model = match model_name.as_str() {
                 "legacy" => legacy_model(),
                 "sm99" => sm99_model(),
                 other => panic!("unknown model {other}"),
             };
-            let (card, note) = precision.module_precisions();
+            let (card, note) = precision
+                .for_card_layers(model.card_layers())
+                .module_precisions();
             model.modules[0].precision = card;
             model.modules[2].precision = note;
             let mut states = ReviewStateMaps::default();

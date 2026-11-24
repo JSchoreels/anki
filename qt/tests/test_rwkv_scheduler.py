@@ -10825,7 +10825,13 @@ def test_reviewer_rwkv_cache_rebuilds_when_replay_semantics_change(
 
 @pytest.mark.parametrize(
     "next_mode",
-    ["f32", "cards_int4_notes_int8", "compact_cards_int8", "compact_lowrank_int8"],
+    [
+        "f32",
+        "cards_int4_notes_int8",
+        "compact_cards_int8",
+        "compact_lowrank_int8",
+        "compact_lowrank",
+    ],
 )
 def test_reviewer_rwkv_precision_change_replays_history_instead_of_upcasting(
     monkeypatch, tmp_path, next_mode

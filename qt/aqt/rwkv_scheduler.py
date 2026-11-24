@@ -264,7 +264,9 @@ _EMBEDDED_RWKV_MODEL_FILENAME = "weights.f32.bin"
 _RWKV_MODEL_KEY_HASH_CHUNK_SIZE = 1024 * 1024
 # 14: the compact card / note state (compact_cards_int8) became the default.
 # 15: the low-rank card / note state (compact_lowrank_int8) became the default.
-_RWKV_STATE_CACHE_VERSION = 15
+# 16: the default low-rank state (compact_lowrank) stores int6 factors for Big
+#     and Small (precision byte 0x26), int8 factors for Tiny.
+_RWKV_STATE_CACHE_VERSION = 16
 _RWKV_STATE_CACHE_LEGACY_JSON_VERSION = 2
 _RWKV_PRESET_REPLAY_SEMANTICS_VERSION = 7
 _RWKV_STATE_CACHE_DIR = "rwkv-state-cache"
