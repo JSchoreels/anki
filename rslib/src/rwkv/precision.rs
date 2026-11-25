@@ -296,6 +296,49 @@ impl StatePrecision {
         });
     }
 
+    /// `round_written_matrix` on independent writes (one layer of several
+    /// cards): the low-rank solves run batched (`lowrank::encode_layers`),
+    /// with exactly the bytes and matrices of one write at a time.
+    pub(super) fn round_written_matrices(self, writes: &mut [WrittenMatrix<'_>]) {
+        let Some((schedule, factors)) = self.lowrank() else {
+            for write in writes {
+                self.round_matrix(write.values, write.packed);
+            }
+            return;
+        };
+        let mut blocks: Vec<Vec<u8>> = writes
+            .iter()
+            .map(|_| Vec::with_capacity(lowrank::block_len(4, factors)))
+            .collect();
+        {
+            let mut layer_writes: Vec<lowrank::LayerWrite<'_>> = writes
+                .iter_mut()
+                .zip(&mut blocks)
+                .map(|(write, out)| lowrank::LayerWrite {
+                    matrix: &mut *write.values,
+                    previous: lowrank_previous(write.packed.as_ref(), write.previous),
+                    v: write.v,
+                    out,
+                })
+                .collect();
+            if lowrank::batch_writes() > 1 {
+                lowrank::encode_layers::<{ lowrank::BATCH_LANES }>(
+                    &mut layer_writes,
+                    schedule,
+                    factors,
+                );
+            } else {
+                lowrank::encode_layers::<{ super::HEADS }>(&mut layer_writes, schedule, factors);
+            }
+        }
+        for (write, bytes) in writes.iter_mut().zip(blocks) {
+            *write.packed = Some(PackedMatrix {
+                precision: self,
+                bytes,
+            });
+        }
+    }
+
     /// Rounds a shift vector exactly as storing and reloading it would.
     pub(super) fn round_shift(self, values: &mut [f32]) {
         if self == Self::F32 {
@@ -598,6 +641,15 @@ pub(super) fn decode(bytes: &[u8]) -> io::Result<ModuleState> {
 pub(super) struct PackedMatrix {
     precision: StatePrecision,
     bytes: Vec<u8>,
+}
+
+/// One write of `round_written_matrices`: the arguments of
+/// `round_written_matrix`.
+pub(super) struct WrittenMatrix<'a> {
+    pub(super) values: &'a mut [f32],
+    pub(super) packed: &'a mut Option<PackedMatrix>,
+    pub(super) previous: &'a [f32],
+    pub(super) v: &'a [f32],
 }
 
 fn encode_matrix(precision: StatePrecision, values: &[f32], out: &mut Vec<u8>) {
