@@ -24720,16 +24720,13 @@ def _candidate_refreshed_rwkv_review_queue_scores_for_deck(
         deck_id,
     )
 
-    candidate_ids = _rwkv_review_candidate_refresh_card_ids(
+    candidate_ids = _rwkv_reviewer_refresh_card_ids(
+        reviewer,
         deck_config,
         existing_scores,
         existing_target_retentions,
         limit=batch_size,
     )
-    current_card_id = _card_id(getattr(reviewer, "card", None))
-    if current_card_id is not None:
-        candidate_ids.append(current_card_id)
-    candidate_ids = _unique_rwkv_candidate_card_ids(candidate_ids)
     if not candidate_ids:
         return None
 
@@ -24771,38 +24768,61 @@ def _rwkv_review_candidate_refresh_card_ids(
     target_retentions_by_card_id: dict[int, float] | None,
     *,
     limit: int,
+    refresh_round: int = 0,
 ) -> list[int]:
     if limit <= 0:
         return []
 
     review_order = deck_config.get("reviewOrder", deck_config.get("review_order"))
     if review_order == _REVIEW_ORDER_RETRIEVABILITY_DESCENDING:
-        ordered_scores = sorted(scores.items(), key=lambda item: (-item[1], item[0]))
-    elif review_order == _REVIEW_ORDER_RELATIVE_OVERDUENESS:
+        return sorted(scores, key=lambda card: (-scores[card], card))[:limit]
+    if review_order == _REVIEW_ORDER_RELATIVE_OVERDUENESS:
         targets = target_retentions_by_card_id or {}
-        ordered_scores = sorted(
-            scores.items(),
-            key=lambda item: (
-                _rwkv_relative_overdueness(item[1], targets.get(item[0])),
-                item[0],
+        return sorted(
+            scores,
+            key=lambda card: (
+                _rwkv_relative_overdueness(scores[card], targets.get(card)),
+                card,
             ),
+        )[:limit]
+
+    ranked = sorted(scores, key=lambda card: (scores[card], card))
+    probe = limit // 4
+    if (
+        review_order == _REVIEW_ORDER_RETRIEVABILITY_ASCENDING
+        and len(ranked) > limit
+        and probe
+    ):
+        # Keep the leaders and probe a different block of nearby ranks each update.
+        # The Instant workload forecast applies the same window to its ranked cards.
+        leaders = limit - probe
+        blocks = min(8, (len(ranked) - leaders + probe - 1) // probe)
+        start = min(leaders + (refresh_round % blocks) * probe, len(ranked) - probe)
+        return ranked[:leaders] + ranked[start : start + probe]
+    return ranked[:limit]
+
+
+def _rwkv_reviewer_refresh_card_ids(
+    reviewer: object,
+    deck_config: dict[str, object],
+    scores: dict[int, float],
+    targets: dict[int, float] | None,
+    *,
+    limit: int,
+) -> list[int]:
+    answered_count = len(_session_answered_ids(reviewer))
+    refresh_round = answered_count // _rwkv_review_refresh_interval(deck_config)
+    card_ids = _rwkv_review_candidate_refresh_card_ids(
+        deck_config, scores, targets, limit=limit, refresh_round=refresh_round
+    )
+    current_card_id = _card_id(getattr(reviewer, "card", None))
+    if current_card_id is not None:
+        card_ids.append(current_card_id)
+    return list(
+        dict.fromkeys(
+            card_id for card_id in card_ids if _valid_card_id(card_id) is not None
         )
-    else:
-        ordered_scores = sorted(scores.items(), key=lambda item: (item[1], item[0]))
-
-    return [card_id for card_id, _ in ordered_scores[:limit]]
-
-
-def _unique_rwkv_candidate_card_ids(card_ids: Sequence[int]) -> list[int]:
-    seen: set[int] = set()
-    unique: list[int] = []
-    for value in card_ids:
-        card_id = _valid_card_id(value)
-        if card_id is None or card_id in seen:
-            continue
-        seen.add(card_id)
-        unique.append(card_id)
-    return unique
+    )
 
 
 def _candidate_refreshed_rwkv_review_queue_async_work(
@@ -24831,16 +24851,13 @@ def _candidate_refreshed_rwkv_review_queue_async_work(
         deck_id,
     )
 
-    candidate_ids = _rwkv_review_candidate_refresh_card_ids(
+    candidate_ids = _rwkv_reviewer_refresh_card_ids(
+        reviewer,
         deck_config,
         existing_scores,
         existing_target_retentions,
         limit=batch_size,
     )
-    current_card_id = _card_id(getattr(reviewer, "card", None))
-    if current_card_id is not None:
-        candidate_ids.append(current_card_id)
-    candidate_ids = _unique_rwkv_candidate_card_ids(candidate_ids)
     if not candidate_ids:
         return None
 

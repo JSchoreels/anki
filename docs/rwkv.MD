@@ -1434,12 +1434,17 @@ workload simulation.
 
 When `rwkv_review_candidate_refresh_enabled` is enabled, queue refreshes can
 reuse the existing transient RWKV queue score map as a stale priority queue.
-After the first full score map has been installed, later refreshes score only
-the best stale RWKV candidates and merge those fresh scores back into the map.
-Descending retrievability prioritizes the highest scores; Relative
-Overdueness prioritizes the lowest `retrievability / target retention` values;
-all other review orders prioritize the lowest raw retrievability scores. Anki
-automatically bounds the candidate window.
+After the first full update, Ascending Retrievability uses three quarters of
+its window for the lowest saved R values. The remaining quarter rotates through
+up to eight consecutive blocks immediately below those leaders in the ranking.
+The block advances with each configured answer interval. Small pools fit in
+one update, and the reviewer also includes the visible card. The Instant
+workload forecast uses the same rotation.
+Descending Retrievability prioritizes the highest saved R values. Relative
+Overdueness prioritizes the lowest `retrievability / target retention`, and
+other review orders prioritize the lowest raw R.
+The [ascending-R backtest](rwkv-candidate-refresh-backtest.MD) compares both
+the precomputed next card and the choice after the background update.
 This accelerates frequent review-time refreshes while preserving the full
 installed score map for cards outside the refreshed window. It is approximate:
 cards outside the refreshed window keep their previous RWKV score until a later

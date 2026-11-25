@@ -18401,6 +18401,23 @@ def test_rwkv_candidate_refresh_relative_overdueness_uses_dynamic_dr() -> None:
     ) == [1]
 
 
+def test_ascending_refresh_keeps_leaders_and_checks_beyond_the_stale_window() -> None:
+    # Equal scores follow the scheduler's card-ID tie break.
+    scores = dict.fromkeys(range(30, 0, -1), 0.8)
+    config = {"reviewOrder": 7, "rwkvReviewRefreshInterval": 3}
+    reviewer = SimpleNamespace(_answeredIds=[25, 24, 23], card=SimpleNamespace(id=30))
+    assert rwkv_scheduler._rwkv_reviewer_refresh_card_ids(
+        reviewer, config, scores, None, limit=8
+    ) == [1, 2, 3, 4, 5, 6, 9, 10, 30]
+    # The final block overlaps its predecessor when fewer than eight blocks fit.
+    assert rwkv_scheduler._rwkv_review_candidate_refresh_card_ids(
+        config, dict.fromkeys(range(1, 12), 0.8), None, limit=8, refresh_round=2
+    ) == [1, 2, 3, 4, 5, 6, 10, 11]
+    assert rwkv_scheduler._rwkv_review_candidate_refresh_card_ids(
+        config, scores, None, limit=8, refresh_round=8
+    ) == list(range(1, 9))
+
+
 @pytest.mark.parametrize("candidate_refresh", [False, True])
 def test_busy_queue_refresh_preserves_installed_scores(candidate_refresh: bool) -> None:
     backend = SimpleNamespace(predict_review=MagicMock())

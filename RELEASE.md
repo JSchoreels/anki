@@ -60,6 +60,7 @@ Changes since [build 115](https://github.com/JSchoreels/anki/releases/tag/26.09.
 
 #### Fixes
 
+- **Find the next low-retrievability review more reliably.** With ascending R and faster approximate RWKV-Instant updates, Anki now also rechecks cards just outside the previous leaders. In a 351-decision backtest, the default 512-card update matched the full rescore 351 times, up from 348. At 64 cards it matched 263 times, up from 211.
 - **See which daily limit postponed a card.** Session Preview shows how many reviews, learning steps and new-card slots are queued. It identifies the limit that held a card back and keeps three-digit positions on one line.
 - **Keep RWKV due totals consistent when returning to the deck list.** The list waits for the reviewer’s background queue refresh before calculating how many reviews are due before daily limits.
 - **`is:rwkv:due` uses scores for its own search.** Browser searches with `is:rwkv:due`, `is:rwkv-curve:due` or `is:due` now prepare RWKV scores for that search, instead of reusing scores prepared for another search, filtered deck or Stats page. If no scores are ready, `is:due` uses due dates and `is:rwkv:due` matches nothing. Filtered decks and due-card custom study sessions whose search uses `is:due` need the RWKV state, as `is:rwkv:due` decks do.

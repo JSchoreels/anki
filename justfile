@@ -245,6 +245,11 @@ rwkv-review-order-prepare *args:
     {{ ninja }} pylib qt
     {{ if os() == "windows" { "$env:PYTHONPATH='pylib;out/pylib;out/qt;out/qt/tools'; " } else { "PYTHONPATH=pylib:out/pylib:out/qt:out/qt/tools " } }}{{ python }} qt/tools/rwkv_review_order_prepare.py {{ args }}
 
+# Compare partial ascending-R queue updates with full rescoring on recorded answers.
+rwkv-candidate-refresh-backtest backup_copy deck *args:
+    {{ ninja }} pylib qt
+    {{ if os() == "windows" { "$env:PYTHONPATH='pylib;out/pylib;qt;out/qt'; " } else { "PYTHONPATH=pylib:out/pylib:qt:out/qt " } }}{{ python }} qt/tools/rwkv_candidate_refresh_backtest.py --backup-copy {{quote(backup_copy)}} --deck {{quote(deck)}} {{args}}
+
 # Compare review-ordering strategies under a backlog with the RWKV workload simulator.
 rwkv-review-order-bench input output:
     {{ if os() == "windows" { "$env:ANKI_RWKV_REVIEW_ORDER_INPUT='" + input + "'; $env:ANKI_RWKV_REVIEW_ORDER_OUTPUT='" + output + "'; cargo test -p anki --release --lib rwkv_review_order_metrics -- --ignored --nocapture" } else { "ANKI_RWKV_REVIEW_ORDER_INPUT='" + input + "' ANKI_RWKV_REVIEW_ORDER_OUTPUT='" + output + "' cargo test -p anki --release --lib rwkv_review_order_metrics -- --ignored --nocapture" } }}

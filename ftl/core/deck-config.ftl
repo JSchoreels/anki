@@ -476,10 +476,11 @@ deck-config-rwkv-review-respect-subdeck-minimums-tooltip =
     preset; you can apply it to all subdecks when saving.
 deck-config-rwkv-review-candidate-refresh = Use faster, approximate queue updates
 deck-config-rwkv-review-candidate-refresh-tooltip =
-    After the first full update, RWKV rechecks only the cards most likely to
-    appear next. This makes queue updates faster for large decks, but other
-    cards keep an older estimate until a later update. Anki automatically bounds
-    the number rechecked at once. This setting applies when precomputation is on.
+    After the first full update, RWKV rechecks a limited number of cards to
+    speed up queue updates in large decks. With ascending retrievability, it
+    rechecks the lowest estimates and rotates through cards just outside that
+    group. Other cards keep their previous estimates. This setting applies
+    when precomputation is on.
 deck-config-rwkv-review-precompute-next-card = Precompute next card before this card answer
 deck-config-rwkv-review-precompute-next-card-tooltip =
     Use the queue scores computed before your answer to choose the next card,
