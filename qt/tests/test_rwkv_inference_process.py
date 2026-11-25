@@ -1338,9 +1338,10 @@ def test_rsbridge_rwkv_family_pair_serves_instant_and_two_head_keeps_curve(
     # the family wiring (SM114): Small pairs the show-time retrain (SM92) with
     # the longer Small Instant-Only model (SM113), Tiny the Tiny two-head
     # model (SM106) with the longer cool-down for Tiny (SM115) (until
-    # 2026-11-16: SM98 and SM101). Instant recall and buttons come from the
-    # Instant-Only model, the curve recall, intervals and S90 from the
-    # two-head model. The longer Instant-Only models (SM113, SM115) have
+    # 2026-11-16: SM98 and SM101). The six-layer Tiny pair combines both
+    # instant heads (SM170). Other pairs use the Instant-Only model for recall
+    # and buttons. The two-head model provides curve recall, intervals and S90.
+    # The longer Instant-Only models (SM113, SM115) have
     # their own answer-time head (SM119), the older ones (SM98, SM101) not.
     root = Path(__file__).resolve().parents[2]
     rsbridge = _import_rsbridge(root)
@@ -1413,19 +1414,38 @@ def test_rsbridge_rwkv_family_pair_serves_instant_and_two_head_keeps_curve(
     instant_out = replay_and_query(
         load(instant_model, f"{instant_model}/weights.f32.bin")
     )
-    # Instant recall and buttons from the Instant-Only model; curve recall,
-    # current interval and S90, intervals and S90s from the two-head model.
-    assert (pair_out[0], pair_out[6]) == (instant_out[0], instant_out[6])
+    tiny_ensemble = (two_head, instant_model) == ("sm130th", "sm130io")
+
+    def ensemble_recall(instant_recall: float, two_head_recall: float) -> float:
+        instant_odds = instant_recall / (1 - instant_recall)
+        two_head_odds = two_head_recall / (1 - two_head_recall)
+        combined_odds = instant_odds**0.69 * two_head_odds**0.31
+        return combined_odds / (1 + combined_odds)
+
+    if tiny_ensemble:
+        expected_recall = ensemble_recall(instant_out[0], alone_out[0])
+        assert pair_out[0] == pytest.approx(expected_recall)
+        successful_buttons = instant_out[6][1:]
+        scale = expected_recall / sum(successful_buttons)
+        assert pair_out[6] == pytest.approx(
+            (1 - expected_recall, *(p * scale for p in successful_buttons))
+        )
+    else:
+        assert (pair_out[0], pair_out[6]) == (instant_out[0], instant_out[6])
     assert pair_out[1:6] == alone_out[1:6]
     assert pair_out[1] is not None and instant_out[1] is None
-    # After replaying answers, resident recall from the Instant-Only model.
     reviews = [args(review, False) for review in _RWKV_REVIEWS[:3]]
     query = args(dict(_RWKV_REVIEWS[3], elapsed_days=3, elapsed_seconds=259200), True)
     for runtime in (alone, instant, paired):
         runtime.warm_up_reviews(reviews, False)
     paired_r = paired.predict_retrievability_many_from_warm_up([query])
-    assert paired_r == instant.predict_retrievability_many_from_warm_up([query])
-    assert paired_r != alone.predict_retrievability_many_from_warm_up([query])
+    instant_r = instant.predict_retrievability_many_from_warm_up([query])
+    alone_r = alone.predict_retrievability_many_from_warm_up([query])
+    if tiny_ensemble:
+        assert paired_r == pytest.approx([ensemble_recall(instant_r[0], alone_r[0])])
+    else:
+        assert paired_r == instant_r
+        assert paired_r != alone_r
     with pytest.raises(Exception):
         alone.restore_cache_state(paired.cache_state())
     with pytest.raises(Exception):

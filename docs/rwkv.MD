@@ -88,9 +88,14 @@ model key whose weights have other layer counts):
 
 Model keys and folders: Big `legacy` (`RWKV_trained_on_5000_10000.bin`) and `sm99`;
 Small `sm118` and `sm113`; Tiny `sm130th` and `sm130io`. In every size the two-head
-model gives RWKV-Curve, the intervals, S90 and the workload simulation, and the
-Instant-Only model gives RWKV-Instant's recall and button probabilities. The
-models these replace stay bundled, unused by any size: the show-time retrain (SM92,
+model gives RWKV-Curve, the intervals, S90 and the Curve workload simulation.
+Big and Small use their Instant-Only model for RWKV-Instant recall and button
+probabilities. In Tiny's two-model mode, those predictions combine both instant
+heads by averaging their logits, with weights 0.69 for the Instant-Only model
+and 0.31 for the two-head model (SM170). Tiny's instant workload forecast and
+answer time still use the Instant-Only model alone.
+
+The models these replace stay bundled, unused by any size: the show-time retrain (SM92,
 still a profile value of its own), the Tiny two-head model (SM106), the longer
 cool-down for Tiny (SM115), and the older Small Instant-Only model (SM98) and Tiny
 Instant-Only model (SM101).
