@@ -822,7 +822,11 @@ impl RwkvInference {
         max_interval_days: u32,
         precision: StatePrecision,
     ) -> Self {
-        let (card_precision, note_precision) = precision.module_precisions();
+        // The default low-rank policy picks its factor width by the model's
+        // size (its card layers): int8 for Tiny, int6 for Small and Big.
+        let (card_precision, note_precision) = precision
+            .for_card_layers(model.card_layers())
+            .module_precisions();
         model.modules[0].precision = card_precision;
         model.modules[2].precision = note_precision;
         Self {

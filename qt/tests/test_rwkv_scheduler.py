@@ -10825,7 +10825,13 @@ def test_reviewer_rwkv_cache_rebuilds_when_replay_semantics_change(
 
 @pytest.mark.parametrize(
     "next_mode",
-    ["f32", "cards_int4_notes_int8", "compact_cards_int8", "compact_lowrank_int8"],
+    [
+        "f32",
+        "cards_int4_notes_int8",
+        "compact_cards_int8",
+        "compact_lowrank_int8",
+        "compact_lowrank",
+    ],
 )
 def test_reviewer_rwkv_precision_change_replays_history_instead_of_upcasting(
     monkeypatch, tmp_path, next_mode
@@ -24061,7 +24067,7 @@ def test_card_info_configures_embedded_backend_for_rwkv_enabled_card(
             "model_path": model_path,
             "device": "cpu",
             "dtype": "float",
-            "state_precision": "compact_lowrank_int8",
+            "state_precision": "compact_lowrank",
             # Small without RWKV-Instant uses its two-head model.
             "model": "sm118",
         }
@@ -25229,7 +25235,7 @@ def test_configure_reviewer_backend_uses_embedded_default(
             "model_path": model_path,
             "device": "cpu",
             "dtype": "float",
-            "state_precision": "compact_lowrank_int8",
+            "state_precision": "compact_lowrank",
             # Small without RWKV-Instant uses its two-head model.
             "model": "sm118",
         }
@@ -25304,7 +25310,7 @@ def test_configure_reviewer_backend_uses_model_env_with_embedded_runner(
             "model_path": Path("/tmp/custom-rwkv.pth"),
             "device": "mps",
             "dtype": "bfloat16",
-            "state_precision": "compact_lowrank_int8",
+            "state_precision": "compact_lowrank",
             # A custom checkpoint replaces Small's two-head model.
             "model": "sm118",
         }

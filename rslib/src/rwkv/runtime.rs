@@ -466,6 +466,15 @@ impl RwkvRuntime {
             StatePrecision::CompactLowRank(schedule) => {
                 super::alternate::StatePrecision::CompactLowRank(alternate_schedule(schedule))
             }
+            StatePrecision::LowRankInt6(schedule) => {
+                super::alternate::StatePrecision::LowRankInt6(alternate_schedule(schedule))
+            }
+            StatePrecision::CompactLowRankInt6(schedule) => {
+                super::alternate::StatePrecision::CompactLowRankInt6(alternate_schedule(schedule))
+            }
+            StatePrecision::CompactLowRankBySize(schedule) => {
+                super::alternate::StatePrecision::CompactLowRankBySize(alternate_schedule(schedule))
+            }
         };
         let engine = super::alternate::RwkvInference::load_with_precision(
             path,
@@ -1799,6 +1808,94 @@ mod tests {
         engine
             .review(input.clone(), paired::as_review_state(&state))
             .unwrap()
+    }
+
+    /// The precision bytes of every module state in `bytes` (a card or note
+    /// state, alone or a paired one holding both models' states).
+    fn stored_precisions(bytes: &[u8]) -> Vec<u8> {
+        let magic = super::super::precision::MAGIC;
+        (0..bytes.len().saturating_sub(magic.len()))
+            .filter(|&at| bytes[at..].starts_with(magic))
+            .map(|at| bytes[at + magic.len()])
+            .collect()
+    }
+
+    /// The profile default (`compact_lowrank`) stores int6 factors (0x26)
+    /// for Big (the show-time big model (SM91s2), `Legacy`, and the
+    /// show-time instant-only big model (SM99)) and Small (the show-time
+    /// two-head cool-down for Small (SM118) and the longer Small
+    /// Instant-Only model (SM113)) and int8 factors (0x28) for Tiny (the
+    /// six-layer Tiny two-head and Instant-Only models (SM130)), each
+    /// two-head model alone and in its size's pair; the explicit policies
+    /// keep their width on every size.
+    #[test]
+    fn rwkv_runtime_default_lowrank_factor_width_follows_the_model_size() {
+        let by_size = StatePrecision::parse("compact_lowrank").unwrap();
+        assert_eq!(
+            by_size,
+            StatePrecision::CompactLowRankBySize(super::super::RankSchedule::DEFAULT)
+        );
+        let mut sizes = vec![(ModelKind::Legacy, ModelKind::Sm99, 0x26)];
+        if super::super::SMALL_MODEL {
+            sizes.push((ModelKind::Sm118, ModelKind::Sm113, 0x26));
+            sizes.push((ModelKind::Sm130Th, ModelKind::Sm130Io, 0x28));
+        }
+        let folder = |model: ModelKind| match model {
+            ModelKind::Legacy => PathBuf::from(env!("CARGO_MANIFEST_DIR"))
+                .join("../qt/aqt/rwkv_inference/RWKV_trained_on_5000_10000.bin"),
+            ModelKind::Sm99 => model_path("sm99"),
+            ModelKind::Sm118 => model_path("sm118"),
+            ModelKind::Sm113 => model_path("sm113"),
+            ModelKind::Sm130Th => model_path("sm130th"),
+            ModelKind::Sm130Io => model_path("sm130io"),
+            _ => unreachable!(),
+        };
+        let check = |mut engine: RwkvRuntime, expected: u8, label: &str| {
+            let answers = crate::rwkv::precision_tests::reviews(14);
+            engine.warm_up_reviews(answers.clone(), false).unwrap();
+            let output = review_with_state(&mut engine, &answers[0]);
+            for state in [&output.card_state, &output.note_state] {
+                let codes = stored_precisions(state);
+                assert!(!codes.is_empty(), "{label}");
+                assert!(
+                    codes.iter().all(|&code| code == expected),
+                    "{label}: {codes:x?}"
+                );
+            }
+        };
+        for (release, instant, expected) in sizes {
+            // Alone: the two-head model (an instant-only model alone keeps
+            // no state of its own; the pair below stores both).
+            for model in [release] {
+                for (precision, code) in [
+                    (by_size, expected),
+                    (StatePrecision::parse("compact_lowrank_int8").unwrap(), 0x28),
+                    (StatePrecision::parse("compact_lowrank_int6").unwrap(), 0x26),
+                ] {
+                    let engine = RwkvRuntime::load_with_precision(
+                        folder(model),
+                        0.9,
+                        36_500,
+                        precision,
+                        model,
+                    )
+                    .unwrap();
+                    check(engine, code, &format!("{model:?} {precision:?}"));
+                }
+            }
+            let pair = RwkvRuntime::load_paired(
+                folder(release),
+                folder(instant),
+                0.9,
+                36_500,
+                by_size,
+                release,
+                instant,
+            )
+            .unwrap();
+            assert!(pair.is_paired());
+            check(pair, expected, &format!("{release:?} + {instant:?}"));
+        }
     }
 
     #[test]

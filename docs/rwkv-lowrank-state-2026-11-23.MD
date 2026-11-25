@@ -7,6 +7,14 @@ new default. It passes the user's budgets at every size on the 732-user benchmar
 own int8 rows, Small at most +0.5% and Tiny at most +1.0% against Big at int8; 95% CI upper bound per head) and saves
 about 82% (Big), 66% (Small) and 65% (Tiny) of the card and note state bytes against the int8 rows.
 
+**Update (user, 2026-11-24): 6-bit factors for Big and Small (SM162).** The default profile value is now
+`compact_lowrank`: Big and Small store the same schedule with int6 factor codes (precision byte `0x26`, the training
+repository's `w8+lr2.16.4q6x8`, from the smaller shift vectors and factors experiment (SM152); codes in [-31, 31] with
+a float16 scale of max/31 per factor vector, bit-packed four codes in three bytes), Tiny keeps the int8 factors below
+(`0x28`). About 85% (Big) and 71% (Small) fewer state bytes than the int8 rows. `compact_lowrank_int8` and
+`compact_lowrank_int6` remain native values (one width on every size); state-cache version 16; details in `RELEASE.md`.
+The sections below describe the int8-factor layout, which `0x26` follows except for the code width.
+
 ## Format
 
 Precision byte `0x28` (`LowRankInt8`) under the magic `ARWKVMODSTATE2`; the decoder still reads every older layout.

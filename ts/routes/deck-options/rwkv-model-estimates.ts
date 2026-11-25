@@ -31,7 +31,8 @@ type Precision =
     | "cards_int4_notes_int8"
     | "compact_cards_int8"
     | "compact_cards_int4"
-    | "compact_lowrank_int8";
+    | "compact_lowrank_int8"
+    | "compact_lowrank";
 
 // Serialized card and note states, checked against the native codecs in
 // rwkv_state_precision_stored_sizes_of_the_small_and_tiny_models,
@@ -40,6 +41,10 @@ type Precision =
 // grows with a card's answers (rank 1 after one answer, rank 2, rank 4 from
 // the 16th; rwkv_state_precision_lowrank_sizes_grow_with_the_answer_count):
 // its entries are the mean over the answer counts of 723 benchmark users.
+// The default `compact_lowrank` stores int6 factors for Big and Small (the
+// 6-bit factors (SM162)) and int8 factors for Tiny: its Big and Small entries
+// are the int8-factor means with each factor vector's codes at 6 bits (the
+// same answer counts, so the same mean rank).
 const STATE_SIZES: Record<RwkvModelSize, Record<Precision, StateSizes>> = {
     [RWKV_MODEL_BIG]: {
         f32: { card: 52_278, note: 34_858 },
@@ -48,6 +53,7 @@ const STATE_SIZES: Record<RwkvModelSize, Record<Precision, StateSizes>> = {
         compact_cards_int8: { card: 13_891, note: 9_267 },
         compact_cards_int4: { card: 7_747, note: 9_267 },
         compact_lowrank_int8: { card: 2_524, note: 1_720 },
+        compact_lowrank: { card: 2_128, note: 1_449 },
     },
     [RWKV_MODEL_SMALL]: {
         f32: { card: 9_002, note: 4_638 },
@@ -56,6 +62,7 @@ const STATE_SIZES: Record<RwkvModelSize, Record<Precision, StateSizes>> = {
         compact_cards_int8: { card: 2_545, note: 1_315 },
         compact_cards_int4: { card: 1_521, note: 1_315 },
         compact_lowrank_int8: { card: 839, note: 470 },
+        compact_lowrank: { card: 707, note: 402 },
     },
     [RWKV_MODEL_TINY]: {
         f32: { card: 4_638, note: 4_638 },
@@ -64,16 +71,26 @@ const STATE_SIZES: Record<RwkvModelSize, Record<Precision, StateSizes>> = {
         compact_cards_int8: { card: 1_315, note: 1_315 },
         compact_cards_int4: { card: 803, note: 1_315 },
         compact_lowrank_int8: { card: 462, note: 470 },
+        compact_lowrank: { card: 462, note: 470 },
     },
 };
 
 // The low-rank state's card and note bytes at rank 1 (after one answer) and
 // rank 4 (from the 16th answer), from
-// rwkv_state_precision_lowrank_sizes_grow_with_the_answer_count.
-const LOWRANK_RANGES: Record<RwkvModelSize, { card: [number, number]; note: [number, number] }> = {
-    [RWKV_MODEL_BIG]: { card: [1_657, 4_105], note: [1_111, 2_743] },
-    [RWKV_MODEL_SMALL]: { card: [533, 1_397], note: [309, 741] },
-    [RWKV_MODEL_TINY]: { card: [309, 741], note: [309, 741] },
+// rwkv_state_precision_lowrank_sizes_grow_with_the_answer_count: int8 factors
+// (`compact_lowrank_int8`) and the default (int6 factors for Big and Small).
+type LowRankRanges = Record<RwkvModelSize, { card: [number, number]; note: [number, number] }>;
+const LOWRANK_RANGES: Record<"compact_lowrank_int8" | "compact_lowrank", LowRankRanges> = {
+    compact_lowrank_int8: {
+        [RWKV_MODEL_BIG]: { card: [1_657, 4_105], note: [1_111, 2_743] },
+        [RWKV_MODEL_SMALL]: { card: [533, 1_397], note: [309, 741] },
+        [RWKV_MODEL_TINY]: { card: [309, 741], note: [309, 741] },
+    },
+    compact_lowrank: {
+        [RWKV_MODEL_BIG]: { card: [1_465, 3_337], note: [983, 2_231] },
+        [RWKV_MODEL_SMALL]: { card: [469, 1_141], note: [277, 613] },
+        [RWKV_MODEL_TINY]: { card: [309, 741], note: [309, 741] },
+    },
 };
 
 // Relative Factory LogLoss on 722 held-out users, compared to Big's matching
@@ -95,6 +112,8 @@ const LOSSES: Record<RwkvModelSize, { curve: number; instant: number; sharedInst
 // The low-rank default (docs/rwkv-lowrank-state-2026-11-23.MD, 2026-11-24):
 // its codec costs the small models relatively more than Big, so the savings
 // are lower than with the int8 rows (77% / 88% pair, 76% / 87% alone).
+// Measured with int8 factors; the int6 factors (SM162) run the same factored
+// solve with a narrower rounding, a clean re-measure is pending.
 const REPLAY_SAVINGS: Record<RwkvModelLayout, Record<RwkvModelSize, number>> = {
     paired: { [RWKV_MODEL_BIG]: 0, [RWKV_MODEL_SMALL]: 72, [RWKV_MODEL_TINY]: 84 },
     shared: { [RWKV_MODEL_BIG]: 0, [RWKV_MODEL_SMALL]: 70, [RWKV_MODEL_TINY]: 84 },
@@ -124,14 +143,16 @@ export function rwkvModelEstimates(
         const stored = (bytes: number) => layout === "paired" ? bytes * 2 + 19 : bytes;
         const card = stored(STATE_SIZES[size][precision].card);
         const note = stored(STATE_SIZES[size][precision].note);
-        const range = LOWRANK_RANGES[size];
+        const ranges = precision === "compact_lowrank_int8" || precision === "compact_lowrank"
+            ? LOWRANK_RANGES[precision][size]
+            : undefined;
         const losses = LOSSES[size];
         const instantLoss = layout === "shared" ? losses.sharedInstant : losses.instant;
         return {
             size,
             perCardAndNote: card + note,
-            perCardAndNoteRange: precision === "compact_lowrank_int8"
-                ? [stored(range.card[0]) + stored(range.note[0]), stored(range.card[1]) + stored(range.note[1])]
+            perCardAndNoteRange: ranges
+                ? [stored(ranges.card[0]) + stored(ranges.note[0]), stored(ranges.card[1]) + stored(ranges.note[1])]
                 : undefined,
             totalStateBytes: counts ? card * counts.cards + note * counts.notes : undefined,
             curveLoss: usage.curve ? losses.curve : undefined,
