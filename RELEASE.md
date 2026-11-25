@@ -56,6 +56,8 @@ Changes since [build 115](https://github.com/JSchoreels/anki/releases/tag/26.09.
 
 - **More accurate Small and Tiny Instant predictions.** Small and Tiny use new Instant-Only models trained longer with the Big Instant model as a teacher. Held-out Instant LogLoss improves by 0.094% for Small (0.276191 to 0.275933) and 0.099% for Tiny (0.27672 to 0.276446), with the same memory and disk use. Profiles that use RWKV-Instant rebuild their RWKV state once after updating.
 
+- **More accurate Tiny Instant predictions with both Tiny models.** When Tiny runs its two models (the default), the Instant prediction now combines both: the Tiny instant ensemble (SM170) averages the logits of the six-layer Tiny Instant-Only model (SM130), weight 0.69, and the six-layer Tiny two-head model (SM130)'s Instant head, weight 0.31. Instant LogLoss is 0.067% lower than the Instant-Only model alone on 732 held-out users (deploy-time ensemble test (SM160)) and 0.062% lower [0.057%, 0.066%] on 1,385 users (decisive check (SM169)), at no extra cost since both models already run on every review. The review screen, Card Info, the statistics graphs and the button probabilities all show the combined value. Big, Small, Tiny with the one-model option, Tiny with RWKV-Instant alone, the Curve predictions and the intervals are unchanged; no state is rebuilt.
+
 #### Fixes
 
 - **See which daily limit postponed a card.** Session Preview shows how many reviews, learning steps and new-card slots are queued. It identifies the limit that held a card back and keeps three-digit positions on one line.

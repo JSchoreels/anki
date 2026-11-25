@@ -181,6 +181,128 @@ impl ModelKind {
     }
 }
 
+/// The Tiny instant ensemble (SM170): the weight of the six-layer Tiny
+/// Instant-Only model (SM130)'s logit beside the six-layer Tiny two-head
+/// model (SM130)'s instant head, fitted on 100 training users in the
+/// deploy-time ensemble test (SM160): -0.067% instant LogLoss against the
+/// Instant-Only model alone on the 732 set, -0.062% [-0.066, -0.057] on
+/// 1,385 users in the decisive check (SM169).
+pub(crate) const TINY_INSTANT_ENSEMBLE_WEIGHT: f64 = 0.69;
+
+/// Probabilities are clipped to `[ENSEMBLE_CLIP, 1 - ENSEMBLE_CLIP]` before
+/// the logit, as in the ensemble test (SM160, `sm160_report.py`).
+const ENSEMBLE_CLIP: f64 = 1e-7;
+
+/// The weight of the Instant-Only model's logit in a pair's instant
+/// prediction, per size: only the Tiny pair (the six-layer Tiny two-head and
+/// Instant-Only models (SM130)) has one (SM170). Big and Small show their
+/// Instant-Only model alone: their ensembles gained less than 0.05% (SM160).
+pub(crate) fn instant_ensemble_weight(release: ModelKind, instant: ModelKind) -> Option<f64> {
+    match (release, instant) {
+        (ModelKind::Sm130Th, ModelKind::Sm130Io) => Some(TINY_INSTANT_ENSEMBLE_WEIGHT),
+        _ => None,
+    }
+}
+
+fn ensemble_logit(p: f32) -> f64 {
+    let p = f64::from(p).clamp(ENSEMBLE_CLIP, 1.0 - ENSEMBLE_CLIP);
+    p.ln() - (-p).ln_1p()
+}
+
+/// `sigmoid(w * logit(p_instant) + (1 - w) * logit(p_release))` in float64
+/// with clipped probabilities, exactly as the ensemble test (SM160).
+pub(crate) fn ensemble_instant(weight: f64, p_instant: f32, p_release: f32) -> f32 {
+    let z = weight * ensemble_logit(p_instant) + (1.0 - weight) * ensemble_logit(p_release);
+    (1.0 / (1.0 + (-z).exp())) as f32
+}
+
+/// Button probabilities that agree with an ensembled recall: Again is
+/// `1 - retrievability` and Hard, Good and Easy keep the instant model's
+/// shares of a successful answer (as card info's
+/// `_rwkv_button_probabilities_with_retrievability`).
+fn ensemble_buttons(buttons: [f32; 4], retrievability: f32) -> [f32; 4] {
+    let successful = f64::from(buttons[1]) + f64::from(buttons[2]) + f64::from(buttons[3]);
+    if !(successful > 0.0) || !retrievability.is_finite() {
+        return buttons;
+    }
+    let scale = f64::from(retrievability) / successful;
+    [
+        1.0 - retrievability,
+        (f64::from(buttons[1]) * scale) as f32,
+        (f64::from(buttons[2]) * scale) as f32,
+        (f64::from(buttons[3]) * scale) as f32,
+    ]
+}
+
+/// A pair's instant recall and buttons: the instant model's, or the
+/// ensemble with the release's instant head when the size has a weight.
+fn paired_instant_outputs(
+    weight: Option<f64>,
+    (retrievability, buttons): (f32, [f32; 4]),
+    release_retrievability: f32,
+) -> (f32, [f32; 4]) {
+    match weight {
+        Some(weight) => {
+            let retrievability = ensemble_instant(weight, retrievability, release_retrievability);
+            (retrievability, ensemble_buttons(buttons, retrievability))
+        }
+        None => (retrievability, buttons),
+    }
+}
+
+fn mismatched_pair() -> io::Error {
+    io::Error::new(
+        io::ErrorKind::InvalidData,
+        "RWKV paired models returned different predictions",
+    )
+}
+
+fn ensemble_values(weight: f64, instant: Vec<f32>, release: Vec<f32>) -> io::Result<Vec<f32>> {
+    if instant.len() != release.len() {
+        return Err(mismatched_pair());
+    }
+    Ok(instant
+        .into_iter()
+        .zip(release)
+        .map(|(instant, release)| ensemble_instant(weight, instant, release))
+        .collect())
+}
+
+fn ensemble_rows(
+    weight: f64,
+    instant: Vec<Vec<f32>>,
+    release: Vec<Vec<f32>>,
+) -> io::Result<Vec<Vec<f32>>> {
+    if instant.len() != release.len() {
+        return Err(mismatched_pair());
+    }
+    instant
+        .into_iter()
+        .zip(release)
+        .map(|(instant, release)| ensemble_values(weight, instant, release))
+        .collect()
+}
+
+fn ensemble_predictions(
+    weight: f64,
+    instant: Vec<(usize, f32)>,
+    release: Vec<(usize, f32)>,
+) -> io::Result<Vec<(usize, f32)>> {
+    if instant.len() != release.len()
+        || instant
+            .iter()
+            .zip(&release)
+            .any(|((instant, _), (release, _))| instant != release)
+    {
+        return Err(mismatched_pair());
+    }
+    Ok(instant
+        .into_iter()
+        .zip(release)
+        .map(|((index, instant), (_, release))| (index, ensemble_instant(weight, instant, release)))
+        .collect())
+}
+
 fn check_module_layers(model: ModelKind, module_layers: [usize; 5]) -> io::Result<()> {
     match model.module_layers() {
         Some(expected) if expected != module_layers => {
@@ -201,9 +323,16 @@ fn check_module_layers(model: ModelKind, module_layers: [usize; 5]) -> io::Resul
 /// its engine: two small models (Small, Tiny) or the two big models (Big:
 /// the show-time big model (SM91s2) and the show-time instant-only big model
 /// (SM99)).
+///
+/// For the Tiny pair every instant recall the pair returns (and the buttons
+/// beside it) is the Tiny instant ensemble (SM170) of both models' instant
+/// heads, [`instant_ensemble_weight`]; the instant workload forecast and the
+/// answer time still run on the instant model alone.
 pub struct PairedRuntime<E> {
     release: E,
     instant: E,
+    /// [`instant_ensemble_weight`] of the pair.
+    instant_weight: Option<f64>,
 }
 
 pub enum RwkvRuntime {
@@ -534,6 +663,7 @@ impl RwkvRuntime {
         {
             return Err(invalid_input("unsupported RWKV model pair"));
         }
+        let instant_weight = instant_ensemble_weight(release_model, instant_model);
         if release_model.on_primary_engine() {
             let release = Self::load_primary(
                 release_path,
@@ -549,7 +679,11 @@ impl RwkvRuntime {
                 precision,
                 instant_model,
             )?;
-            Ok(Self::Paired(Box::new(PairedRuntime { release, instant })))
+            Ok(Self::Paired(Box::new(PairedRuntime {
+                release,
+                instant,
+                instant_weight,
+            })))
         } else {
             let release = Self::load_alternate(
                 release_path,
@@ -568,7 +702,19 @@ impl RwkvRuntime {
             Ok(Self::AlternatePaired(Box::new(PairedRuntime {
                 release,
                 instant,
+                instant_weight,
             })))
+        }
+    }
+
+    /// The weight of the instant model's logit in this runtime's instant
+    /// recall (the Tiny instant ensemble (SM170)): only the Tiny pair has
+    /// one; every other pair and every one-model runtime has none.
+    pub fn instant_ensemble_weight(&self) -> Option<f64> {
+        match self {
+            Self::Paired(pair) => pair.instant_weight,
+            Self::AlternatePaired(pair) => pair.instant_weight,
+            _ => None,
         }
     }
 
@@ -672,6 +818,7 @@ impl RwkvRuntime {
             engine.review_query_outputs(input, state)?,
         ));
         dispatch!(self, engine, engine.review(input, state), pair => {
+            let weight = pair.instant_weight;
             let (release_state, instant_state) = paired::split_review_state(&state)?;
             let release_input = input.clone();
             let (mut output, (retrievability, button_probabilities, next)) = pair.advance(
@@ -682,8 +829,11 @@ impl RwkvRuntime {
                 let instant = instant.ok_or_else(|| invalid_input("missing instant RWKV state"))?;
                 Ok(paired::join_state(release, &instant))
             };
-            output.retrievability = retrievability;
-            output.button_probabilities = button_probabilities;
+            (output.retrievability, output.button_probabilities) = paired_instant_outputs(
+                weight,
+                (retrievability, button_probabilities),
+                output.retrievability,
+            );
             output.card_state = join(&output.card_state, next.card)?;
             output.deck_state = join(&output.deck_state, next.deck)?;
             output.note_state = join(&output.note_state, next.note)?;
@@ -703,16 +853,18 @@ impl RwkvRuntime {
             .map(|(retrievability, buttons)| instant_only_output(retrievability, buttons))
             .collect()));
         dispatch!(self, engine, engine.predict_many(requests), pair => {
+            let weight = pair.instant_weight;
             let (release_requests, instant_requests) = split_requests(requests)?;
             let (mut outputs, instant_outputs) = pair.advance(
                 |release| release.predict_many(release_requests),
                 |instant| instant.predict_query_outputs_many(&instant_requests),
             )?;
-            for (output, (retrievability, button_probabilities)) in
-                outputs.iter_mut().zip(instant_outputs)
-            {
-                output.retrievability = retrievability;
-                output.button_probabilities = button_probabilities;
+            if outputs.len() != instant_outputs.len() {
+                return Err(mismatched_pair());
+            }
+            for (output, instant) in outputs.iter_mut().zip(instant_outputs) {
+                (output.retrievability, output.button_probabilities) =
+                    paired_instant_outputs(weight, instant, output.retrievability);
             }
             Ok(outputs)
         })
@@ -723,8 +875,19 @@ impl RwkvRuntime {
         requests: Vec<ReviewPredictionRequest>,
     ) -> io::Result<Vec<f32>> {
         dispatch!(self, engine, engine.predict_retrievability_many(requests), pair => {
-            pair.instant
-                .predict_retrievability_many(instant_requests(requests)?)
+            match pair.instant_weight {
+                None => pair
+                    .instant
+                    .predict_retrievability_many(instant_requests(requests)?),
+                Some(weight) => {
+                    let (release_requests, instant_requests) = split_requests(requests)?;
+                    let (release, instant) = pair.advance(
+                        |release| release.predict_retrievability_many(release_requests),
+                        |instant| instant.predict_retrievability_many(instant_requests),
+                    )?;
+                    ensemble_values(weight, instant, release)
+                }
+            }
         })
     }
 
@@ -779,7 +942,17 @@ impl RwkvRuntime {
             self,
             engine,
             engine.predict_retrievability_many_from_warm_up(inputs),
-            pair => pair.instant.predict_retrievability_many_from_warm_up(inputs)
+            pair => match pair.instant_weight {
+                None => pair.instant.predict_retrievability_many_from_warm_up(inputs),
+                Some(weight) => {
+                    let release_inputs = inputs.clone();
+                    let (release, instant) = pair.advance(
+                        |release| release.predict_retrievability_many_from_warm_up(release_inputs),
+                        |instant| instant.predict_retrievability_many_from_warm_up(inputs),
+                    )?;
+                    ensemble_values(weight, instant, release)
+                }
+            }
         )
     }
 
@@ -793,11 +966,27 @@ impl RwkvRuntime {
             self,
             engine,
             engine.predict_retrievability_many_after_review(answer, query_inputs, snapshot),
-            pair => pair.instant.predict_retrievability_many_after_review(
-                answer,
-                query_inputs,
-                paired::simulation_snapshot_half(snapshot, true)?,
-            )
+            pair => match pair.instant_weight {
+                None => pair.instant.predict_retrievability_many_after_review(
+                    answer,
+                    query_inputs,
+                    paired::simulation_snapshot_half(snapshot, true)?,
+                ),
+                Some(weight) => {
+                    let (release_half, instant_half) = paired::simulation_snapshot_halves(snapshot)?;
+                    let release = pair.release.predict_retrievability_many_after_review(
+                        answer.clone(),
+                        query_inputs.clone(),
+                        release_half,
+                    )?;
+                    let instant = pair.instant.predict_retrievability_many_after_review(
+                        answer,
+                        query_inputs,
+                        instant_half,
+                    )?;
+                    ensemble_values(weight, instant, release)
+                }
+            }
         )
     }
 
@@ -811,11 +1000,27 @@ impl RwkvRuntime {
             self,
             engine,
             engine.predict_retrievability_many_after_reviews(answers, query_inputs, snapshot),
-            pair => pair.instant.predict_retrievability_many_after_reviews(
-                answers,
-                query_inputs,
-                paired::simulation_snapshot_half(snapshot, true)?,
-            )
+            pair => match pair.instant_weight {
+                None => pair.instant.predict_retrievability_many_after_reviews(
+                    answers,
+                    query_inputs,
+                    paired::simulation_snapshot_half(snapshot, true)?,
+                ),
+                Some(weight) => {
+                    let (release_half, instant_half) = paired::simulation_snapshot_halves(snapshot)?;
+                    let release = pair.release.predict_retrievability_many_after_reviews(
+                        answers.clone(),
+                        query_inputs.clone(),
+                        release_half,
+                    )?;
+                    let instant = pair.instant.predict_retrievability_many_after_reviews(
+                        answers,
+                        query_inputs,
+                        instant_half,
+                    )?;
+                    ensemble_rows(weight, instant, release)
+                }
+            }
         )
     }
 
@@ -828,9 +1033,30 @@ impl RwkvRuntime {
             self,
             engine,
             engine.predict_retrievability_many_after_reviews_from_warm_up(answers, query_inputs),
-            pair => pair
-                .instant
-                .predict_retrievability_many_after_reviews_from_warm_up(answers, query_inputs)
+            pair => match pair.instant_weight {
+                None => pair
+                    .instant
+                    .predict_retrievability_many_after_reviews_from_warm_up(answers, query_inputs),
+                Some(weight) => {
+                    let release_answers = answers.clone();
+                    let release_queries = query_inputs.clone();
+                    let (release, instant) = pair.advance(
+                        |release| {
+                            release.predict_retrievability_many_after_reviews_from_warm_up(
+                                release_answers,
+                                release_queries,
+                            )
+                        },
+                        |instant| {
+                            instant.predict_retrievability_many_after_reviews_from_warm_up(
+                                answers,
+                                query_inputs,
+                            )
+                        },
+                    )?;
+                    ensemble_rows(weight, instant, release)
+                }
+            }
         )
     }
 
@@ -840,12 +1066,16 @@ impl RwkvRuntime {
         record_predictions: bool,
     ) -> io::Result<Vec<(usize, f32)>> {
         dispatch!(self, engine, engine.warm_up_reviews(reviews, record_predictions), pair => {
+            let weight = pair.instant_weight.filter(|_| record_predictions);
             let release_reviews = reviews.clone();
-            pair.advance(
-                |release| release.warm_up_reviews(release_reviews, false),
+            let (release, instant) = pair.advance(
+                |release| release.warm_up_reviews(release_reviews, weight.is_some()),
                 |instant| instant.warm_up_reviews(reviews, record_predictions),
-            )
-            .map(|(_, predictions)| predictions)
+            )?;
+            match weight {
+                Some(weight) => ensemble_predictions(weight, instant, release),
+                None => Ok(instant),
+            }
         })
     }
 
@@ -858,7 +1088,22 @@ impl RwkvRuntime {
             self,
             engine,
             engine.forecast_history_predictions(reviews, progress),
-            pair => pair.instant.forecast_history_predictions(reviews, progress)
+            pair => match pair.instant_weight {
+                None => pair.instant.forecast_history_predictions(reviews, progress),
+                Some(weight) => {
+                    // The release runs first: each model reports half of the
+                    // progress.
+                    let release = pair.release.forecast_history_predictions(
+                        reviews.clone(),
+                        &mut |done, total| progress(done / 2, total),
+                    )?;
+                    let instant = pair.instant.forecast_history_predictions(
+                        reviews,
+                        &mut |done, total| progress(total / 2 + done.div_ceil(2), total),
+                    )?;
+                    ensemble_predictions(weight, instant, release)
+                }
+            }
         )
     }
 
@@ -870,11 +1115,21 @@ impl RwkvRuntime {
     ) -> io::Result<Vec<(usize, f32)>> {
         dispatch!(self, engine, engine.warm_up_reviews_post(reviews), pair => {
             let release_reviews = reviews.clone();
-            pair.advance(
-                |release| release.warm_up_reviews(release_reviews, false),
-                |instant| instant.warm_up_reviews_post(reviews),
-            )
-            .map(|(_, predictions)| predictions)
+            match pair.instant_weight {
+                None => pair
+                    .advance(
+                        |release| release.warm_up_reviews(release_reviews, false),
+                        |instant| instant.warm_up_reviews_post(reviews),
+                    )
+                    .map(|(_, predictions)| predictions),
+                Some(weight) => {
+                    let (release, instant) = pair.advance(
+                        |release| release.warm_up_reviews_post(release_reviews),
+                        |instant| instant.warm_up_reviews_post(reviews),
+                    )?;
+                    ensemble_predictions(weight, instant, release)
+                }
+            }
         })
     }
 
@@ -901,11 +1156,24 @@ impl RwkvRuntime {
                 return Err(invalid_input("invalid replay queries"));
             }
             let release_reviews = reviews.clone();
-            pair.advance(
-                |release| release.warm_up_reviews(release_reviews, false),
-                |instant| instant.warm_up_reviews_query(reviews, queries, after),
-            )
-            .map(|(_, predictions)| predictions)
+            match pair.instant_weight {
+                None => pair
+                    .advance(
+                        |release| release.warm_up_reviews(release_reviews, false),
+                        |instant| instant.warm_up_reviews_query(reviews, queries, after),
+                    )
+                    .map(|(_, predictions)| predictions),
+                Some(weight) => {
+                    let release_queries = queries.clone();
+                    let (release, instant) = pair.advance(
+                        |release| {
+                            release.warm_up_reviews_query(release_reviews, release_queries, after)
+                        },
+                        |instant| instant.warm_up_reviews_query(reviews, queries, after),
+                    )?;
+                    ensemble_predictions(weight, instant, release)
+                }
+            }
         })
     }
 
@@ -969,7 +1237,7 @@ impl RwkvRuntime {
                 durable
             ),
             pair => {
-                let PairedRuntime { release, instant } = &mut **pair;
+                let PairedRuntime { release, instant, .. } = &mut **pair;
                 release.write_paired_warm_up_state_checkpoint(
                     instant,
                     path,
@@ -1007,7 +1275,7 @@ impl RwkvRuntime {
             engine,
             engine.restore_warm_up_state_checkpoint(path, store_generation, segment_id),
             pair => {
-                let PairedRuntime { release, instant } = &mut **pair;
+                let PairedRuntime { release, instant, .. } = &mut **pair;
                 release.restore_paired_warm_up_state_checkpoint(
                     instant,
                     path,
@@ -1722,9 +1990,32 @@ mod tests {
             .collect()
     }
 
+    /// A pair's expected instant recall from its two models alone: the
+    /// instant model's, or the Tiny instant ensemble (SM170).
+    fn expected_values(weight: Option<f64>, instant: &[f32], release: &[f32]) -> Vec<f32> {
+        match weight {
+            Some(weight) => ensemble_values(weight, instant.to_vec(), release.to_vec()).unwrap(),
+            None => instant.to_vec(),
+        }
+    }
+
+    fn expected_predictions(
+        weight: Option<f64>,
+        instant: &[(usize, f32)],
+        release: &[(usize, f32)],
+    ) -> Vec<(usize, f32)> {
+        match weight {
+            Some(weight) => {
+                ensemble_predictions(weight, instant.to_vec(), release.to_vec()).unwrap()
+            }
+            None => instant.to_vec(),
+        }
+    }
+
     /// Everything a paired runtime outputs, compared bit for bit with the
     /// two models run alone: instant recall and button probabilities from
-    /// the instant-only model, the rest from the release.
+    /// the instant-only model (for the Tiny pair: the Tiny instant ensemble
+    /// (SM170) of both instant heads), the rest from the release.
     fn check_paired_outputs(
         pair: &mut RwkvRuntime,
         release: &mut RwkvRuntime,
@@ -1732,44 +2023,64 @@ mod tests {
         queries: &[ReviewInput],
         label: &str,
     ) {
+        let weight = pair.instant_ensemble_weight();
         let pair_r = pair
             .predict_retrievability_many_from_warm_up(queries.to_vec())
             .unwrap();
         let instant_r = instant
             .predict_retrievability_many_from_warm_up(queries.to_vec())
             .unwrap();
-        assert_eq!(bits(&pair_r), bits(&instant_r), "{label}: resident R");
         let release_r = release
             .predict_retrievability_many_from_warm_up(queries.to_vec())
             .unwrap();
+        assert_eq!(
+            bits(&pair_r),
+            bits(&expected_values(weight, &instant_r, &release_r)),
+            "{label}: resident R"
+        );
         assert_ne!(bits(&pair_r), bits(&release_r), "{label}: models differ");
+        if weight.is_some() {
+            assert_ne!(bits(&pair_r), bits(&instant_r), "{label}: ensemble");
+        }
 
-        let pair_out = output_bits(&pair.predict_many(requests(pair, queries)).unwrap());
-        let release_out = output_bits(&release.predict_many(requests(release, queries)).unwrap());
-        let instant_out = output_bits(&instant.predict_many(requests(instant, queries)).unwrap());
-        for ((pair, release), instant) in pair_out.iter().zip(&release_out).zip(&instant_out) {
-            assert_eq!(
-                (pair.0, pair.1),
-                (instant.0, instant.1),
-                "{label}: instant outputs"
-            );
+        let pair_raw = pair.predict_many(requests(pair, queries)).unwrap();
+        let release_raw = release.predict_many(requests(release, queries)).unwrap();
+        let instant_raw = instant.predict_many(requests(instant, queries)).unwrap();
+        let expected_instant: Vec<_> = instant_raw
+            .iter()
+            .zip(&release_raw)
+            .map(|(instant, release)| {
+                let (retrievability, buttons) = paired_instant_outputs(
+                    weight,
+                    (instant.retrievability, instant.button_probabilities),
+                    release.retrievability,
+                );
+                (retrievability.to_bits(), buttons.map(f32::to_bits))
+            })
+            .collect();
+        let pair_out = output_bits(&pair_raw);
+        let release_out = output_bits(&release_raw);
+        for ((pair, release), instant) in pair_out.iter().zip(&release_out).zip(&expected_instant) {
+            assert_eq!((pair.0, pair.1), *instant, "{label}: instant outputs");
             assert_eq!(
                 (pair.2, pair.3, pair.4, pair.5, pair.6),
                 (release.2, release.3, release.4, release.5, release.6),
                 "{label}: curve outputs"
             );
         }
+        let request_instant = instant
+            .predict_retrievability_many(requests(instant, queries))
+            .unwrap();
+        let request_release = release
+            .predict_retrievability_many(requests(release, queries))
+            .unwrap();
         assert_eq!(
             bits(
                 &pair
                     .predict_retrievability_many(requests(pair, queries))
                     .unwrap()
             ),
-            bits(
-                &instant
-                    .predict_retrievability_many(requests(instant, queries))
-                    .unwrap()
-            ),
+            bits(&expected_values(weight, &request_instant, &request_release)),
             "{label}: request R"
         );
 
@@ -2106,22 +2417,47 @@ mod tests {
     }
 
     /// Replays answers, queries and reviews through a pair and through its two
-    /// models alone: instant outputs from the instant model, the rest from the
-    /// release, bit for bit.
+    /// models alone: instant outputs from the instant model (for the Tiny
+    /// pair: the Tiny instant ensemble (SM170) of both instant heads), the
+    /// rest from the release, bit for bit.
     fn check_pair_matches_models(
         mut pair: RwkvRuntime,
         mut release: RwkvRuntime,
         mut instant: RwkvRuntime,
         label: String,
     ) {
+        let weight = pair.instant_ensemble_weight();
         let answers = crate::rwkv::precision_tests::reviews(21);
         let (first, rest) = answers.split_at(14);
         let pair_predictions = pair.warm_up_reviews(first.to_vec(), true).unwrap();
-        release.warm_up_reviews(first.to_vec(), true).unwrap();
+        let release_predictions = release.warm_up_reviews(first.to_vec(), true).unwrap();
         let instant_predictions = instant.warm_up_reviews(first.to_vec(), true).unwrap();
         assert_eq!(
             prediction_bits(&pair_predictions),
-            prediction_bits(&instant_predictions)
+            prediction_bits(&expected_predictions(
+                weight,
+                &instant_predictions,
+                &release_predictions
+            ))
+        );
+        // The history predictions of the stats graphs, from a fresh worker.
+        let mut ignore = |_: u32, _: u32| Ok(());
+        assert_eq!(
+            prediction_bits(
+                &pair
+                    .forecast_history_predictions(first.to_vec(), &mut ignore)
+                    .unwrap()
+            ),
+            prediction_bits(&expected_predictions(
+                weight,
+                &instant
+                    .forecast_history_predictions(first.to_vec(), &mut ignore)
+                    .unwrap(),
+                &release
+                    .forecast_history_predictions(first.to_vec(), &mut ignore)
+                    .unwrap(),
+            )),
+            "{label}: history predictions"
         );
         let queries: Vec<_> = answers[..7]
             .iter()
@@ -2134,13 +2470,18 @@ mod tests {
         let pair_review = review_with_state(&mut pair, &answer);
         let release_review = review_with_state(&mut release, &answer);
         let instant_review = review_with_state(&mut instant, &answer);
-        assert_eq!(
-            pair_review.retrievability.to_bits(),
-            instant_review.retrievability.to_bits()
+        let (expected_r, expected_buttons) = paired_instant_outputs(
+            weight,
+            (
+                instant_review.retrievability,
+                instant_review.button_probabilities,
+            ),
+            release_review.retrievability,
         );
+        assert_eq!(pair_review.retrievability.to_bits(), expected_r.to_bits());
         assert_eq!(
             pair_review.button_probabilities.map(f32::to_bits),
-            instant_review.button_probabilities.map(f32::to_bits)
+            expected_buttons.map(f32::to_bits)
         );
         assert_eq!(
             pair_review.current_interval,
@@ -2164,7 +2505,12 @@ mod tests {
         let instant_query = review_with_state(&mut instant, &query);
         assert_eq!(
             pair_query.retrievability.to_bits(),
-            instant_query.retrievability.to_bits()
+            expected_values(
+                weight,
+                &[instant_query.retrievability],
+                &[release_query.retrievability]
+            )[0]
+            .to_bits()
         );
         assert!(pair_query.intervals.iter().all(Option::is_some));
         assert_eq!(
@@ -2178,29 +2524,35 @@ mod tests {
 
         // The other replay paths advance both models.
         let post = rest[1..4].to_vec();
+        let pair_post = pair.warm_up_reviews_post(post.clone()).unwrap();
+        let instant_post = instant.warm_up_reviews_post(post.clone()).unwrap();
+        let release_post = release.warm_up_reviews_post(post).unwrap();
         assert_eq!(
-            prediction_bits(&pair.warm_up_reviews_post(post.clone()).unwrap()),
-            prediction_bits(&instant.warm_up_reviews_post(post.clone()).unwrap())
+            prediction_bits(&pair_post),
+            prediction_bits(&expected_predictions(weight, &instant_post, &release_post))
         );
-        release.warm_up_reviews(post, false).unwrap();
         let replay = rest[4..].to_vec();
         let replay_queries: Vec<_> = replay.iter().map(|answer| query_of(answer, 1)).collect();
         assert!(pair
             .warm_up_reviews_query(replay.clone(), replay_queries[..1].to_vec(), false)
             .is_err());
+        let pair_replay = pair
+            .warm_up_reviews_query(replay.clone(), replay_queries.clone(), true)
+            .unwrap();
+        let instant_replay = instant
+            .warm_up_reviews_query(replay.clone(), replay_queries.clone(), true)
+            .unwrap();
+        let release_replay = release
+            .warm_up_reviews_query(replay, replay_queries, true)
+            .unwrap();
         assert_eq!(
-            prediction_bits(
-                &pair
-                    .warm_up_reviews_query(replay.clone(), replay_queries.clone(), true)
-                    .unwrap()
-            ),
-            prediction_bits(
-                &instant
-                    .warm_up_reviews_query(replay.clone(), replay_queries, true)
-                    .unwrap()
-            )
+            prediction_bits(&pair_replay),
+            prediction_bits(&expected_predictions(
+                weight,
+                &instant_replay,
+                &release_replay
+            ))
         );
-        release.warm_up_reviews(replay, false).unwrap();
         check_paired_outputs(
             &mut pair,
             &mut release,
@@ -2222,18 +2574,42 @@ mod tests {
             }
         };
         let future = |engine: &RwkvRuntime| {
-            bits(
-                &engine
-                    .predict_retrievability_many_after_reviews(
-                        vec![later(&answers[0])],
-                        vec![query_of(&later(&answers[0]), 4)],
-                        simulation_snapshot(engine),
-                    )
-                    .unwrap()
-                    .concat(),
-            )
+            engine
+                .predict_retrievability_many_after_reviews(
+                    vec![later(&answers[0])],
+                    vec![query_of(&later(&answers[0]), 4)],
+                    simulation_snapshot(engine),
+                )
+                .unwrap()
+                .concat()
         };
-        assert_eq!(future(&pair), future(&instant), "{label}: future R");
+        assert_eq!(
+            bits(&future(&pair)),
+            bits(&expected_values(
+                weight,
+                &future(&instant),
+                &future(&release)
+            )),
+            "{label}: future R"
+        );
+        let future_one = |engine: &RwkvRuntime| {
+            engine
+                .predict_retrievability_many_after_review(
+                    later(&answers[1]),
+                    vec![query_of(&later(&answers[1]), 5)],
+                    simulation_snapshot(engine),
+                )
+                .unwrap()
+        };
+        assert_eq!(
+            bits(&future_one(&pair)),
+            bits(&expected_values(
+                weight,
+                &future_one(&instant),
+                &future_one(&release)
+            )),
+            "{label}: future R after one answer"
+        );
     }
 
     /// The instant-only model alone (a profile with RWKV-Instant and no
@@ -2775,6 +3151,156 @@ mod tests {
             matches!(pair, RwkvRuntime::AlternatePaired(_)),
             super::super::SMALL_MODEL
         );
+    }
+
+    /// The Tiny instant ensemble (SM170) equals the formula of the
+    /// deploy-time ensemble test (SM160, `sm160_report.py`): float64,
+    /// probabilities clipped to [1e-7, 1 - 1e-7] before the logit. The
+    /// expected values are that script's `sigmoid(w * logit(p_io) + (1 - w)
+    /// * logit(p_th))` at w = 0.69 on float32 inputs, the clipped ends
+    /// included.
+    #[test]
+    fn rwkv_tiny_instant_ensemble_matches_the_python_formula() {
+        assert_eq!(TINY_INSTANT_ENSEMBLE_WEIGHT, 0.69);
+        for (p_io, p_th, expected) in [
+            (0.8999999761581421, 0.800000011920929, 0.8749918952582605),
+            (0.5, 0.5, 0.5),
+            (0.9700000286102295, 0.6000000238418579, 0.9258212176015327),
+            (0.20000000298023224, 0.75, 0.3506978175292828),
+            (0.9990000128746033, 0.949999988079071, 0.9965927805561264),
+            (
+                0.05000000074505806,
+                0.30000001192092896,
+                0.09159403693897153,
+            ),
+            (0.0, 0.8999999761581421, 2.9228227455277834e-05),
+            (1.0, 0.20000000298023224, 0.9999772684655834),
+            (9.999999717180685e-10, 1.0, 0.002182985854580942),
+            (0.8123000264167786, 0.8456000089645386, 0.8231770245135681),
+        ] {
+            let value = ensemble_instant(TINY_INSTANT_ENSEMBLE_WEIGHT, p_io as f32, p_th as f32);
+            assert!(
+                (f64::from(value) - expected).abs() < 1e-6,
+                "{p_io} {p_th}: {value} vs {expected}"
+            );
+        }
+        // w = 1 is the Instant-Only model alone, w = 0 the two-head model's
+        // instant head (within float32 rounding).
+        for p in [0.3f32, 0.7, 0.95] {
+            assert!((ensemble_instant(1.0, p, 0.5) - p).abs() < 1e-6);
+            assert!((ensemble_instant(0.0, 0.5, p) - p).abs() < 1e-6);
+        }
+        // The buttons follow the ensembled recall: Again is 1 - R, Hard,
+        // Good and Easy keep the Instant-Only model's shares.
+        let (r, buttons) = paired_instant_outputs(
+            Some(TINY_INSTANT_ENSEMBLE_WEIGHT),
+            (0.9, [0.1, 0.2, 0.6, 0.1]),
+            0.8,
+        );
+        assert_eq!(r, ensemble_instant(TINY_INSTANT_ENSEMBLE_WEIGHT, 0.9, 0.8));
+        assert_eq!(buttons[0], 1.0 - r);
+        assert!((buttons.iter().sum::<f32>() - 1.0).abs() < 1e-6);
+        assert!((buttons[2] / buttons[1] - 3.0).abs() < 1e-5);
+        assert!((buttons[3] / buttons[1] - 0.5).abs() < 1e-5);
+        // Without a weight the instant model's outputs pass unchanged.
+        assert_eq!(
+            paired_instant_outputs(None, (0.9, [0.1, 0.2, 0.6, 0.1]), 0.8),
+            (0.9, [0.1, 0.2, 0.6, 0.1])
+        );
+    }
+
+    /// Only the Tiny size's default two-model mode shows the Tiny instant
+    /// ensemble (SM170): the six-layer Tiny two-head model (SM130) beside
+    /// the six-layer Tiny Instant-Only model (SM130). Big, Small, the older
+    /// Tiny pairs and every one-model runtime (the one-model option, or an
+    /// Instant-Only model alone) keep their own instant outputs, and the
+    /// Tiny pair's curve outputs stay the two-head model's.
+    #[test]
+    fn rwkv_tiny_instant_ensemble_runs_only_in_tiny_default_mode() {
+        assert_eq!(
+            instant_ensemble_weight(ModelKind::Sm130Th, ModelKind::Sm130Io),
+            Some(0.69)
+        );
+        for (release, instant) in [
+            (ModelKind::Legacy, ModelKind::Sm99),
+            (ModelKind::Sm118, ModelKind::Sm113),
+            (ModelKind::Sm92, ModelKind::Sm113),
+            (ModelKind::Sm106, ModelKind::Sm115),
+            (ModelKind::Sm106, ModelKind::Sm101),
+            (ModelKind::Sm130Th, ModelKind::Sm115),
+            (ModelKind::Sm106, ModelKind::Sm130Io),
+        ] {
+            assert_eq!(instant_ensemble_weight(release, instant), None);
+        }
+        let precision = StatePrecision::parse("compact_lowrank").unwrap();
+        assert_eq!(big_pair(precision).instant_ensemble_weight(), None);
+        assert_eq!(
+            load(ModelKind::Legacy, precision).instant_ensemble_weight(),
+            None
+        );
+        if !super::super::SMALL_MODEL {
+            return;
+        }
+        let family_pair = |release: (ModelKind, &str), instant: (ModelKind, &str)| {
+            RwkvRuntime::load_paired(
+                model_path(release.1),
+                model_path(instant.1),
+                0.9,
+                36_500,
+                precision,
+                release.0,
+                instant.0,
+            )
+            .unwrap()
+        };
+        let small = family_pair((ModelKind::Sm118, "sm118"), (ModelKind::Sm113, "sm113"));
+        assert_eq!(small.instant_ensemble_weight(), None);
+        let mut tiny = family_pair(
+            (ModelKind::Sm130Th, "sm130th"),
+            (ModelKind::Sm130Io, "sm130io"),
+        );
+        assert_eq!(tiny.instant_ensemble_weight(), Some(0.69));
+        let mut two_head = load(ModelKind::Sm130Th, precision);
+        let mut instant_only = load(ModelKind::Sm130Io, precision);
+        assert_eq!(two_head.instant_ensemble_weight(), None);
+        assert_eq!(instant_only.instant_ensemble_weight(), None);
+
+        let answers = crate::rwkv::precision_tests::reviews(14);
+        for engine in [&mut tiny, &mut two_head, &mut instant_only] {
+            engine.warm_up_reviews(answers.clone(), false).unwrap();
+        }
+        let queries: Vec<_> = answers[..5]
+            .iter()
+            .map(|answer| query_of(answer, 3))
+            .collect();
+        let resident = |engine: &mut RwkvRuntime| {
+            engine
+                .predict_retrievability_many_from_warm_up(queries.clone())
+                .unwrap()
+        };
+        let pair_r = resident(&mut tiny);
+        let th_r = resident(&mut two_head);
+        let io_r = resident(&mut instant_only);
+        for ((pair, th), io) in pair_r.iter().zip(&th_r).zip(&io_r) {
+            assert_eq!(pair.to_bits(), ensemble_instant(0.69, *io, *th).to_bits());
+            assert_ne!(pair.to_bits(), io.to_bits());
+        }
+        let pair_out = tiny.predict_many(requests(&tiny, &queries)).unwrap();
+        let th_out = two_head
+            .predict_many(requests(&two_head, &queries))
+            .unwrap();
+        for ((pair, th), r) in pair_out.iter().zip(&th_out).zip(&pair_r) {
+            assert_eq!(pair.retrievability.to_bits(), r.to_bits());
+            assert_eq!(pair.button_probabilities[0], 1.0 - pair.retrievability);
+            assert_eq!(
+                pair.curve_retrievability.map(f32::to_bits),
+                th.curve_retrievability.map(f32::to_bits)
+            );
+            assert_eq!(
+                pair.intervals.map(|v| v.map(f32::to_bits)),
+                th.intervals.map(|v| v.map(f32::to_bits))
+            );
+        }
     }
 
     #[test]

@@ -100,10 +100,17 @@ const LOWRANK_RANGES: Record<"compact_lowrank_int8" | "compact_lowrank", LowRank
 // (SM99); Small curve 0.300016 and instant 0.276599 (SM118), Instant-Only
 // 0.275933 (SM113); Tiny curve 0.301416 and instant 0.278049 (six-layer
 // SM130 two-head), Instant-Only 0.27749 (six-layer SM130 Instant-Only).
-const LOSSES: Record<RwkvModelSize, { curve: number; instant: number; sharedInstant: number }> = {
-    [RWKV_MODEL_BIG]: { curve: 0, instant: 0, sharedInstant: 0 },
-    [RWKV_MODEL_SMALL]: { curve: 0.20, instant: 0.01, sharedInstant: 0.15 },
-    [RWKV_MODEL_TINY]: { curve: 0.67, instant: 0.58, sharedInstant: 0.68 },
+// Paired Tiny shows the Tiny instant ensemble (SM170) of both Tiny models:
+// the Instant-Only loss with the ensemble's -0.048% at int8 card and note
+// states (the deploy-time ensemble test (SM160), 732 set), 0.277357 or
+// +0.53% against Big. Big and Small pairs show their Instant-Only model.
+const LOSSES: Record<
+    RwkvModelSize,
+    { curve: number; instant: number; pairedInstant: number; sharedInstant: number }
+> = {
+    [RWKV_MODEL_BIG]: { curve: 0, instant: 0, pairedInstant: 0, sharedInstant: 0 },
+    [RWKV_MODEL_SMALL]: { curve: 0.20, instant: 0.01, pairedInstant: 0.01, sharedInstant: 0.15 },
+    [RWKV_MODEL_TINY]: { curve: 0.67, instant: 0.58, pairedInstant: 0.53, sharedInstant: 0.68 },
 };
 
 // Median native replay time, with four threads and the default state
@@ -147,7 +154,11 @@ export function rwkvModelEstimates(
             ? LOWRANK_RANGES[precision][size]
             : undefined;
         const losses = LOSSES[size];
-        const instantLoss = layout === "shared" ? losses.sharedInstant : losses.instant;
+        const instantLoss = layout === "shared"
+            ? losses.sharedInstant
+            : layout === "paired"
+            ? losses.pairedInstant
+            : losses.instant;
         return {
             size,
             perCardAndNote: card + note,

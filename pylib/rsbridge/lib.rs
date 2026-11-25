@@ -198,7 +198,8 @@ impl RwkvInference {
     #[new]
     /// With `instant_model_path` and `instant_model`, a second small model
     /// runs beside `model`: it provides instant recall and button
-    /// probabilities, `model` the curve, intervals, S90 and answer time.
+    /// probabilities (for the Tiny pair, the Tiny instant ensemble (SM170)
+    /// of both models' instant heads), `model` the curve, intervals and S90.
     #[allow(clippy::too_many_arguments)]
     #[pyo3(signature = (model_path, target_retention=0.9, max_interval_days=36500, state_precision="f32", model="sm40", instant_model_path=None, instant_model=None))]
     fn new(
