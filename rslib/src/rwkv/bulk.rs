@@ -32,8 +32,7 @@ use rayon::prelude::*;
 
 use super::*;
 
-/// Rows processed per internal chunk. This matches the desktop bridge's
-/// measured sweet spot while bounding scratch-buffer memory for large replays.
+/// Default limit for an internal chunk of replay scratch buffers.
 const BULK_CHUNK_ROWS: usize = 8_192;
 
 #[derive(Clone, Copy)]
@@ -60,14 +59,31 @@ pub(super) fn warm_up_reviews_bulk(
     reviews: Vec<ReviewInput>,
     record_predictions: bool,
 ) -> io::Result<Vec<(usize, f32)>> {
+    let chunk_rows = warm_up_chunk_rows(reviews.len(), record_predictions);
     warm_up_reviews_bulk_impl(
         inference,
         reviews,
         record_predictions,
-        BULK_CHUNK_ROWS,
+        chunk_rows,
         QueryRecurrence::Fast,
         None,
     )
+}
+
+fn warm_up_chunk_rows(rows: usize, record_predictions: bool) -> usize {
+    // Big's multicore state-only wavefront is faster with a full desktop batch
+    // on Apple Silicon. Its larger scratch buffers are useful only for long
+    // replays.
+    if cfg!(all(target_arch = "aarch64", target_os = "macos"))
+        && !SMALL_MODEL
+        && !record_predictions
+        && rows > BULK_CHUNK_ROWS
+        && rayon::current_num_threads() > 1
+    {
+        16_384
+    } else {
+        BULK_CHUNK_ROWS
+    }
 }
 
 /// Advance a simulation's private state without computing unused answer heads.
@@ -1910,5 +1926,28 @@ fn fill_time_mixed(
             x_shift[channel],
             lerp_values[lerp_offset + channel],
         );
+    }
+}
+
+#[cfg(all(test, target_arch = "aarch64", target_os = "macos"))]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn larger_chunks_are_limited_to_multicore_big_state_rebuilds() {
+        for (threads, expected) in [
+            (1, BULK_CHUNK_ROWS),
+            (2, if SMALL_MODEL { BULK_CHUNK_ROWS } else { 16_384 }),
+        ] {
+            let pool = rayon::ThreadPoolBuilder::new()
+                .num_threads(threads)
+                .build()
+                .unwrap();
+            pool.install(|| {
+                assert_eq!(warm_up_chunk_rows(BULK_CHUNK_ROWS, false), BULK_CHUNK_ROWS);
+                assert_eq!(warm_up_chunk_rows(16_384, true), BULK_CHUNK_ROWS);
+                assert_eq!(warm_up_chunk_rows(16_384, false), expected);
+            });
+        }
     }
 }

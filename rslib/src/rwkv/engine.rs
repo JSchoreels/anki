@@ -8054,12 +8054,8 @@ unsafe fn linear_apply_row_neon(input: &[f32], weights: &[f32], out: &mut [f32])
     }
 }
 
-/// Exact four-row linear projection microkernel for AArch64 NEON machines.
-///
-/// Each output accumulator still visits input columns in ascending order and
-/// skips zero scales, matching `Linear::apply_into()`. Four rows share each
-/// weight load while retaining the column-major loop order, so input scales
-/// are loaded only once per projection column.
+/// Accumulate four rows in registers. Each output visits its input columns in
+/// ascending order with the same fused multiply-adds as the single-row path.
 #[cfg(target_arch = "aarch64")]
 unsafe fn linear_apply_block_neon(
     inputs: &[f32],
@@ -8069,162 +8065,92 @@ unsafe fn linear_apply_block_neon(
     input: usize,
     output: usize,
 ) {
-    use std::arch::aarch64::*;
-
-    let tiled_rows = rows / 4 * 4;
-    for row_base in (0..tiled_rows).step_by(4) {
-        for column in 0..input {
-            let scale0 = *inputs.get_unchecked(row_base * input + column);
-            let scale1 = *inputs.get_unchecked((row_base + 1) * input + column);
-            let scale2 = *inputs.get_unchecked((row_base + 2) * input + column);
-            let scale3 = *inputs.get_unchecked((row_base + 3) * input + column);
-            if scale0 == 0.0 && scale1 == 0.0 && scale2 == 0.0 && scale3 == 0.0 {
-                continue;
-            }
-
-            let weight_column = weights.as_ptr().add(column * output);
-            let mut output_offset = 0;
-            while output_offset + 16 <= output {
-                let weights = [
-                    vld1q_f32(weight_column.add(output_offset)),
-                    vld1q_f32(weight_column.add(output_offset + 4)),
-                    vld1q_f32(weight_column.add(output_offset + 8)),
-                    vld1q_f32(weight_column.add(output_offset + 12)),
-                ];
-                if scale0 != 0.0 {
-                    add_scaled_16_neon(
-                        outs.as_mut_ptr().add(row_base * output + output_offset),
-                        weights,
-                        scale0,
-                    );
-                }
-                if scale1 != 0.0 {
-                    add_scaled_16_neon(
-                        outs.as_mut_ptr()
-                            .add((row_base + 1) * output + output_offset),
-                        weights,
-                        scale1,
-                    );
-                }
-                if scale2 != 0.0 {
-                    add_scaled_16_neon(
-                        outs.as_mut_ptr()
-                            .add((row_base + 2) * output + output_offset),
-                        weights,
-                        scale2,
-                    );
-                }
-                if scale3 != 0.0 {
-                    add_scaled_16_neon(
-                        outs.as_mut_ptr()
-                            .add((row_base + 3) * output + output_offset),
-                        weights,
-                        scale3,
-                    );
-                }
-                output_offset += 16;
-            }
-            while output_offset + 4 <= output {
-                let weight = vld1q_f32(weight_column.add(output_offset));
-                if scale0 != 0.0 {
-                    add_scaled_4_neon(
-                        outs.as_mut_ptr().add(row_base * output + output_offset),
-                        weight,
-                        scale0,
-                    );
-                }
-                if scale1 != 0.0 {
-                    add_scaled_4_neon(
-                        outs.as_mut_ptr()
-                            .add((row_base + 1) * output + output_offset),
-                        weight,
-                        scale1,
-                    );
-                }
-                if scale2 != 0.0 {
-                    add_scaled_4_neon(
-                        outs.as_mut_ptr()
-                            .add((row_base + 2) * output + output_offset),
-                        weight,
-                        scale2,
-                    );
-                }
-                if scale3 != 0.0 {
-                    add_scaled_4_neon(
-                        outs.as_mut_ptr()
-                            .add((row_base + 3) * output + output_offset),
-                        weight,
-                        scale3,
-                    );
-                }
-                output_offset += 4;
-            }
-            while output_offset < output {
-                let weight = *weight_column.add(output_offset);
-                if scale0 != 0.0 {
-                    *outs.get_unchecked_mut(row_base * output + output_offset) += weight * scale0;
-                }
-                if scale1 != 0.0 {
-                    *outs.get_unchecked_mut((row_base + 1) * output + output_offset) +=
-                        weight * scale1;
-                }
-                if scale2 != 0.0 {
-                    *outs.get_unchecked_mut((row_base + 2) * output + output_offset) +=
-                        weight * scale2;
-                }
-                if scale3 != 0.0 {
-                    *outs.get_unchecked_mut((row_base + 3) * output + output_offset) +=
-                        weight * scale3;
-                }
-                output_offset += 1;
-            }
+    let full_rows = rows / 4 * 4;
+    for row in (0..full_rows).step_by(4) {
+        let block = &inputs[row * input..(row + 4) * input];
+        let out = &mut outs[row * output..(row + 4) * output];
+        // One scan covers every output tile. Both signs of zero must still
+        // skip the multiplication, as they do in apply_into().
+        if block.contains(&0.0) {
+            linear_apply_four_rows_neon::<true>(block, weights, out, input, output);
+        } else {
+            linear_apply_four_rows_neon::<false>(block, weights, out, input, output);
         }
     }
+    for row in full_rows..rows {
+        linear_apply_row_neon(
+            &inputs[row * input..(row + 1) * input],
+            weights,
+            &mut outs[row * output..(row + 1) * output],
+        );
+    }
+}
 
-    for row in tiled_rows..rows {
-        let out = &mut outs[row * output..(row + 1) * output];
-        for column in 0..input {
-            let scale = *inputs.get_unchecked(row * input + column);
-            if scale == 0.0 {
-                continue;
+#[cfg(target_arch = "aarch64")]
+#[inline(always)]
+unsafe fn linear_apply_four_rows_neon<const SKIP_ZEROS: bool>(
+    inputs: &[f32],
+    weights: &[f32],
+    outs: &mut [f32],
+    input: usize,
+    output: usize,
+) {
+    let wide_end = output / 16 * 16;
+    let vector_end = output / 4 * 4;
+    for offset in (0..wide_end).step_by(16) {
+        linear_apply_tile_neon::<4, SKIP_ZEROS>(inputs, weights, outs, input, output, offset);
+    }
+    for offset in (wide_end..vector_end).step_by(4) {
+        linear_apply_tile_neon::<1, SKIP_ZEROS>(inputs, weights, outs, input, output, offset);
+    }
+    // The original scalar tail uses a separate multiplication and addition.
+    for row in 0..4 {
+        for offset in vector_end..output {
+            let sum = &mut outs[row * output + offset];
+            for (column, &scale) in inputs[row * input..(row + 1) * input].iter().enumerate() {
+                if !SKIP_ZEROS || scale != 0.0 {
+                    *sum += weights[column * output + offset] * scale;
+                }
             }
-            let weight_column = &weights[column * output..(column + 1) * output];
-            add_scaled_in_place_neon(out, weight_column, scale);
         }
     }
 }
 
 #[cfg(target_arch = "aarch64")]
 #[inline(always)]
-unsafe fn add_scaled_16_neon(
-    out: *mut f32,
-    weights: [std::arch::aarch64::float32x4_t; 4],
-    scale: f32,
+unsafe fn linear_apply_tile_neon<const VECTORS: usize, const SKIP_ZEROS: bool>(
+    inputs: &[f32],
+    weights: &[f32],
+    outs: &mut [f32],
+    input: usize,
+    output: usize,
+    offset: usize,
 ) {
     use std::arch::aarch64::*;
 
-    let scale = vdupq_n_f32(scale);
-    vst1q_f32(out, vfmaq_f32(vld1q_f32(out), weights[0], scale));
-    vst1q_f32(
-        out.add(4),
-        vfmaq_f32(vld1q_f32(out.add(4)), weights[1], scale),
-    );
-    vst1q_f32(
-        out.add(8),
-        vfmaq_f32(vld1q_f32(out.add(8)), weights[2], scale),
-    );
-    vst1q_f32(
-        out.add(12),
-        vfmaq_f32(vld1q_f32(out.add(12)), weights[3], scale),
-    );
-}
-
-#[cfg(target_arch = "aarch64")]
-#[inline(always)]
-unsafe fn add_scaled_4_neon(out: *mut f32, weights: std::arch::aarch64::float32x4_t, scale: f32) {
-    use std::arch::aarch64::*;
-
-    vst1q_f32(out, vfmaq_f32(vld1q_f32(out), weights, vdupq_n_f32(scale)));
+    // The caller provides four complete rows and a tile of VECTORS * 4
+    // consecutive elements within each row. NEON loads may be unaligned.
+    let mut sums: [[float32x4_t; VECTORS]; 4] = std::array::from_fn(|row| {
+        std::array::from_fn(|i| vld1q_f32(outs.as_ptr().add(row * output + offset + i * 4)))
+    });
+    for column in 0..input {
+        let column_weights: [float32x4_t; VECTORS] = std::array::from_fn(|i| {
+            vld1q_f32(weights.as_ptr().add(column * output + offset + i * 4))
+        });
+        for (row, sums) in sums.iter_mut().enumerate() {
+            let scale = *inputs.get_unchecked(row * input + column);
+            if !SKIP_ZEROS || scale != 0.0 {
+                for (sum, weight) in sums.iter_mut().zip(column_weights) {
+                    *sum = vfmaq_n_f32(*sum, weight, scale);
+                }
+            }
+        }
+    }
+    for (row, sums) in sums.iter().enumerate() {
+        for (i, &sum) in sums.iter().enumerate() {
+            vst1q_f32(outs.as_mut_ptr().add(row * output + offset + i * 4), sum);
+        }
+    }
 }
 
 #[cfg(target_arch = "x86_64")]
@@ -8553,6 +8479,15 @@ fn dot_product_arch(left: &[f32], right: &[f32]) -> f32 {
 
 #[cfg(target_arch = "aarch64")]
 #[inline(always)]
+unsafe fn combine_dot_accumulators_neon(
+    [a, b, c, d]: [std::arch::aarch64::float32x4_t; 4],
+) -> std::arch::aarch64::float32x4_t {
+    use std::arch::aarch64::vaddq_f32;
+    vaddq_f32(vaddq_f32(a, b), vaddq_f32(c, d))
+}
+
+#[cfg(target_arch = "aarch64")]
+#[inline(always)]
 unsafe fn dot_product_neon(left: &[f32], right: &[f32]) -> f32 {
     use std::arch::aarch64::*;
 
@@ -8585,7 +8520,7 @@ unsafe fn dot_product_neon(left: &[f32], right: &[f32]) -> f32 {
         offset += 16;
     }
 
-    let mut acc = vaddq_f32(vaddq_f32(acc0, acc1), vaddq_f32(acc2, acc3));
+    let mut acc = combine_dot_accumulators_neon([acc0, acc1, acc2, acc3]);
     while offset + 4 <= len {
         acc = vfmaq_f32(
             acc,
@@ -8844,35 +8779,23 @@ fn single_timestep_into(
     debug_assert_eq!(next_state.len(), HEADS * HEAD_SIZE * HEAD_SIZE);
     debug_assert_eq!(out.len(), D_MODEL);
 
+    let [r, k, v, w, a, k_deformed] =
+        [r, k, v, w, a, k_deformed].map(|channels| channels.as_chunks::<HEAD_SIZE>().0);
+    let (state, _) = state.as_chunks::<{ HEAD_SIZE * HEAD_SIZE }>();
+    let (next_state, _) = next_state.as_chunks_mut::<{ HEAD_SIZE * HEAD_SIZE }>();
+    let (out, _) = out.as_chunks_mut::<HEAD_SIZE>();
     for head in 0..HEADS {
-        let head_base = head * HEAD_SIZE;
-        let matrix_base = head * HEAD_SIZE * HEAD_SIZE;
-        let mut state_dot_k = [0.0_f32; HEAD_SIZE];
-        let key_deformed = &k_deformed[head_base..head_base + HEAD_SIZE];
-        let receptance = &r[head_base..head_base + HEAD_SIZE];
-
-        for (row, value) in state_dot_k.iter_mut().enumerate() {
-            let row_start = matrix_base + row * HEAD_SIZE;
-            let state_row = &state[row_start..row_start + HEAD_SIZE];
-            *value = dot_product(state_row, key_deformed);
-        }
-
-        update_recurrence_head(
-            &k[head_base..head_base + HEAD_SIZE],
-            &v[head_base..head_base + HEAD_SIZE],
-            &w[head_base..head_base + HEAD_SIZE],
-            &a[head_base..head_base + HEAD_SIZE],
-            key_deformed,
-            &state[matrix_base..matrix_base + HEAD_SIZE * HEAD_SIZE],
-            &state_dot_k,
-            &mut next_state[matrix_base..matrix_base + HEAD_SIZE * HEAD_SIZE],
+        single_timestep_head(
+            &r[head],
+            &k[head],
+            &v[head],
+            &w[head],
+            &a[head],
+            &k_deformed[head],
+            &state[head],
+            &mut out[head],
+            &mut next_state[head],
         );
-
-        for row in 0..HEAD_SIZE {
-            let row_start = matrix_base + row * HEAD_SIZE;
-            let state_row = &next_state[row_start..row_start + HEAD_SIZE];
-            out[head_base + row] = dot_product(state_row, receptance);
-        }
     }
 
     #[cfg(test)]
@@ -8890,6 +8813,89 @@ fn single_timestep_into(
     );
 }
 
+#[cfg(any(not(target_arch = "aarch64"), test))]
+#[allow(clippy::too_many_arguments)]
+#[inline(always)]
+fn single_timestep_head_separate(
+    r: &[f32],
+    k: &[f32],
+    v: &[f32],
+    w: &[f32],
+    a: &[f32],
+    key_deformed: &[f32],
+    state: &[f32],
+    out: &mut [f32],
+    next_state: &mut [f32],
+) {
+    let mut state_dot_k = [0.0_f32; HEAD_SIZE];
+    for (row, dot) in state.chunks_exact(HEAD_SIZE).zip(&mut state_dot_k) {
+        *dot = dot_product(row, key_deformed);
+    }
+    update_recurrence_head(k, v, w, a, key_deformed, state, &state_dot_k, next_state);
+    for (row, value) in next_state.chunks_exact(HEAD_SIZE).zip(out) {
+        *value = dot_product(row, r);
+    }
+}
+
+#[cfg(not(target_arch = "aarch64"))]
+use self::single_timestep_head_separate as single_timestep_head;
+
+/// Finish each state row and its output while the four groups of accumulators
+/// are still in registers. The update uses separate multiply, subtract and
+/// add operations. Its two dot products use the same fused operations and
+/// reduction order as `dot_product_neon`.
+#[cfg(target_arch = "aarch64")]
+#[allow(clippy::too_many_arguments)]
+#[inline(always)]
+fn single_timestep_head(
+    r: &[f32; HEAD_SIZE],
+    k: &[f32; HEAD_SIZE],
+    v: &[f32; HEAD_SIZE],
+    w: &[f32; HEAD_SIZE],
+    a: &[f32; HEAD_SIZE],
+    key_deformed: &[f32; HEAD_SIZE],
+    state: &[f32; HEAD_SIZE * HEAD_SIZE],
+    out: &mut [f32; HEAD_SIZE],
+    next_state: &mut [f32; HEAD_SIZE * HEAD_SIZE],
+) {
+    use std::arch::aarch64::*;
+
+    const { assert!(HEAD_SIZE.is_multiple_of(16)) };
+    for (((old, next), &value), result) in state
+        .chunks_exact(HEAD_SIZE)
+        .zip(next_state.chunks_exact_mut(HEAD_SIZE))
+        .zip(v)
+        .zip(out)
+    {
+        // SAFETY: all per-channel inputs and both matrix rows have HEAD_SIZE
+        // elements. Each inner iteration loads/stores four complete vectors.
+        unsafe {
+            let dot = vdupq_n_f32(dot_product_neon(old, key_deformed));
+            let value = vdupq_n_f32(value);
+            let mut sums = [vdupq_n_f32(0.0); 4];
+            for offset in (0..HEAD_SIZE).step_by(16) {
+                for (lane, sum) in sums.iter_mut().enumerate() {
+                    let col = offset + lane * 4;
+                    let weighted = vmulq_f32(
+                        vld1q_f32(old.as_ptr().add(col)),
+                        vld1q_f32(w.as_ptr().add(col)),
+                    );
+                    let penalty = vmulq_f32(
+                        vmulq_f32(dot, vld1q_f32(a.as_ptr().add(col))),
+                        vld1q_f32(key_deformed.as_ptr().add(col)),
+                    );
+                    let injected = vmulq_f32(value, vld1q_f32(k.as_ptr().add(col)));
+                    let updated = vaddq_f32(vsubq_f32(weighted, penalty), injected);
+                    vst1q_f32(next.as_mut_ptr().add(col), updated);
+                    *sum = vfmaq_f32(*sum, updated, vld1q_f32(r.as_ptr().add(col)));
+                }
+            }
+            *result = vaddvq_f32(combine_dot_accumulators_neon(sums));
+        }
+    }
+}
+
+#[cfg(any(not(target_arch = "aarch64"), test))]
 #[allow(clippy::too_many_arguments)]
 #[inline(always)]
 fn update_recurrence_head(
@@ -8915,6 +8921,7 @@ fn update_recurrence_head(
     update_recurrence_head_scalar(k, v, w, a, key_deformed, state, state_dot_k, next_state);
 }
 
+#[cfg(any(not(target_arch = "aarch64"), test))]
 #[allow(clippy::too_many_arguments)]
 fn update_recurrence_head_scalar(
     k: &[f32],
@@ -9921,6 +9928,55 @@ mod tests {
         assert_eq!(actual, expected);
     }
 
+    #[cfg(target_arch = "aarch64")]
+    #[test]
+    fn recurrent_row_matches_separate_state_update_and_output_bit_for_bit() {
+        fn values<const N: usize>(period: usize, scale: f32) -> [f32; N] {
+            deterministic_simd_values(N, period, scale)
+                .try_into()
+                .unwrap()
+        }
+        let r = values(11, -0.371);
+        let k = values(13, 0.217);
+        let v = values(17, 0.193);
+        let w = values(19, 0.583);
+        let a = values(23, -0.157);
+        let key = values(29, 0.109);
+        let mut state = values::<{ HEAD_SIZE * HEAD_SIZE }>(31, -0.213);
+        state[..HEAD_SIZE].fill(-0.0);
+        state[HEAD_SIZE] = f32::from_bits(1);
+        let mut expected_state = [0.0; HEAD_SIZE * HEAD_SIZE];
+        let mut expected_out = [0.0; HEAD_SIZE];
+        single_timestep_head_separate(
+            &r,
+            &k,
+            &v,
+            &w,
+            &a,
+            &key,
+            &state,
+            &mut expected_out,
+            &mut expected_state,
+        );
+        let mut actual_state = [0.0; HEAD_SIZE * HEAD_SIZE];
+        let mut actual_out = [0.0; HEAD_SIZE];
+        single_timestep_head(
+            &r,
+            &k,
+            &v,
+            &w,
+            &a,
+            &key,
+            &state,
+            &mut actual_out,
+            &mut actual_state,
+        );
+        assert_eq!(actual_out.map(f32::to_bits), expected_out.map(f32::to_bits));
+        for (&actual, &expected) in actual_state.iter().zip(&expected_state) {
+            assert_eq!(actual.to_bits(), expected.to_bits());
+        }
+    }
+
     #[cfg(any(target_arch = "aarch64", target_arch = "x86_64"))]
     #[test]
     fn linear_apply_block_arch_matches_per_row_path_bit_exactly() {
@@ -9930,32 +9986,48 @@ mod tests {
             return;
         }
 
-        let input = 13;
-        let output = 19;
-        let rows = 7;
-        let linear = Linear {
-            input,
-            output,
-            weight_by_input: deterministic_simd_values(input * output, 29, -0.0078125),
-            bias: Some(deterministic_simd_values(output, 11, 0.015625)),
-            packed_weight: None,
-        };
-        let mut inputs = deterministic_simd_values(rows * input, 17, 0.03125);
-        for index in (0..inputs.len()).step_by(9) {
-            inputs[index] = 0.0;
-        }
+        // One dense block, a block containing both signs of zero, and three
+        // trailing rows. The zero scales must also skip infinite weights.
+        let rows = 11;
+        for (input, output) in [(13, 3), (64, 4), (64, 12), (13, 19), (16, 32), (128, 128)] {
+            let mut weights = deterministic_simd_values(input * output, 29, -0.0097);
+            weights[0] = f32::INFINITY;
+            let mut bias = deterministic_simd_values(output, 11, 0.017);
+            bias[output - 1] = -0.0;
+            let linear = Linear {
+                input,
+                output,
+                weight_by_input: weights,
+                bias: Some(bias),
+                packed_weight: None,
+            };
+            let mut inputs = deterministic_simd_values(rows * input, 17, 0.0317);
+            for scale in &mut inputs {
+                *scale += 0.013;
+            }
+            inputs[4 * input..5 * input].fill(-0.0);
+            for scale in inputs[5 * input..8 * input].iter_mut().step_by(3) {
+                *scale = 0.0;
+            }
 
-        let mut expected = vec![0.0; rows * output];
-        for (input_row, output_row) in inputs
-            .chunks_exact(input)
-            .zip(expected.chunks_exact_mut(output))
-        {
-            linear.apply_into(input_row, output_row);
-        }
-        let mut actual = vec![0.0; rows * output];
-        linear.apply_block_into(&inputs, &mut actual, rows);
+            let mut expected = vec![0.0; rows * output];
+            for (input_row, output_row) in inputs
+                .chunks_exact(input)
+                .zip(expected.chunks_exact_mut(output))
+            {
+                linear.apply_into(input_row, output_row);
+            }
+            let mut actual = vec![0.0; rows * output];
+            linear.apply_block_into(&inputs, &mut actual, rows);
 
-        assert_eq!(actual, expected);
+            for (i, (&actual, &expected)) in actual.iter().zip(&expected).enumerate() {
+                assert_eq!(
+                    actual.to_bits(),
+                    expected.to_bits(),
+                    "{input}x{output} at {i}"
+                );
+            }
+        }
     }
 
     #[test]

@@ -842,24 +842,38 @@ fn eigh_groups<const L: usize>(
 ) -> ([[f64; MAX_BASIS]; L], [Small; L]) {
     let mut values = [[0.0_f64; MAX_BASIS]; L];
     let mut vectors = [[[0.0_f64; MAX_BASIS]; MAX_BASIS]; L];
-    for size in 1..=MAX_BASIS {
+    let mut seen = [false; MAX_BASIS + 1];
+    seen[0] = true;
+    for (first, &size) in sizes.iter().enumerate() {
+        if seen[size] {
+            continue;
+        }
+        seen[size] = true;
         let mut members = [0_usize; L];
         let mut count = 0;
-        for (lane, &lane_size) in sizes.iter().enumerate() {
-            if lane_size == size {
+        for (lane, &n) in sizes.iter().enumerate().skip(first) {
+            if n == size {
                 members[count] = lane;
                 count += 1;
             }
         }
-        for block in members[..count].chunks(16) {
-            eigh_block(problems, size, block, &mut values, &mut vectors);
+        // A one-dimensional matrix is already diagonal, including its signed zero.
+        if size == 1 {
+            for &lane in &members[..count] {
+                values[lane][0] = problems[lane][0][0];
+                vectors[lane][0][0] = 1.0;
+            }
+        } else {
+            for group in members[..count].chunks(16) {
+                eigh_block(problems, size, group, &mut values, &mut vectors);
+            }
         }
     }
     (values, vectors)
 }
 
 /// `eigh` of the leading `n x n` block of the problems `members` (at most
-/// 16), in one Jacobi run of 4, 8 or 16 lanes.
+/// 16), in one Jacobi run. ARM64 also uses two lanes for a partial group.
 fn eigh_block(
     problems: &[Small],
     n: usize,
@@ -897,7 +911,13 @@ fn eigh_block(
         ($($n:literal)*) => {
             match (n, members.len()) {
                 $(
-                    ($n, 0..=4) => run::<$n, 4>(problems, members, values, vectors),
+                    ($n, 0..=4) => {
+                        #[cfg(target_arch = "aarch64")]
+                        if members.len() <= 2 {
+                            return run::<$n, 2>(problems, members, values, vectors);
+                        }
+                        run::<$n, 4>(problems, members, values, vectors)
+                    }
                     ($n, 5..=8) => run::<$n, 8>(problems, members, values, vectors),
                     ($n, 9..=16) => run::<$n, 16>(problems, members, values, vectors),
                 )*
@@ -905,7 +925,7 @@ fn eigh_block(
             }
         };
     }
-    sizes!(1 2 3 4 5 6 7 8 9);
+    sizes!(2 3 4 5 6 7 8 9);
 }
 
 /// `eigh`'s cyclic Jacobi rotations on each active lane's `N x N` problem
@@ -1001,6 +1021,50 @@ fn jacobi_dispatch<const N: usize, const B: usize>(
     jacobi_lanes(a, active)
 }
 
+/// Apply one cyclic rotation to the matrix and its eigenvectors. When every
+/// lane rotates, the same arithmetic runs without a select at each element.
+#[inline(always)]
+fn jacobi_rotate<const N: usize, const B: usize, const MASK: bool>(
+    a: &mut [[[f64; B]; N]; N],
+    v: &mut [[[f64; B]; N]; N],
+    p: usize,
+    q: usize,
+    c: [f64; B],
+    s: [f64; B],
+    rotate: [bool; B],
+) {
+    for row in a.iter_mut() {
+        for lane in 0..B {
+            let arp = row[p][lane];
+            let arq = row[q][lane];
+            let (c, s) = (c[lane], s[lane]);
+            let (np, nq) = (c * arp - s * arq, s * arp + c * arq);
+            row[p][lane] = if !MASK || rotate[lane] { np } else { arp };
+            row[q][lane] = if !MASK || rotate[lane] { nq } else { arq };
+        }
+    }
+    let (before_q, from_q) = a.split_at_mut(q);
+    for (apr, aqr) in before_q[p].iter_mut().zip(&mut from_q[0]) {
+        for lane in 0..B {
+            let (old_apr, old_aqr) = (apr[lane], aqr[lane]);
+            let (c, s) = (c[lane], s[lane]);
+            let (np, nq) = (c * old_apr - s * old_aqr, s * old_apr + c * old_aqr);
+            apr[lane] = if !MASK || rotate[lane] { np } else { old_apr };
+            aqr[lane] = if !MASK || rotate[lane] { nq } else { old_aqr };
+        }
+    }
+    for row in v.iter_mut() {
+        for lane in 0..B {
+            let vrp = row[p][lane];
+            let vrq = row[q][lane];
+            let (c, s) = (c[lane], s[lane]);
+            let (np, nq) = (c * vrp - s * vrq, s * vrp + c * vrq);
+            row[p][lane] = if !MASK || rotate[lane] { np } else { vrp };
+            row[q][lane] = if !MASK || rotate[lane] { nq } else { vrq };
+        }
+    }
+}
+
 #[inline(always)]
 fn jacobi_lanes<const N: usize, const B: usize>(
     a: &mut [[[f64; B]; N]; N],
@@ -1064,35 +1128,10 @@ fn jacobi_lanes<const N: usize, const B: usize>(
                 if !rotate.contains(&true) {
                     continue;
                 }
-                for row in a.iter_mut() {
-                    for lane in 0..B {
-                        let arp = row[p][lane];
-                        let arq = row[q][lane];
-                        let (c, s) = (c[lane], s[lane]);
-                        let (np, nq) = (c * arp - s * arq, s * arp + c * arq);
-                        row[p][lane] = if rotate[lane] { np } else { arp };
-                        row[q][lane] = if rotate[lane] { nq } else { arq };
-                    }
-                }
-                let (before_q, from_q) = a.split_at_mut(q);
-                for (apr, aqr) in before_q[p].iter_mut().zip(&mut from_q[0]) {
-                    for lane in 0..B {
-                        let (old_apr, old_aqr) = (apr[lane], aqr[lane]);
-                        let (c, s) = (c[lane], s[lane]);
-                        let (np, nq) = (c * old_apr - s * old_aqr, s * old_apr + c * old_aqr);
-                        apr[lane] = if rotate[lane] { np } else { old_apr };
-                        aqr[lane] = if rotate[lane] { nq } else { old_aqr };
-                    }
-                }
-                for row in v.iter_mut() {
-                    for lane in 0..B {
-                        let vrp = row[p][lane];
-                        let vrq = row[q][lane];
-                        let (c, s) = (c[lane], s[lane]);
-                        let (np, nq) = (c * vrp - s * vrq, s * vrp + c * vrq);
-                        row[p][lane] = if rotate[lane] { np } else { vrp };
-                        row[q][lane] = if rotate[lane] { nq } else { vrq };
-                    }
+                if cfg!(target_arch = "aarch64") && rotate.iter().all(|&lane| lane) {
+                    jacobi_rotate::<N, B, false>(a, &mut v, p, q, c, s, rotate);
+                } else {
+                    jacobi_rotate::<N, B, true>(a, &mut v, p, q, c, s, rotate);
                 }
             }
         }
@@ -1305,6 +1344,37 @@ mod tests {
 
     fn bits(values: &[f32]) -> Vec<u32> {
         values.iter().map(|value| value.to_bits()).collect()
+    }
+
+    #[test]
+    fn grouped_eigenproblems_preserve_signed_zero_and_converge_independently() {
+        let sizes = [3, 1, 0, 3];
+        let mut matrices = [[[0.0; MAX_BASIS]; MAX_BASIS]; 4];
+        matrices[1][0][0] = -0.0;
+        matrices[3][0][0] = 2.0;
+        matrices[3][0][1] = 0.75;
+        matrices[3][1][0] = 0.75;
+        matrices[3][1][1] = 1.0;
+        let (values, vectors) = eigh_groups(&matrices, &sizes);
+        for (lane, n) in sizes.into_iter().enumerate() {
+            let matrix: Vec<_> = matrices[lane][..n]
+                .iter()
+                .flat_map(|row| &row[..n])
+                .copied()
+                .collect();
+            let (expected_values, expected_vectors) = eigh(&matrix, n);
+            for (i, &expected) in expected_values.iter().enumerate() {
+                assert_eq!(values[lane][i].to_bits(), expected.to_bits());
+                for j in 0..n {
+                    assert_eq!(
+                        vectors[lane][i][j].to_bits(),
+                        expected_vectors[i * n + j].to_bits()
+                    );
+                }
+            }
+        }
+        assert_eq!(values[2], [0.0; MAX_BASIS]);
+        assert_eq!(vectors[2], [[0.0; MAX_BASIS]; MAX_BASIS]);
     }
 
     /// One synthetic layer write on `matrix`: S' = S diag(w) + v k^T per
