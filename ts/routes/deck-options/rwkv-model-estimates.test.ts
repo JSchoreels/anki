@@ -24,6 +24,11 @@ describe("RWKV model estimates", () => {
         expect(shared.map(({ totalStateBytes }) => totalStateBytes)).toEqual([18_524_500, 3_202_500, 1_972_500]);
         expect(shared.map(({ curveLoss }) => curveLoss)).toEqual(paired.map(({ curveLoss }) => curveLoss));
         expect(shared.map(({ instantLoss }) => instantLoss)).toEqual([0, 0.15, 0.68]);
+        // Paired Tiny shows the Tiny instant ensemble (SM170); RWKV-Instant
+        // alone runs the Instant-Only model.
+        expect(paired.map(({ instantLoss }) => instantLoss)).toEqual([0, 0.01, 0.53]);
+        const instantAlone = rwkvModelEstimates({ curve: false, instant: true }, false, "compact_cards_int8", counts);
+        expect(instantAlone.map(({ instantLoss }) => instantLoss)).toEqual([0, 0.01, 0.58]);
     });
 
     test("uses the selected precision and omits totals when counts are unavailable", () => {

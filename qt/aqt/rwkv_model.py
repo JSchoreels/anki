@@ -217,7 +217,9 @@ class RwkvRuntimeModels(NamedTuple):
 
     `model` is the runtime's main model. `instant_model`, when set, runs
     beside it and provides instant recall and button probabilities, while
-    `model` keeps the curve, intervals and S90. The answer time comes from
+    `model` keeps the curve, intervals and S90. For Tiny's pair the native
+    runtime returns the Tiny instant ensemble (SM170) of both models'
+    instant heads instead, in every instant path. The answer time comes from
     `instant_model`'s head when it has one (Big: the show-time instant-only
     big model (SM99); every Instant-Only model of the family has one since
     the SM119 and SM138 heads), else from `model`'s. An instant-only `model`

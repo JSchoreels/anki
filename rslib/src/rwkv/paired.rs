@@ -279,6 +279,46 @@ pub fn simulation_snapshot_half(
     })
 }
 
+/// Splits a simulation snapshot into the release's half and the instant
+/// model's half.
+pub fn simulation_snapshot_halves(
+    snapshot: RwkvWorkloadSimulationSnapshot,
+) -> io::Result<(
+    RwkvWorkloadSimulationSnapshot,
+    RwkvWorkloadSimulationSnapshot,
+)> {
+    let (card_r, card_i) = split_map(&snapshot.card_states)?;
+    let (note_r, note_i) = split_map(&snapshot.note_states)?;
+    let (deck_r, deck_i) = split_map(&snapshot.deck_states)?;
+    let (preset_r, preset_i) = split_map(&snapshot.preset_states)?;
+    let (global_r, global_i) = split_optional(snapshot.global_state.as_deref())?;
+    let (runtime_r, runtime_i) = match snapshot.runtime_state.as_deref() {
+        Some(bytes) => {
+            let (release, instant) = split_cache(bytes)?;
+            (Some(release.to_vec()), Some(instant.to_vec()))
+        }
+        None => (None, None),
+    };
+    Ok((
+        RwkvWorkloadSimulationSnapshot {
+            card_states: card_r,
+            note_states: note_r,
+            deck_states: deck_r,
+            preset_states: preset_r,
+            global_state: global_r,
+            runtime_state: runtime_r,
+        },
+        RwkvWorkloadSimulationSnapshot {
+            card_states: card_i,
+            note_states: note_i,
+            deck_states: deck_i,
+            preset_states: preset_i,
+            global_state: global_i,
+            runtime_state: runtime_i,
+        },
+    ))
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
