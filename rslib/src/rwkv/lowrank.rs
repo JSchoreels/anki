@@ -348,15 +348,27 @@ pub(super) struct LayerWrite<'a> {
     pub(super) out: &'a mut Vec<u8>,
 }
 
-/// Lanes of a batched write (`encode_layers::<BATCH_LANES>`): four layer
-/// writes (four cards of a replay) at once.
+/// The widest supported solve holds the heads of four independent layer writes.
 pub(super) const BATCH_LANES: usize = 4 * HEADS;
 
-/// Layer writes worth batching on this CPU: `BATCH_LANES / HEADS` with
-/// 256-bit or wider vectors (x86-64 AVX2 or AVX-512), else one (with
-/// 128-bit vectors more lanes only add work).
+// On the M1 Max, pairing writes with 16-value heads helps single-thread replay.
+// With all cores, full rebuilds are faster with one card per solve.
+const BATCH_TWO_ON_ONE_THREAD: bool =
+    cfg!(all(target_arch = "aarch64", target_os = "macos")) && HEAD_SIZE == 16;
+
+/// Solver width when replay groups multiple writes.
+pub(super) const REPLAY_BATCH_LANES: usize = if BATCH_TWO_ON_ONE_THREAD {
+    2 * HEADS
+} else {
+    BATCH_LANES
+};
+
+/// Number of independent layer writes to group in the current replay pool.
 pub(super) fn batch_writes() -> usize {
     match simd() {
+        Simd::Baseline if BATCH_TWO_ON_ONE_THREAD && rayon::current_num_threads() == 1 => {
+            REPLAY_BATCH_LANES / HEADS
+        }
         Simd::Baseline => 1,
         #[cfg(target_arch = "x86_64")]
         Simd::Avx2 | Simd::Avx512 => BATCH_LANES / HEADS,
@@ -1277,6 +1289,19 @@ mod tests {
     use std::io::Read;
 
     use super::*;
+
+    #[cfg(all(target_arch = "aarch64", target_os = "macos"))]
+    #[test]
+    fn rwkv_state_lowrank_apple_replay_batch_width() {
+        let single_thread_width = if HEAD_SIZE == 16 { 2 } else { 1 };
+        for (threads, expected) in [(1, single_thread_width), (2, 1)] {
+            let pool = rayon::ThreadPoolBuilder::new()
+                .num_threads(threads)
+                .build()
+                .unwrap();
+            assert_eq!(pool.install(batch_writes), expected);
+        }
+    }
 
     fn bits(values: &[f32]) -> Vec<u32> {
         values.iter().map(|value| value.to_bits()).collect()

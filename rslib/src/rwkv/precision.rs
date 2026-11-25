@@ -322,7 +322,7 @@ impl StatePrecision {
                 })
                 .collect();
             if lowrank::batch_writes() > 1 {
-                lowrank::encode_layers::<{ lowrank::BATCH_LANES }>(
+                lowrank::encode_layers::<{ lowrank::REPLAY_BATCH_LANES }>(
                     &mut layer_writes,
                     schedule,
                     factors,

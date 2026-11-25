@@ -1,48 +1,51 @@
-# RWKV state building on the Mac: find the same speed-up (to do)
+# RWKV state building on Apple M1 Max
 
-Written 2026-11-25 on the Windows PC, for the Mac. Fork main `6cb164606` and later.
+On a 10-core Apple M1 Max, one card per low-rank solve gave the fastest median full rebuild for Big, Small and Tiny. Grouping four cards, as the AVX2 path does, lowered replay throughput by 4.9% to 7.3%. The macOS runtime now groups two cards only for Small and Tiny in a single-worker replay pool, where long-history replay gained 2.9% and 4.0% respectively.
 
-## What the PC got, and why the Mac doesn't have it yet
+## Full rebuild
 
-The batched low-rank codec (SM168, merged in `86072018a`) encodes the card and note states of up to four cards in
-one solve: the heads of four layer writes are the lanes of one set of small Jacobi eigen problems, stored lane by
-lane (`a[i][j][lane]` in `rslib/src/rwkv/lowrank.rs`), so the rotations of all lanes run side by side in SIMD
-registers. On x86-64 the solve is also compiled for AVX2 / AVX-512 and picked at run time.
+Median reviews per second during replay with all 10 threads and the shipped model pairs. The first three columns use the shipped low-rank format (`compact_lowrank`, int6 factors for Big and Small, int8 for Tiny). Percentages compare throughput with one card per solve. The last column uses compact int8 rows as a separate format comparison.
 
-Measured on the PC (quiet machine, median of 3, alternating order; anki-rwkv
-`artifacts/small-model/sm168/RESULT.md`):
+| Model pair | 1 card | 2 cards | 4 cards | Int8 rows |
+|---|---:|---:|---:|---:|
+| Big | 11,550 | 10,978 (−5.0%) | 10,983 (−4.9%) | 10,784 |
+| Small | 39,229 | 35,352 (−9.9%) | 36,785 (−6.2%) | 40,041 |
+| Tiny | 64,691 | 60,087 (−7.1%) | 59,944 (−7.3%) | 72,075 |
 
-| Size | One-thread long-history replay, before -> after | Full rebuild, before -> after |
-|---|---|---|
-| Big | 4,940 -> 5,589 reviews/s (+13.1%) | 14,530 -> 15,320 reviews/s (+5.4%) |
-| Small | 17,225 -> 20,475 reviews/s (+18.9%) | 47,227 -> 49,121 reviews/s (+4.0%) |
-| Tiny | 30,165 -> 37,793 reviews/s (+25.3%) | 82,844 -> 86,959 reviews/s (+5.0%) |
+Including model loading, replay, and the full and delta checkpoints, one-card rebuilds took **18.07 s** for Big, **5.40 s** for Small and **3.33 s** for Tiny. Four-card batches were slower than one card in all nine same-pass rebuild comparisons. Two-card results varied more, especially on Tiny.
 
-**The Mac does not use the batching.** `lowrank::batch_writes()` returns 1 unless the CPU has 256-bit vectors
-(AVX2 or AVX-512), so Apple Silicon (128-bit NEON) keeps one card per solve. On the PC, capping the codec at
-128-bit vectors made more lanes only add work (codec benchmark at baseline width: -9% to +2% time per write vs
-before). That was an x86 baseline build, not a Mac: **nobody has measured it on Apple Silicon.**
+## Long card histories
 
-## What to try on the Mac
+Median reviews per second for a standalone model on one thread. Each of 1,000 cards received 24 reviews, taking every card through the switch to rank 4 at 16 answers.
 
-1. **Measure first.** Build release and run the speed harness of the clean re-measure (SM163):
-   `artifacts/small-model/sm163/run.sh` and `sm163_speed.rs` in the anki-rwkv repo (one-thread replay with
-   `RAYON_NUM_THREADS=1`, full rebuild with all threads, codec micro-benchmark). Record before numbers on fork main.
-2. **Try batching on aarch64.** Let `batch_writes()` return 2 and 4 on `target_arch = "aarch64"` and benchmark
-   each. Apple cores have several NEON pipes, so independent lanes can pay off through instruction-level
-   parallelism even with 128-bit registers (2 f64 or 4 f32 per register), unlike the x86 baseline the PC tried.
-3. **Check what the compiler emits.** Look at `encode_batch_impl` in the aarch64 assembly (`cargo asm` or
-   `objdump`): the lane loops should become NEON `fmla`/`fmul` on vectors. If they stay scalar, make the lane loop
-   shape vectorizer-friendly (fixed `L`, no early exits; the non-rotating lane already uses a select).
-4. **Keep the bytes identical.** The batched-vs-single test (`encode_layers` at 1, 2 and 4 cards per solve, both head
-   sizes, int8 and int6 factors) and the frozen-codec tests must pass unchanged. No fused multiply-add where the
-   reference does a separate multiply and add, and no reordering of sums: NEON `fmla` is fused, so check that the
-   compiler is not contracting `a * b + c` (Rust does not contract by default; keep it that way).
-5. **No new dependencies** (no Accelerate / BLAS): the gain must come from our own code.
+| Model | 1 card | 2 cards | 4 cards | Int8 rows |
+|---|---:|---:|---:|---:|
+| Big | 3,774 | 3,762 (−0.3%) | 3,639 (−3.6%) | 3,920 |
+| Small | 14,520 | 14,770 (+1.7%) | 14,118 (−2.8%) | 18,329 |
+| Tiny | 25,817 | 26,766 (+3.7%) | 24,596 (−4.7%) | 36,050 |
 
-## Done when
+## Two-card batches on Small and Tiny
 
-- One-thread replay and full rebuild on the Mac are measured before and after, per size, with the default format
-  (`compact_lowrank`: Big/Small int6 factors, Tiny int8).
-- If a batch width helps on aarch64: same bytes (tests above), both `cargo test -p anki --lib` suites pass, merged
-  into fork main with the numbers in RELEASE.md. If none helps: write the numbers here and close it.
+Two-card batches beat one card in all three single-thread long-history passes on both sizes. For a full mixed-history rebuild limited to one thread, throughput went from 7,030 to 7,056 reviews/s on Small and from 12,721 to 13,070 on Tiny. The difference varied between passes. With ten threads on the long histories, each size also had passes favoring each width.
+
+The isolated codec benchmark explains the model-size difference. In 30 alternating blocks timed with the macOS thread CPU clock, pairing writes with 16-value heads saved 8–10% CPU time per layer write at rank 2 and 12–13% at rank 4, across int6 and int8 factors. For Big’s 32-value heads, the two-card cost was within 1% at rank 2 and about 5% lower at rank 4. Four-card batches took more CPU time per write in all eight cases.
+
+## Verification on the final implementation
+
+The table compares release builds of `517dc4473` with and without the macOS dispatch change. Before and after runs alternated order for each model. Values are median reviews per second across five long-history passes and three full rebuilds.
+
+| Workload | Small, before → after | Tiny, before → after |
+|---|---:|---:|
+| Long histories, 1 worker | 14,630 → 15,047 (+2.9%) | 27,090 → 28,170 (+4.0%) |
+| Full rebuild, 1 worker | 7,175 → 7,238 (+0.9%) | 13,195 → 13,329 (+1.0%) |
+| Full rebuild, 10 workers | 39,832 → 39,970 | 66,484 → 67,923 |
+
+Both builds used one card per solve in the ten-worker control. Tiny’s individual ten-worker comparisons varied by up to 14.9%. In the single-worker long-history test, the final build was faster in four of five Small comparisons and all five Tiny comparisons. Card and note byte counts and prediction checksums matched across all before and after runs of that test.
+
+## Measurement and correctness
+
+- Built native `aarch64-apple-darwin` release binaries with Rust 1.97.1 on an M1 Max with eight performance cores and two efficiency cores. The baseline was `42ab96f1f`, which has the engine and weights from `6cb164606`. The two experimental builds grouped the replay streams and compiled the solver for the matching width, eight heads for two cards and sixteen heads for four.
+- Used the SM163 synthetic history of 205,785 reviews on 14,000 cards over 730 days. The full rebuild replays up to 16,384 reviews per chunk and writes both checkpoints to a temporary store. The long-history benchmark uses the same model weights and takes the median of three replay timings after one warm-up. [SM163 rebuild harness](https://github.com/JSchoreels/anki-rwkv/blob/97128eb8cf14f5ddcc21e45a82d7926bc11f92a8/artifacts/small-model/sm163/sm163_speed.rs) · [Long-history benchmark](../rslib/src/rwkv/model_size_bench.rs)
+- Repeated all four configurations in three different orders after other builds and tests had finished. The full-rebuild and long-history width comparisons give the median of those three passes. Idle CPU sampled just before each run had a median of 81% and ranged from 44% to 87%. Earlier trials under competing load were excluded.
+- Both experimental builds passed 24 codec and replay checks covering both engine head sizes, int6 and int8 factors, byte-for-byte agreement with the frozen codec, reconstructed matrices, partial batches and replay across chunk boundaries. Across all three low-rank widths, each long-history workload also produced the same card and note byte counts and prediction checksum. The complete Rust library suite passed with one Rayon worker in both primary-engine configurations (1,607 tests in each). [Codec tests](../rslib/src/rwkv/lowrank.rs) · [Replay tests](../rslib/src/rwkv/precision_tests.rs)
+- The one-card build already vectorizes across a card’s four heads. ARM64 disassembly of the encoder and Jacobi solver showed 128-bit NEON vector arithmetic with separate double-precision multiply and add instructions. The inspected functions contained no fused multiply-add operations. [Original SM168 handoff and PC measurements](https://github.com/JSchoreels/anki/commit/42ab96f1ff50aeb29bfdaec9793df4189b167d95)
