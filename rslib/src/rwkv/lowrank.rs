@@ -26,6 +26,14 @@
 //!    (`w8+lr2.16.4q6x8`, the smaller shift vectors and factors experiment
 //!    (SM152)): the same arithmetic with codes in [-31, 31].
 //!
+//! Writes can be batched (`encode_layers`): the heads of several layer
+//! writes (several cards of a replay) are the lanes of one solve, stored
+//! lane by lane so the small eigen problems of all lanes run side by side
+//! in SIMD registers (on x86-64 the solve is compiled for AVX2 and AVX-512
+//! too, picked at run time). Every lane does exactly the operations of a
+//! write alone, in the same order, so the bytes and the stored matrix are
+//! the same bit for bit at every batch size and vector width.
+//!
 //! The rank follows a schedule (`RankSchedule`): rank `low` below `switch`
 //! answers, rank `high` from `switch`; an entity with n answers stores rank
 //! min(n, r) (a state with n answers has rank at most n). The solve runs in
@@ -175,7 +183,7 @@ fn invalid(what: &str) -> io::Error {
 /// The largest basis of a write's solve: the previous write's left vectors
 /// (at most `MAX_RANK`) and the new value vector.
 const MAX_BASIS: usize = MAX_RANK + 1;
-const _: () = assert!(MAX_BASIS == 9, "eigh_lanes dispatches n = 1..=9");
+const _: () = assert!(MAX_BASIS == 9, "eigh_block dispatches n = 1..=9");
 
 /// One factor vector of this engine's head size.
 type Vector = [f32; HEAD_SIZE];
@@ -305,11 +313,8 @@ pub(super) enum Previous<'a> {
 
 /// Encodes one layer's float update `matrix` (replaced by the stored
 /// reconstruction) after a write with value vector `v` (`HEADS * HEAD_SIZE`)
-/// and appends the block to `out`, with `factors` codes.
-///
-/// Everything per head lives in fixed-size stack arrays (no allocation on
-/// the factored path); the stored matrix is the product of the rounded
-/// factors as they are written (the values a decode of the block gives).
+/// and appends the block to `out`, with `factors` codes: `encode_layers`
+/// with one write.
 pub(super) fn encode_layer(
     matrix: &mut [f32],
     previous: Previous<'_>,
@@ -318,70 +323,203 @@ pub(super) fn encode_layer(
     factors: Factors,
     out: &mut Vec<u8>,
 ) {
-    let (answers, previous_rank) = match previous {
-        Previous::Fresh => (1, 0),
-        Previous::Block(block, width) => match header(block, width) {
-            Ok((answers, rank)) => (answers.saturating_add(1), rank),
-            Err(_) => (u8::MAX, 0),
-        },
-        Previous::Matrix => (u8::MAX, 0),
-    };
-    let full_basis = match previous {
-        Previous::Matrix => true,
-        Previous::Block(block, width) => header(block, width).is_err(),
-        Previous::Fresh => false,
-    };
-    debug_assert_eq!(matrix.len(), HEADS * HEAD_SIZE * HEAD_SIZE);
-    let rank = schedule.rank(answers);
-    let vector_bytes = factors.vector_bytes();
-    let start = out.len();
-    out.push(answers);
-    out.push(rank as u8);
-    out.resize(start + block_len(rank, factors), 0);
-    let mut left = [[[0.0_f32; HEAD_SIZE]; MAX_RANK]; HEADS];
-    let mut right = [[[0.0_f32; HEAD_SIZE]; MAX_RANK]; HEADS];
-    sanitize(matrix);
-    if full_basis {
-        for (head, head_matrix) in matrix.chunks_exact(HEAD_SIZE * HEAD_SIZE).enumerate() {
-            factor_head_general(
-                head_matrix,
-                HEAD_SIZE,
-                None,
-                rank,
-                left[head].as_flattened_mut(),
-                right[head].as_flattened_mut(),
-            );
-        }
-    } else {
-        debug_assert_eq!(v.len(), HEADS * HEAD_SIZE);
-        let mut basis = [[[0.0_f32; HEAD_SIZE]; MAX_BASIS]; HEADS];
-        for (head, vectors) in basis.iter_mut().enumerate() {
-            if let Previous::Block(block, width) = previous {
-                for (component, slot) in vectors[..previous_rank].iter_mut().enumerate() {
-                    vector(block, previous_rank, width, head, component, slot);
-                }
-            }
-            let value = &mut vectors[previous_rank];
-            value.copy_from_slice(&v[head * HEAD_SIZE..(head + 1) * HEAD_SIZE]);
-            sanitize(value);
-        }
-        factor_heads(
+    encode_layers::<HEADS>(
+        &mut [LayerWrite {
             matrix,
+            previous,
+            v,
+            out,
+        }],
+        schedule,
+        factors,
+    );
+}
+
+/// One layer write of a batch (`encode_layers`): the float update (replaced
+/// by the stored reconstruction), the previous write's factors, the value
+/// vector, and the buffer the block is appended to.
+pub(super) struct LayerWrite<'a> {
+    pub(super) matrix: &'a mut [f32],
+    pub(super) previous: Previous<'a>,
+    pub(super) v: &'a [f32],
+    pub(super) out: &'a mut Vec<u8>,
+}
+
+/// Lanes of a batched write (`encode_layers::<BATCH_LANES>`): four layer
+/// writes (four cards of a replay) at once.
+pub(super) const BATCH_LANES: usize = 4 * HEADS;
+
+/// Layer writes worth batching on this CPU: `BATCH_LANES / HEADS` with
+/// 256-bit or wider vectors (x86-64 AVX2 or AVX-512), else one (with
+/// 128-bit vectors more lanes only add work).
+pub(super) fn batch_writes() -> usize {
+    match simd() {
+        Simd::Baseline => 1,
+        #[cfg(target_arch = "x86_64")]
+        Simd::Avx2 | Simd::Avx512 => BATCH_LANES / HEADS,
+    }
+}
+
+/// Encodes independent layer writes (`encode_layer` each), `L / HEADS` at a
+/// time: the heads of those writes are the lanes of one solve, so their
+/// small eigen problems run together, lane by lane in SIMD registers. Every
+/// write gets exactly the bytes and the matrix `encode_layer` gives it alone
+/// (each lane does the same operations in the same order).
+///
+/// Everything lives in fixed-size stack arrays (no allocation on the
+/// factored path); the stored matrix is the product of the rounded factors
+/// as they are written (the values a decode of the block gives).
+pub(super) fn encode_layers<const L: usize>(
+    writes: &mut [LayerWrite<'_>],
+    schedule: RankSchedule,
+    factors: Factors,
+) {
+    const { assert!(L >= HEADS && L % HEADS == 0) };
+    for batch in writes.chunks_mut(L / HEADS) {
+        encode_batch::<L>(batch, schedule, factors);
+    }
+}
+
+/// `encode_batch_impl` compiled for the widest vector unit available (the
+/// same bits at every width: no operation is reordered or fused).
+fn encode_batch<const L: usize>(
+    writes: &mut [LayerWrite<'_>],
+    schedule: RankSchedule,
+    factors: Factors,
+) {
+    #[cfg(target_arch = "x86_64")]
+    {
+        #[target_feature(enable = "avx2")]
+        fn avx2<const L: usize>(
+            writes: &mut [LayerWrite<'_>],
+            schedule: RankSchedule,
+            factors: Factors,
+        ) {
+            encode_batch_impl::<L>(writes, schedule, factors)
+        }
+        #[target_feature(enable = "avx512f")]
+        fn avx512<const L: usize>(
+            writes: &mut [LayerWrite<'_>],
+            schedule: RankSchedule,
+            factors: Factors,
+        ) {
+            encode_batch_impl::<L>(writes, schedule, factors)
+        }
+        match simd() {
+            // SAFETY: the CPU has the feature (checked by `simd`).
+            Simd::Avx512 => return unsafe { avx512::<L>(writes, schedule, factors) },
+            // SAFETY: as above.
+            Simd::Avx2 => return unsafe { avx2::<L>(writes, schedule, factors) },
+            Simd::Baseline => {}
+        }
+    }
+    encode_batch_impl::<L>(writes, schedule, factors)
+}
+
+#[inline(always)]
+fn encode_batch_impl<const L: usize>(
+    writes: &mut [LayerWrite<'_>],
+    schedule: RankSchedule,
+    factors: Factors,
+) {
+    debug_assert!(writes.len() * HEADS <= L);
+    let vector_bytes = factors.vector_bytes();
+    let mut left = [[[0.0_f32; HEAD_SIZE]; MAX_RANK]; L];
+    let mut right = [[[0.0_f32; HEAD_SIZE]; MAX_RANK]; L];
+    let mut basis = [[[0.0_f32; HEAD_SIZE]; MAX_BASIS]; L];
+    let mut m0 = [0_usize; L];
+    // Per lane: the rank of the factored solve (0: no factored solve).
+    let mut solve_rank = [0_usize; L];
+    let mut ranks = [0_usize; L];
+    let mut starts = [0_usize; L];
+    for (index, write) in writes.iter_mut().enumerate() {
+        let (answers, previous_rank) = match write.previous {
+            Previous::Fresh => (1, 0),
+            Previous::Block(block, width) => match header(block, width) {
+                Ok((answers, rank)) => (answers.saturating_add(1), rank),
+                Err(_) => (u8::MAX, 0),
+            },
+            Previous::Matrix => (u8::MAX, 0),
+        };
+        let full_basis = match write.previous {
+            Previous::Matrix => true,
+            Previous::Block(block, width) => header(block, width).is_err(),
+            Previous::Fresh => false,
+        };
+        debug_assert_eq!(write.matrix.len(), HEADS * HEAD_SIZE * HEAD_SIZE);
+        let rank = schedule.rank(answers);
+        let out = &mut *write.out;
+        let start = out.len();
+        out.push(answers);
+        out.push(rank as u8);
+        out.resize(start + block_len(rank, factors), 0);
+        ranks[index] = rank;
+        starts[index] = start;
+        sanitize(write.matrix);
+        let lanes = index * HEADS..(index + 1) * HEADS;
+        if full_basis {
+            for (lane, head_matrix) in lanes.zip(write.matrix.chunks_exact(HEAD_SIZE * HEAD_SIZE)) {
+                factor_head_general(
+                    head_matrix,
+                    HEAD_SIZE,
+                    None,
+                    rank,
+                    left[lane].as_flattened_mut(),
+                    right[lane].as_flattened_mut(),
+                );
+            }
+        } else {
+            debug_assert_eq!(write.v.len(), HEADS * HEAD_SIZE);
+            for (head, lane) in lanes.enumerate() {
+                let vectors = &mut basis[lane];
+                if let Previous::Block(block, width) = write.previous {
+                    for (component, slot) in vectors[..previous_rank].iter_mut().enumerate() {
+                        vector(block, previous_rank, width, head, component, slot);
+                    }
+                }
+                let value = &mut vectors[previous_rank];
+                value.copy_from_slice(&write.v[head * HEAD_SIZE..(head + 1) * HEAD_SIZE]);
+                sanitize(value);
+                m0[lane] = previous_rank + 1;
+                solve_rank[lane] = rank;
+            }
+        }
+    }
+    {
+        let lanes = writes.len() * HEADS;
+        let mut matrices: [&[f32]; L] = [&[]; L];
+        for (index, write) in writes.iter().enumerate() {
+            for (head, head_matrix) in write.matrix.chunks_exact(HEAD_SIZE * HEAD_SIZE).enumerate()
+            {
+                matrices[index * HEADS + head] = head_matrix;
+            }
+        }
+        factor_heads::<HEAD_SIZE, L>(
+            &matrices[..lanes],
             &basis,
-            previous_rank + 1,
-            rank,
+            &m0,
+            &solve_rank,
             &mut left,
             &mut right,
         );
     }
-    for (head, head_matrix) in matrix.chunks_exact_mut(HEAD_SIZE * HEAD_SIZE).enumerate() {
-        let (left, right) = (&mut left[head][..rank], &mut right[head][..rank]);
-        let mut write = start + 2 + head * 2 * rank * vector_bytes;
-        for vector in left.iter_mut().chain(right.iter_mut()) {
-            quantize_vector(vector, factors, &mut out[write..write + vector_bytes]);
-            write += vector_bytes;
+    for (index, write) in writes.iter_mut().enumerate() {
+        let (rank, start) = (ranks[index], starts[index]);
+        let out = &mut *write.out;
+        for (head, head_matrix) in write
+            .matrix
+            .chunks_exact_mut(HEAD_SIZE * HEAD_SIZE)
+            .enumerate()
+        {
+            let lane = index * HEADS + head;
+            let (left, right) = (&mut left[lane][..rank], &mut right[lane][..rank]);
+            let mut at = start + 2 + head * 2 * rank * vector_bytes;
+            for vector in left.iter_mut().chain(right.iter_mut()) {
+                quantize_vector(vector, factors, &mut out[at..at + vector_bytes]);
+                at += vector_bytes;
+            }
+            product(left, right, head_matrix);
         }
-        product(left, right, head_matrix);
     }
 }
 
@@ -424,9 +562,24 @@ fn sanitize(values: &mut [f32]) {
 /// `out`: scale, then the codes) and replaces them with the decoded values.
 /// Int6 is the int8 arithmetic with limit 31 (the scorer's
 /// `quant_vectors(x, dim, 31)`), the codes then bit-packed.
+#[inline(always)]
 pub(super) fn quantize_vector(values: &mut [f32], factors: Factors, out: &mut [u8]) {
     let limit = factors.limit();
-    let maximum = values.iter().map(|v| v.abs()).fold(0.0_f32, f32::max);
+    // The largest magnitude (the maximum of a set: any order gives it; NaN
+    // is skipped either way), eight running maxima at a time.
+    let mut maxima = [0.0_f32; 8];
+    let chunks = values.chunks_exact(8);
+    let rest = chunks.remainder();
+    for chunk in chunks {
+        for (maximum, value) in maxima.iter_mut().zip(chunk) {
+            *maximum = maximum.max(value.abs());
+        }
+    }
+    let maximum = rest
+        .iter()
+        .map(|v| v.abs())
+        .chain(maxima)
+        .fold(0.0_f32, f32::max);
     let scale = f16_scale(maximum, limit);
     out[..2].copy_from_slice(&scale.to_bits().to_le_bytes());
     let scale = scale.to_f32();
@@ -475,7 +628,14 @@ pub(super) fn factor_head(
         }
         let mut left = [[[0.0_f32; K]; MAX_RANK]];
         let mut right = [[[0.0_f32; K]; MAX_RANK]];
-        factor_heads(matrix, &vectors, basis.len() / K, rank, &mut left, &mut right);
+        factor_heads::<K, 1>(
+            &[matrix],
+            &vectors,
+            &[basis.len() / K],
+            &[rank],
+            &mut left,
+            &mut right,
+        );
         left_out[..rank * K].copy_from_slice(left[0][..rank].as_flattened());
         right_out[..rank * K].copy_from_slice(right[0][..rank].as_flattened());
     }
@@ -493,43 +653,49 @@ pub(super) fn factor_head(
 /// One small symmetric problem (the leading `n x n` block is used).
 type Small = [[f64; MAX_BASIS]; MAX_BASIS];
 
-/// The rank-`rank` factors of each head's `K x K` matrix (`matrix` holds
-/// `basis.len()` heads, row = value index) whose column space lies in the
-/// span of that head's first `m0` basis vectors, by decreasing singular
-/// value; zero for components beyond the basis. Writes `left_out[head]` and
-/// `right_out[head]` components `0..rank`.
+/// The rank-`rank[lane]` factors of each lane's `K x K` matrix
+/// (`matrices[lane]`, row = value index) whose column space lies in the span
+/// of that lane's first `m0[lane]` basis vectors, by decreasing singular
+/// value; zero for components beyond the basis. Writes `left_out[lane]` and
+/// `right_out[lane]` components `0..rank[lane]`; a lane of rank 0 is left
+/// untouched. The lanes are the heads of one or more layer writes.
 ///
-/// Per head, the same arithmetic as `factor_head_general` on a basis,
+/// Per lane, the same arithmetic as `factor_head_general` on a basis,
 /// operation for operation and in the same order (so the same bits), with
-/// stack arrays and compile-time sizes. The heads' eigen problems run
-/// together (`eigh_lanes`), so their serial Jacobi rotations overlap.
-fn factor_heads<const K: usize>(
-    matrix: &[f32],
+/// stack arrays and compile-time sizes. The lanes' eigen problems of the
+/// same size run together (`eigh_groups`), so their serial Jacobi rotations
+/// run side by side in SIMD registers.
+#[inline(always)]
+fn factor_heads<const K: usize, const L: usize>(
+    matrices: &[&[f32]],
     basis: &[[[f32; K]; MAX_BASIS]],
-    m0: usize,
-    rank: usize,
+    m0: &[usize],
+    rank: &[usize],
     left_out: &mut [[[f32; K]; MAX_RANK]],
     right_out: &mut [[[f32; K]; MAX_RANK]],
 ) {
-    let heads = basis.len();
-    debug_assert!(heads <= HEADS && matrix.len() == heads * K * K);
-    debug_assert!((1..=MAX_BASIS).contains(&m0) && rank <= MAX_RANK);
-    for vector in left_out[..heads]
-        .iter_mut()
-        .chain(&mut right_out[..heads])
-        .flat_map(|vectors| &mut vectors[..rank])
-    {
-        vector.fill(0.0);
-    }
-    if rank == 0 {
-        return;
-    }
+    let lanes = matrices.len();
+    debug_assert!(lanes <= L && basis.len() >= lanes && m0.len() >= lanes && rank.len() >= lanes);
+    let mut sizes = [0_usize; L];
     // P: the basis vectors, each normalised (zero vectors stay zero).
-    let mut pn = [[[0.0_f64; K]; MAX_BASIS]; HEADS];
-    let mut gram = [[[0.0_f64; MAX_BASIS]; MAX_BASIS]; HEADS];
-    for head in 0..heads {
-        let pn = &mut pn[head];
-        for (vector, values) in pn.iter_mut().zip(&basis[head][..m0]) {
+    let mut pn = [[[0.0_f64; K]; MAX_BASIS]; L];
+    let mut gram = [[[0.0_f64; MAX_BASIS]; MAX_BASIS]; L];
+    for lane in 0..lanes {
+        let (m0, rank) = (m0[lane], rank[lane]);
+        debug_assert!(rank <= MAX_RANK && matrices[lane].len() == K * K);
+        for vector in left_out[lane][..rank]
+            .iter_mut()
+            .chain(&mut right_out[lane][..rank])
+        {
+            vector.fill(0.0);
+        }
+        if rank == 0 {
+            continue;
+        }
+        debug_assert!((1..=MAX_BASIS).contains(&m0));
+        sizes[lane] = m0;
+        let pn = &mut pn[lane][..m0];
+        for (vector, values) in pn.iter_mut().zip(&basis[lane][..m0]) {
             for (x, &value) in vector.iter_mut().zip(values) {
                 *x = value as f64;
             }
@@ -540,27 +706,22 @@ fn factor_heads<const K: usize>(
                 }
             }
         }
-        let gram = &mut gram[head];
-        for i in 0..m0 {
-            for j in 0..=i {
-                let dot = dot_fixed(&pn[i], &pn[j]);
-                gram[i][j] = dot;
-                gram[j][i] = dot;
-            }
-        }
+        gram_fixed(pn, &mut gram[lane]);
     }
-    let mut lanes = [false; HEADS];
-    lanes[..heads].fill(true);
-    let (lam, w) = eigh_lanes(&gram, m0, lanes);
+    let (lam, w) = eigh_groups::<L>(&gram, &sizes[..lanes]);
     // Q: orthonormal basis vectors of the kept directions; B = Q^T S.
-    let mut q = [[[0.0_f64; K]; MAX_BASIS]; HEADS];
-    let mut b = [[[0.0_f64; K]; MAX_BASIS]; HEADS];
-    let mut bbt = [[[0.0_f64; MAX_BASIS]; MAX_BASIS]; HEADS];
-    let mut kept = [0_usize; HEADS];
-    for head in 0..heads {
-        let (lam, w, pn) = (&lam[head], &w[head], &pn[head]);
+    let mut q = [[[0.0_f64; K]; MAX_BASIS]; L];
+    let mut b = [[[0.0_f64; K]; MAX_BASIS]; L];
+    let mut bbt = [[[0.0_f64; MAX_BASIS]; MAX_BASIS]; L];
+    let mut kept = [0_usize; L];
+    for lane in 0..lanes {
+        let m0 = sizes[lane];
+        if m0 == 0 {
+            continue;
+        }
+        let (lam, w, pn) = (&lam[lane], &w[lane], &pn[lane]);
         let top = lam[..m0].iter().copied().fold(0.0_f64, f64::max);
-        let q = &mut q[head];
+        let q = &mut q[lane];
         let mut m = 0;
         for (j, &value) in lam[..m0].iter().enumerate() {
             if value > top * KEEP_TOL && value > 0.0 {
@@ -577,56 +738,38 @@ fn factor_heads<const K: usize>(
                 m += 1;
             }
         }
-        kept[head] = m;
-        let b = &mut b[head];
-        let head_matrix = &matrix[head * K * K..(head + 1) * K * K];
-        for (bj, qj) in b[..m].iter_mut().zip(&*q) {
-            for (&weight, row) in qj.iter().zip(head_matrix.chunks_exact(K)) {
+        kept[lane] = m;
+        // B row by row of S (each value still sums the rows in order), so
+        // the m vectors' sums advance together.
+        let b = &mut b[lane][..m];
+        for (r, row) in matrices[lane].chunks_exact(K).take(K).enumerate() {
+            let row: [f64; K] = std::array::from_fn(|c| row[c] as f64);
+            for (bj, qj) in b.iter_mut().zip(&*q) {
+                let weight = qj[r];
                 if weight != 0.0 {
-                    for (value, &s) in bj.iter_mut().zip(row) {
-                        *value += weight * s as f64;
+                    for (value, &s) in bj.iter_mut().zip(&row) {
+                        *value += weight * s;
                     }
                 }
             }
         }
-        let bbt = &mut bbt[head];
-        for i in 0..m {
-            for j in 0..=i {
-                let dot = dot_fixed(&b[i], &b[j]);
-                bbt[i][j] = dot;
-                bbt[j][i] = dot;
-            }
-        }
+        gram_fixed(b, &mut bbt[lane]);
     }
-    // The eigen problems of B B^T, heads of the same size together.
-    let mut s2 = [[0.0_f64; MAX_BASIS]; HEADS];
-    let mut u = [[[0.0_f64; MAX_BASIS]; MAX_BASIS]; HEADS];
-    for size in 1..=MAX_BASIS {
-        let mut lanes = [false; HEADS];
-        for (lane, &m) in lanes.iter_mut().zip(&kept[..heads]) {
-            *lane = m == size;
-        }
-        if lanes.contains(&true) {
-            let (values, vectors) = eigh_lanes(&bbt, size, lanes);
-            for head in (0..heads).filter(|&head| lanes[head]) {
-                s2[head] = values[head];
-                u[head] = vectors[head];
-            }
-        }
-    }
-    for head in 0..heads {
-        let m = kept[head];
+    // The eigen problems of B B^T.
+    let (s2, u) = eigh_groups::<L>(&bbt, &kept[..lanes]);
+    for lane in 0..lanes {
+        let m = kept[lane];
         if m == 0 {
             continue;
         }
-        let (s2, u, q, b) = (&s2[head], &u[head], &q[head], &b[head]);
+        let (s2, u, q, b) = (&s2[lane], &u[lane], &q[lane], &b[lane]);
         let mut order = [0_usize; MAX_BASIS];
         for (index, slot) in order.iter_mut().enumerate() {
             *slot = index;
         }
         let order = &mut order[..m];
         order.sort_by(|&x, &y| s2[y].total_cmp(&s2[x]));
-        for (component, &column) in order.iter().take(rank).enumerate() {
+        for (component, &column) in order.iter().take(rank[lane]).enumerate() {
             let mut left = [0.0_f64; K];
             let mut right = [0.0_f64; K];
             for j in 0..m {
@@ -641,10 +784,10 @@ fn factor_heads<const K: usize>(
             let sigma = right.iter().map(|x| x * x).sum::<f64>().sqrt();
             let g = sigma.sqrt();
             let divisor = if g > 0.0 { g } else { 1.0 };
-            for ((out, &x), (out_right, &y)) in left_out[head][component]
+            for ((out, &x), (out_right, &y)) in left_out[lane][component]
                 .iter_mut()
                 .zip(&left)
-                .zip(right_out[head][component].iter_mut().zip(&right))
+                .zip(right_out[lane][component].iter_mut().zip(&right))
             {
                 *out = (x * g) as f32;
                 *out_right = (y / divisor) as f32;
@@ -657,87 +800,223 @@ fn dot_fixed<const K: usize>(a: &[f64; K], b: &[f64; K]) -> f64 {
     a.iter().zip(b).map(|(x, y)| x * y).sum()
 }
 
-/// `eigh` of the leading `n x n` block (1 <= n <= `MAX_BASIS`) of each
-/// problem whose lane is set: eigenvalues, and eigenvectors as columns
-/// (zeros for the other lanes).
-fn eigh_lanes(
-    problems: &[Small; HEADS],
-    n: usize,
-    lanes: [bool; HEADS],
-) -> ([[f64; MAX_BASIS]; HEADS], [Small; HEADS]) {
-    fn run<const N: usize>(
-        problems: &[Small; HEADS],
-        lanes: [bool; HEADS],
-    ) -> ([[f64; MAX_BASIS]; HEADS], [Small; HEADS]) {
-        let mut a = [[[0.0_f64; N]; N]; HEADS];
-        for (lane, problem) in a.iter_mut().zip(problems) {
-            for (row, values) in lane.iter_mut().zip(problem) {
-                row.copy_from_slice(&values[..N]);
-            }
+/// `out[i][j] = out[j][i]` = the dot product of `vectors[i]` and
+/// `vectors[j]` (j <= i).
+#[inline(always)]
+fn gram_fixed<const K: usize>(vectors: &[[f64; K]], out: &mut Small) {
+    for (i, a) in vectors.iter().enumerate() {
+        for (j, b) in vectors[..=i].iter().enumerate() {
+            let dot = dot_fixed(a, b);
+            out[i][j] = dot;
+            out[j][i] = dot;
         }
-        let v = jacobi_lanes(&mut a, lanes);
-        let mut values = [[0.0_f64; MAX_BASIS]; HEADS];
-        let mut vectors = [[[0.0_f64; MAX_BASIS]; MAX_BASIS]; HEADS];
-        for lane in (0..HEADS).filter(|&lane| lanes[lane]) {
-            for i in 0..N {
-                values[lane][i] = a[lane][i][i];
-                vectors[lane][i][..N].copy_from_slice(&v[lane][i]);
-            }
-        }
-        (values, vectors)
-    }
-    match n {
-        1 => run::<1>(problems, lanes),
-        2 => run::<2>(problems, lanes),
-        3 => run::<3>(problems, lanes),
-        4 => run::<4>(problems, lanes),
-        5 => run::<5>(problems, lanes),
-        6 => run::<6>(problems, lanes),
-        7 => run::<7>(problems, lanes),
-        8 => run::<8>(problems, lanes),
-        9 => run::<9>(problems, lanes),
-        _ => unreachable!("eigen problem of size {n}"),
     }
 }
 
-/// `eigh`'s cyclic Jacobi rotations on each lane's `N x N` problem (in
-/// place: the diagonal ends as the eigenvalues; returns the eigenvectors as
-/// columns). Every lane runs exactly `eigh`'s sequence (stop rule, sweep
-/// cap, rotation order, operation order), so each gives `eigh`'s bits; the
-/// lanes only share the loop, so the CPU overlaps their independent chains
-/// of divisions and square roots (one lane alone is latency-bound).
-fn jacobi_lanes<const N: usize>(
-    a: &mut [[[f64; N]; N]; HEADS],
-    mut active: [bool; HEADS],
-) -> [[[f64; N]; N]; HEADS] {
-    let mut v = [[[0.0_f64; N]; N]; HEADS];
-    for lane in v.iter_mut() {
-        for (i, row) in lane.iter_mut().enumerate() {
-            row[i] = 1.0;
+/// `eigh` of the leading `sizes[lane] x sizes[lane]` block (0 = none, up to
+/// `MAX_BASIS`) of each lane's problem: eigenvalues, and eigenvectors as
+/// columns (zeros beyond the size and for lanes of size 0). The lanes of
+/// one size run together, up to 16 at a time.
+fn eigh_groups<const L: usize>(
+    problems: &[Small; L],
+    sizes: &[usize],
+) -> ([[f64; MAX_BASIS]; L], [Small; L]) {
+    let mut values = [[0.0_f64; MAX_BASIS]; L];
+    let mut vectors = [[[0.0_f64; MAX_BASIS]; MAX_BASIS]; L];
+    for size in 1..=MAX_BASIS {
+        let mut members = [0_usize; L];
+        let mut count = 0;
+        for (lane, &lane_size) in sizes.iter().enumerate() {
+            if lane_size == size {
+                members[count] = lane;
+                count += 1;
+            }
+        }
+        for block in members[..count].chunks(16) {
+            eigh_block(problems, size, block, &mut values, &mut vectors);
         }
     }
-    let mut last_off = [f64::INFINITY; HEADS];
-    for _sweep in 0..60 {
-        for lane in 0..HEADS {
-            if !active[lane] {
-                continue;
+    (values, vectors)
+}
+
+/// `eigh` of the leading `n x n` block of the problems `members` (at most
+/// 16), in one Jacobi run of 4, 8 or 16 lanes.
+fn eigh_block(
+    problems: &[Small],
+    n: usize,
+    members: &[usize],
+    values: &mut [[f64; MAX_BASIS]],
+    vectors: &mut [Small],
+) {
+    fn run<const N: usize, const B: usize>(
+        problems: &[Small],
+        members: &[usize],
+        values: &mut [[f64; MAX_BASIS]],
+        vectors: &mut [Small],
+    ) {
+        let mut a = [[[0.0_f64; B]; N]; N];
+        for (slot, &member) in members.iter().enumerate() {
+            for (row, values) in a.iter_mut().zip(&problems[member]) {
+                for (entry, &value) in row.iter_mut().zip(values) {
+                    entry[slot] = value;
+                }
             }
-            let a = &a[lane];
-            // The sums of `eigh` (same terms, same order; the terms are
-            // squares, so the starting zero's sign does not matter).
-            let mut off = -0.0_f64;
-            for (i, row) in a.iter().enumerate() {
-                for (j, &value) in row.iter().enumerate() {
-                    if j != i {
-                        off += value * value;
+        }
+        let mut active = [false; B];
+        active[..members.len()].fill(true);
+        let v = jacobi_dispatch(&mut a, active);
+        for (slot, &member) in members.iter().enumerate() {
+            for i in 0..N {
+                values[member][i] = a[i][i][slot];
+                for j in 0..N {
+                    vectors[member][i][j] = v[i][j][slot];
+                }
+            }
+        }
+    }
+    macro_rules! sizes {
+        ($($n:literal)*) => {
+            match (n, members.len()) {
+                $(
+                    ($n, 0..=4) => run::<$n, 4>(problems, members, values, vectors),
+                    ($n, 5..=8) => run::<$n, 8>(problems, members, values, vectors),
+                    ($n, 9..=16) => run::<$n, 16>(problems, members, values, vectors),
+                )*
+                _ => unreachable!("eigen problem of size {n} with {} lanes", members.len()),
+            }
+        };
+    }
+    sizes!(1 2 3 4 5 6 7 8 9);
+}
+
+/// `eigh`'s cyclic Jacobi rotations on each active lane's `N x N` problem
+/// (lane-minor: `a[i][j][lane]`; in place: the diagonal ends as the
+/// eigenvalues; returns the eigenvectors as columns). Every lane runs
+/// exactly `eigh`'s sequence (stop rule, sweep cap, rotation order,
+/// operation order), so each gives `eigh`'s bits. The lanes share the loop
+/// and sit side by side in memory, so the compiler runs them in SIMD
+/// registers: every lane computes every rotation, and a lane that `eigh`
+/// would not rotate (inactive, or a zero pivot) keeps its old values
+/// (a select, never an identity rotation, which could flip a zero's sign).
+/// The widest vector unit of this CPU the codec uses (x86-64: checked once
+/// at run time; the solve gives the same bits at every width).
+#[derive(Clone, Copy, PartialEq, Eq)]
+enum Simd {
+    Baseline,
+    #[cfg(target_arch = "x86_64")]
+    Avx2,
+    #[cfg(target_arch = "x86_64")]
+    Avx512,
+}
+
+#[cfg(target_arch = "x86_64")]
+fn simd() -> Simd {
+    use std::sync::atomic::AtomicU8;
+    use std::sync::atomic::Ordering;
+    static LEVEL: AtomicU8 = AtomicU8::new(0);
+    let level = match LEVEL.load(Ordering::Relaxed) {
+        0 => {
+            #[allow(unused_mut)]
+            let mut level = if std::is_x86_feature_detected!("avx512f") {
+                3
+            } else if std::is_x86_feature_detected!("avx2") {
+                2
+            } else {
+                1
+            };
+            // Tests and benchmarks can cap the width.
+            #[cfg(test)]
+            if let Ok(cap) = std::env::var("ANKI_RWKV_LOWRANK_SIMD") {
+                level = level.min(match cap.as_str() {
+                    "baseline" => 1,
+                    "avx2" => 2,
+                    _ => 3,
+                });
+            }
+            LEVEL.store(level, Ordering::Relaxed);
+            level
+        }
+        level => level,
+    };
+    match level {
+        3 => Simd::Avx512,
+        2 => Simd::Avx2,
+        _ => Simd::Baseline,
+    }
+}
+
+#[cfg(not(target_arch = "x86_64"))]
+fn simd() -> Simd {
+    Simd::Baseline
+}
+
+/// `jacobi_lanes` compiled for the widest vector unit available.
+fn jacobi_dispatch<const N: usize, const B: usize>(
+    a: &mut [[[f64; B]; N]; N],
+    active: [bool; B],
+) -> [[[f64; B]; N]; N] {
+    #[cfg(target_arch = "x86_64")]
+    {
+        #[target_feature(enable = "avx2")]
+        fn avx2<const N: usize, const B: usize>(
+            a: &mut [[[f64; B]; N]; N],
+            active: [bool; B],
+        ) -> [[[f64; B]; N]; N] {
+            jacobi_lanes(a, active)
+        }
+        #[target_feature(enable = "avx512f")]
+        fn avx512<const N: usize, const B: usize>(
+            a: &mut [[[f64; B]; N]; N],
+            active: [bool; B],
+        ) -> [[[f64; B]; N]; N] {
+            jacobi_lanes(a, active)
+        }
+        match simd() {
+            // SAFETY: the CPU has the feature (checked by `simd`).
+            Simd::Avx512 => return unsafe { avx512(a, active) },
+            // SAFETY: as above.
+            Simd::Avx2 => return unsafe { avx2(a, active) },
+            Simd::Baseline => {}
+        }
+    }
+    jacobi_lanes(a, active)
+}
+
+#[inline(always)]
+fn jacobi_lanes<const N: usize, const B: usize>(
+    a: &mut [[[f64; B]; N]; N],
+    mut active: [bool; B],
+) -> [[[f64; B]; N]; N] {
+    let mut v = [[[0.0_f64; B]; N]; N];
+    for (i, row) in v.iter_mut().enumerate() {
+        row[i] = [1.0; B];
+    }
+    let mut last_off = [f64::INFINITY; B];
+    for _sweep in 0..60 {
+        // The sums of `eigh` (same terms, same order; the terms are
+        // squares, so the starting zero's sign does not matter).
+        let mut off = [-0.0_f64; B];
+        for (i, row) in a.iter().enumerate() {
+            for (j, entry) in row.iter().enumerate() {
+                if j != i {
+                    for (sum, &value) in off.iter_mut().zip(entry) {
+                        *sum += value * value;
                     }
                 }
             }
-            let mut diagonal = -0.0_f64;
-            for (i, row) in a.iter().enumerate() {
-                diagonal += row[i] * row[i];
+        }
+        let mut diagonal = [-0.0_f64; B];
+        for (i, row) in a.iter().enumerate() {
+            for (sum, &value) in diagonal.iter_mut().zip(&row[i]) {
+                *sum += value * value;
             }
-            if off <= diagonal * 1e-32 || off == 0.0 || off >= last_off[lane] {
+        }
+        for lane in 0..B {
+            if !active[lane] {
+                continue;
+            }
+            let off = off[lane];
+            if off <= diagonal[lane] * 1e-32 || off == 0.0 || off >= last_off[lane] {
                 active[lane] = false;
             } else {
                 last_off[lane] = off;
@@ -748,48 +1027,52 @@ fn jacobi_lanes<const N: usize>(
         }
         for p in 0..N {
             for q in p + 1..N {
-                // All lanes' rotation angles first (independent chains),
-                // then the updates.
-                let mut rotations = [(0.0_f64, 0.0_f64, false); HEADS];
-                for (lane, rotation) in rotations.iter_mut().enumerate() {
-                    if !active[lane] {
-                        continue;
-                    }
-                    let a = &a[lane];
-                    let apq = a[p][q];
-                    if apq == 0.0 {
-                        continue;
-                    }
-                    let app = a[p][p];
-                    let aqq = a[q][q];
+                let mut c = [0.0_f64; B];
+                let mut s = [0.0_f64; B];
+                let mut rotate = [false; B];
+                for lane in 0..B {
+                    let apq = a[p][q][lane];
+                    let app = a[p][p][lane];
+                    let aqq = a[q][q][lane];
                     let theta = (aqq - app) / (2.0 * apq);
                     let t = theta.signum() / (theta.abs() + (theta * theta + 1.0).sqrt());
                     let t = if theta == 0.0 { 1.0 } else { t };
-                    let c = (t * t + 1.0).sqrt().recip();
-                    let s = t * c;
-                    *rotation = (c, s, true);
+                    let cosine = (t * t + 1.0).sqrt().recip();
+                    c[lane] = cosine;
+                    s[lane] = t * cosine;
+                    rotate[lane] = active[lane] & (apq != 0.0);
                 }
-                for ((a, v), &(c, s, rotate)) in a.iter_mut().zip(v.iter_mut()).zip(&rotations) {
-                    if !rotate {
-                        continue;
+                if !rotate.contains(&true) {
+                    continue;
+                }
+                for row in a.iter_mut() {
+                    for lane in 0..B {
+                        let arp = row[p][lane];
+                        let arq = row[q][lane];
+                        let (c, s) = (c[lane], s[lane]);
+                        let (np, nq) = (c * arp - s * arq, s * arp + c * arq);
+                        row[p][lane] = if rotate[lane] { np } else { arp };
+                        row[q][lane] = if rotate[lane] { nq } else { arq };
                     }
-                    for row in a.iter_mut() {
-                        let arp = row[p];
-                        let arq = row[q];
-                        row[p] = c * arp - s * arq;
-                        row[q] = s * arp + c * arq;
+                }
+                for r in 0..N {
+                    for lane in 0..B {
+                        let apr = a[p][r][lane];
+                        let aqr = a[q][r][lane];
+                        let (c, s) = (c[lane], s[lane]);
+                        let (np, nq) = (c * apr - s * aqr, s * apr + c * aqr);
+                        a[p][r][lane] = if rotate[lane] { np } else { apr };
+                        a[q][r][lane] = if rotate[lane] { nq } else { aqr };
                     }
-                    for r in 0..N {
-                        let apr = a[p][r];
-                        let aqr = a[q][r];
-                        a[p][r] = c * apr - s * aqr;
-                        a[q][r] = s * apr + c * aqr;
-                    }
-                    for row in v.iter_mut() {
-                        let vrp = row[p];
-                        let vrq = row[q];
-                        row[p] = c * vrp - s * vrq;
-                        row[q] = s * vrp + c * vrq;
+                }
+                for row in v.iter_mut() {
+                    for lane in 0..B {
+                        let vrp = row[p][lane];
+                        let vrq = row[q][lane];
+                        let (c, s) = (c[lane], s[lane]);
+                        let (np, nq) = (c * vrp - s * vrq, s * vrp + c * vrq);
+                        row[p][lane] = if rotate[lane] { np } else { vrp };
+                        row[q][lane] = if rotate[lane] { nq } else { vrq };
                     }
                 }
             }
@@ -1148,7 +1431,9 @@ mod tests {
         }
         let mut left = vec![[[7.0_f32; K]; MAX_RANK]; layer.len()];
         let mut right = vec![[[7.0_f32; K]; MAX_RANK]; layer.len()];
-        factor_heads(&matrix, &basis, m0, rank, &mut left, &mut right);
+        let matrices: Vec<&[f32]> = matrix.chunks_exact(K * K).collect();
+        let (m0s, ranks) = (vec![m0; layer.len()], vec![rank; layer.len()]);
+        factor_heads::<K, 16>(&matrices, &basis, &m0s, &ranks, &mut left, &mut right);
         for (head, (head_matrix, head_basis)) in layer.iter().enumerate() {
             let (mut l, mut r) = (vec![9.0; rank * K], vec![9.0; rank * K]);
             reference::factor_head(head_matrix, K, Some(head_basis), rank, &mut l, &mut r);
@@ -1559,6 +1844,113 @@ mod tests {
         }
     }
 
+    /// Batched writes (`encode_layers`, several cards per solve) store the
+    /// same bytes and the same matrix, bit for bit, as one write at a time
+    /// (`encode_layer`), at both factor widths and for 1, 2 and 4 cards per
+    /// solve: cards that start fresh, from a dense matrix without factors
+    /// and from an unreadable block, joining and leaving the batch at
+    /// different answer counts (so one batch mixes ranks and basis sizes,
+    /// and batches are partial), with extreme, zero, non-finite and repeated
+    /// inputs, past the 255-answer saturation.
+    #[test]
+    fn rwkv_state_lowrank_batched_codec_matches_one_write_at_a_time() {
+        type Write = (Vec<u8>, bool, Vec<f32>, Vec<f32>, Vec<u8>);
+        fn previous(block: &[u8], unreadable: bool, factors: Factors) -> Previous<'_> {
+            if unreadable && block.is_empty() {
+                Previous::Matrix
+            } else {
+                choose(block, unreadable, factors)
+            }
+        }
+        fn batched<const L: usize>(writes: &mut [Write], schedule: RankSchedule, factors: Factors) {
+            let mut layer_writes: Vec<LayerWrite<'_>> = writes
+                .iter_mut()
+                .map(|(block, unreadable, matrix, v, out)| LayerWrite {
+                    previous: previous(block, *unreadable, factors),
+                    matrix,
+                    v,
+                    out,
+                })
+                .collect();
+            encode_layers::<L>(&mut layer_writes, schedule, factors);
+        }
+        let size = HEADS * HEAD_SIZE * HEAD_SIZE;
+        let schedules = [
+            RankSchedule::DEFAULT,
+            RankSchedule::parse("1.3.8").unwrap(),
+            RankSchedule::uniform(3),
+        ];
+        let cards = 9_usize;
+        let answers = 270_u32;
+        let mut writes = 0;
+        for factors in [Factors::Int8, Factors::Int6] {
+            for (index, &schedule) in schedules.iter().enumerate() {
+                for lanes in [HEADS, 2 * HEADS, BATCH_LANES] {
+                    let mut seeds: Vec<u64> = (0..cards as u64)
+                        .map(|card| 7_000 + 97 * index as u64 + card)
+                        .collect();
+                    // Card 1 starts from a dense matrix without factors.
+                    let mut matrices: Vec<Vec<f32>> = (0..cards)
+                        .map(|card| {
+                            if card == 1 {
+                                random(&mut seeds[1], size, 3.0)
+                            } else {
+                                vec![0.0; size]
+                            }
+                        })
+                        .collect();
+                    let mut blocks: Vec<Vec<u8>> = vec![Vec::new(); cards];
+                    // Card c joins at step 3 c and leaves 2 c answers early.
+                    for step in 0..answers + 3 * cards as u32 {
+                        let mut batch: Vec<Write> = Vec::new();
+                        let mut members = Vec::new();
+                        for card in 0..cards {
+                            let first = 3 * card as u32;
+                            if step < first || step >= first + answers - 2 * card as u32 {
+                                continue;
+                            }
+                            let answer = step - first + 1;
+                            let (mut next, v) =
+                                synthetic_write(&matrices[card], &mut seeds[card], answer);
+                            // Card 1's first write: the dense matrix itself.
+                            let dense = card == 1 && answer == 1;
+                            if dense {
+                                next.copy_from_slice(&matrices[card]);
+                            }
+                            let unreadable = dense || (card == 2 && answer == 120);
+                            batch.push((blocks[card].clone(), unreadable, next, v, Vec::new()));
+                            members.push(card);
+                        }
+                        let mut single = batch.clone();
+                        for (block, unreadable, matrix, v, out) in &mut single {
+                            let previous = previous(block, *unreadable, factors);
+                            encode_layer(matrix, previous, v, schedule, factors, out);
+                        }
+                        match lanes {
+                            HEADS => batched::<HEADS>(&mut batch, schedule, factors),
+                            BATCH_LANES => batched::<BATCH_LANES>(&mut batch, schedule, factors),
+                            _ => batched::<{ 2 * HEADS }>(&mut batch, schedule, factors),
+                        }
+                        for ((card, one), many) in members.into_iter().zip(single).zip(batch) {
+                            assert_eq!(
+                                one.4, many.4,
+                                "{factors:?} {schedule:?} lanes {lanes} card {card} step {step}"
+                            );
+                            assert_eq!(bits(&one.2), bits(&many.2));
+                            let mut decoded = vec![1.0_f32; size];
+                            decode_block(&many.4, factors, &mut decoded).unwrap();
+                            assert_eq!(bits(&decoded), bits(&many.2));
+                            blocks[card] = many.4;
+                            matrices[card] = many.2;
+                            writes += 1;
+                        }
+                    }
+                }
+            }
+        }
+        println!("{writes} batched layer writes identical (head size {HEAD_SIZE})");
+    }
+
     #[test]
     fn rwkv_state_lowrank_schedule_rules() {
         let t24 = RankSchedule::DEFAULT;
@@ -1905,6 +2297,166 @@ mod tests {
                 );
                 }
             }
+        }
+    }
+
+    /// Manual micro-benchmark of the batched codec (release build, one
+    /// thread): one layer's write per card, 1, 2 or 4 cards per solve
+    /// (`encode_layers::<4>`, `<8>`, `<16>`), at rank 2 and rank 4, both
+    /// factor widths; the time is per layer write.
+    ///
+    /// ```sh
+    /// cargo test --release -p anki --lib rwkv_state_lowrank_batched_codec_micro_benchmark -- --ignored --nocapture
+    /// ```
+    #[test]
+    #[ignore]
+    fn rwkv_state_lowrank_batched_codec_micro_benchmark() {
+        fn run<const L: usize>(
+            writes: &[(Vec<u8>, Vec<f32>, Vec<f32>)],
+            factors: Factors,
+            rounds: usize,
+        ) -> f64 {
+            let size = HEADS * HEAD_SIZE * HEAD_SIZE;
+            let per = L / HEADS;
+            let mut scratch = vec![vec![0.0_f32; size]; per];
+            let mut outs = vec![Vec::with_capacity(block_len(MAX_RANK, factors)); per];
+            let mut checksum = 0.0_f32;
+            let started = std::time::Instant::now();
+            for _ in 0..rounds {
+                for batch in writes.chunks(per) {
+                    let mut layer_writes: Vec<LayerWrite<'_>> = batch
+                        .iter()
+                        .zip(scratch.iter_mut().zip(outs.iter_mut()))
+                        .map(|((previous, next, v), (matrix, out))| {
+                            matrix.copy_from_slice(next);
+                            out.clear();
+                            LayerWrite {
+                                matrix,
+                                previous: if previous.is_empty() {
+                                    Previous::Fresh
+                                } else {
+                                    Previous::Block(previous, factors)
+                                },
+                                v,
+                                out,
+                            }
+                        })
+                        .collect();
+                    encode_layers::<L>(&mut layer_writes, RankSchedule::DEFAULT, factors);
+                    checksum += scratch[0][0];
+                }
+            }
+            let ns = started.elapsed().as_secs_f64() * 1e9 / (rounds * writes.len()) as f64;
+            std::hint::black_box(checksum);
+            ns
+        }
+        let size = HEADS * HEAD_SIZE * HEAD_SIZE;
+        for (answers, label) in [(1_u32, "rank 2"), (40, "rank 4")] {
+            for factors in [Factors::Int8, Factors::Int6] {
+                let mut seed = 11;
+                let mut writes = Vec::new();
+                for _chain in 0..if answers == 1 { 8 } else { 1 } {
+                    let mut block: Vec<u8> = Vec::new();
+                    let mut matrix = vec![0.0_f32; size];
+                    let timed = if answers == 1 { 8 } else { 64 };
+                    for answer in 1..=answers + timed {
+                        let mut next: Vec<f32> = matrix.iter().map(|x| x * 0.9).collect();
+                        let v = random(&mut seed, HEADS * HEAD_SIZE, 2.0);
+                        let key = random(&mut seed, HEADS * HEAD_SIZE, 2.0);
+                        for head in 0..HEADS {
+                            for row in 0..HEAD_SIZE {
+                                for column in 0..HEAD_SIZE {
+                                    next[head * HEAD_SIZE * HEAD_SIZE
+                                        + row * HEAD_SIZE
+                                        + column] +=
+                                        v[head * HEAD_SIZE + row] * key[head * HEAD_SIZE + column];
+                                }
+                            }
+                        }
+                        if answer > answers {
+                            writes.push((block.clone(), next.clone(), v.clone()));
+                        }
+                        let mut out = Vec::new();
+                        let previous = if block.is_empty() {
+                            Previous::Fresh
+                        } else {
+                            Previous::Block(&block, factors)
+                        };
+                        encode_layer(
+                            &mut next,
+                            previous,
+                            &v,
+                            RankSchedule::DEFAULT,
+                            factors,
+                            &mut out,
+                        );
+                        block = out;
+                        matrix = next;
+                    }
+                }
+                let rounds = 2_000;
+                let one = run::<HEADS>(&writes, factors, rounds);
+                let two = run::<{ 2 * HEADS }>(&writes, factors, rounds);
+                let four = run::<BATCH_LANES>(&writes, factors, rounds);
+                println!(
+                    "heads={HEADS} head_size={HEAD_SIZE} {label} {factors:?}: encode per layer write: 1 card {one:.0} ns, 2 cards {two:.0} ns, 4 cards {four:.0} ns"
+                );
+            }
+        }
+    }
+
+    /// Manual micro-benchmark of the batched Jacobi solve alone: 64 random
+    /// problems of size 3 and 5, in blocks of 1, 4, 8 or 16 lanes, and the
+    /// general `eigh` (the time is per problem; `ANKI_RWKV_LOWRANK_SIMD` =
+    /// `baseline` or `avx2` caps the vector width).
+    ///
+    /// ```sh
+    /// cargo test --release -p anki --lib rwkv_state_lowrank_jacobi_micro_benchmark -- --ignored --nocapture --test-threads 1
+    /// ```
+    #[test]
+    #[ignore]
+    fn rwkv_state_lowrank_jacobi_micro_benchmark() {
+        let mut seed = 5;
+        for n in [3_usize, 5] {
+            let problems: Vec<Small> = (0..64)
+                .map(|_| {
+                    let x = random(&mut seed, n * 16, 2.0);
+                    let mut small = [[0.0_f64; MAX_BASIS]; MAX_BASIS];
+                    for i in 0..n {
+                        for j in 0..n {
+                            small[i][j] = (0..16)
+                                .map(|c| x[i * 16 + c] as f64 * x[j * 16 + c] as f64)
+                                .sum();
+                        }
+                    }
+                    small
+                })
+                .collect();
+            for lanes in [1_usize, 4, 8, 16] {
+                let mut values = vec![[0.0_f64; MAX_BASIS]; 64];
+                let mut vectors = vec![[[0.0_f64; MAX_BASIS]; MAX_BASIS]; 64];
+                let members: Vec<usize> = (0..64).collect();
+                let rounds = 2_000;
+                let started = std::time::Instant::now();
+                for _ in 0..rounds {
+                    for block in members.chunks(lanes) {
+                        eigh_block(&problems, n, block, &mut values, &mut vectors);
+                    }
+                }
+                let ns = started.elapsed().as_secs_f64() * 1e9 / (rounds * 64) as f64;
+                std::hint::black_box(&values);
+                println!("jacobi n={n} lanes={lanes}: {ns:.0} ns per problem");
+            }
+            let rounds = 2_000;
+            let started = std::time::Instant::now();
+            for _ in 0..rounds {
+                for problem in &problems {
+                    let flat: Vec<f64> = (0..n).flat_map(|i| problem[i][..n].to_vec()).collect();
+                    std::hint::black_box(eigh(&flat, n));
+                }
+            }
+            let ns = started.elapsed().as_secs_f64() * 1e9 / (rounds * 64) as f64;
+            println!("jacobi n={n} scalar eigh: {ns:.0} ns per problem");
         }
     }
 }

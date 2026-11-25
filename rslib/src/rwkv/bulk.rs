@@ -1100,58 +1100,177 @@ fn finish_layer_time_stage(output: LayerTimeStageOutput<'_>) {
     let mut recurrence_query = parts_query
         .as_ref()
         .map(|_| vec![0.0; chunk_rows * D_MODEL]);
-    let sweep_outs: Vec<Option<(Vec<f32>, Vec<f32>)>> = stream_layers
+    // A low-rank state steps several streams together
+    // (`lowrank::batch_writes`, the longest of the chunk first), so each
+    // step's writes are factored in one batched solve
+    // (`round_written_matrices`). Per stream every operation and its order
+    // stay those of one stream at a time.
+    let group_size = if plan.precision.is_lowrank() {
+        lowrank::batch_writes()
+    } else {
+        1
+    };
+    let mut order = chunk_layout.streams.clone();
+    if group_size > 1 {
+        order.sort_by_key(|&stream_index| {
+            std::cmp::Reverse(chunk_layout.rows_by_stream[stream_index].len())
+        });
+    }
+    let stream_count = stream_layers.len();
+    let mut slots: Vec<Option<&mut Vec<LayerState>>> = stream_layers.iter_mut().map(Some).collect();
+    let mut groups: Vec<Vec<(usize, &mut Vec<LayerState>)>> = order
+        .chunks(group_size)
+        .map(|group| {
+            group
+                .iter()
+                .map(|&stream_index| {
+                    let layers = slots[stream_index].take().expect("stream in one group");
+                    (stream_index, layers)
+                })
+                .collect()
+        })
+        .collect();
+    drop(slots);
+    let group_outs: Vec<Vec<(usize, Vec<f32>, Vec<f32>)>> = groups
         .par_iter_mut()
-        .enumerate()
-        .map(|(stream_index, layers)| {
-            let stream_rows = chunk_layout.rows_by_stream[stream_index];
-            if stream_rows.is_empty() {
-                return None;
+        .map(|group| {
+            struct Sweep<'s> {
+                stream_index: usize,
+                rows: &'s [u32],
+                layer_state: &'s mut LayerState,
+                matrix: Vec<f32>,
+                packed_matrix: Option<precision::PackedMatrix>,
+                next_matrix: Vec<f32>,
+                query_next_matrix: Vec<f32>,
+                outs: Vec<f32>,
+                outs_query: Vec<f32>,
             }
-            let layer_state = &mut layers[layer_id];
-            let (mut matrix, mut packed_matrix) = match layer_state.time.take() {
-                // A low-rank write needs the previous write's factors.
-                Some(time) => (
-                    time.matrix,
-                    time.packed_matrix.filter(|_| plan.precision.is_lowrank()),
-                ),
-                None => (vec![0.0; HEADS * HEAD_SIZE * HEAD_SIZE], None),
-            };
-            // Separate source/destination matrices let the recurrence kernel
-            // vectorize, while swapping reuses both allocations per stream.
-            let mut next_matrix = vec![0.0; HEADS * HEAD_SIZE * HEAD_SIZE];
-            let mut query_next_matrix =
-                if parts_query.is_some() && matches!(query_recurrence, QueryRecurrence::Exact) {
-                    vec![0.0; HEADS * HEAD_SIZE * HEAD_SIZE]
-                } else {
-                    Vec::new()
-                };
-            let mut outs = vec![0.0; stream_rows.len() * D_MODEL];
-            let mut outs_query = if parts_query.is_some() {
-                vec![0.0; stream_rows.len() * D_MODEL]
-            } else {
-                Vec::new()
-            };
-            for (position, &stream_row) in stream_rows.iter().enumerate() {
-                let index = stream_row as usize - chunk_start;
-                let out = &mut outs[position * D_MODEL..(position + 1) * D_MODEL];
-                if let Some(parts_query) =
-                    parts_query.as_ref().filter(|_| !query_recurrence.after())
-                {
-                    let out_query = &mut outs_query[position * D_MODEL..(position + 1) * D_MODEL];
-                    match query_recurrence {
-                        QueryRecurrence::Exact => single_timestep_into(
-                            row(&parts_query.r, index),
-                            row(&parts_query.k, index),
-                            row(&parts_query.v, index),
-                            row(&parts_query.w, index),
-                            row(&parts_query.a, index),
-                            row(&parts_query.k_deformed, index),
-                            &matrix,
-                            out_query,
-                            &mut query_next_matrix,
+            let mut sweeps: Vec<Sweep<'_>> = group
+                .iter_mut()
+                .map(|(stream_index, layers)| {
+                    let stream_rows = chunk_layout.rows_by_stream[*stream_index];
+                    let layer_state = &mut layers[layer_id];
+                    let (matrix, packed_matrix) = match layer_state.time.take() {
+                        // A low-rank write needs the previous write's factors.
+                        Some(time) => (
+                            time.matrix,
+                            time.packed_matrix.filter(|_| plan.precision.is_lowrank()),
                         ),
-                        QueryRecurrence::Fast | QueryRecurrence::FastAfter => {
+                        None => (vec![0.0; HEADS * HEAD_SIZE * HEAD_SIZE], None),
+                    };
+                    Sweep {
+                        stream_index: *stream_index,
+                        rows: stream_rows,
+                        layer_state,
+                        matrix,
+                        packed_matrix,
+                        // Separate source/destination matrices let the
+                        // recurrence kernel vectorize, while swapping reuses
+                        // both allocations per stream.
+                        next_matrix: vec![0.0; HEADS * HEAD_SIZE * HEAD_SIZE],
+                        query_next_matrix: if parts_query.is_some()
+                            && matches!(query_recurrence, QueryRecurrence::Exact)
+                        {
+                            vec![0.0; HEADS * HEAD_SIZE * HEAD_SIZE]
+                        } else {
+                            Vec::new()
+                        },
+                        outs: vec![0.0; stream_rows.len() * D_MODEL],
+                        outs_query: if parts_query.is_some() {
+                            vec![0.0; stream_rows.len() * D_MODEL]
+                        } else {
+                            Vec::new()
+                        },
+                    }
+                })
+                .collect();
+            let steps = sweeps
+                .iter()
+                .map(|sweep| sweep.rows.len())
+                .max()
+                .unwrap_or(0);
+            for position in 0..steps {
+                for sweep in sweeps
+                    .iter_mut()
+                    .filter(|sweep| position < sweep.rows.len())
+                {
+                    let index = sweep.rows[position] as usize - chunk_start;
+                    let out = &mut sweep.outs[position * D_MODEL..(position + 1) * D_MODEL];
+                    if let Some(parts_query) =
+                        parts_query.as_ref().filter(|_| !query_recurrence.after())
+                    {
+                        let out_query =
+                            &mut sweep.outs_query[position * D_MODEL..(position + 1) * D_MODEL];
+                        match query_recurrence {
+                            QueryRecurrence::Exact => single_timestep_into(
+                                row(&parts_query.r, index),
+                                row(&parts_query.k, index),
+                                row(&parts_query.v, index),
+                                row(&parts_query.w, index),
+                                row(&parts_query.a, index),
+                                row(&parts_query.k_deformed, index),
+                                &sweep.matrix,
+                                out_query,
+                                &mut sweep.query_next_matrix,
+                            ),
+                            QueryRecurrence::Fast | QueryRecurrence::FastAfter => {
+                                single_timestep_query_fast_into(
+                                    row(&parts_query.r, index),
+                                    row(&parts_query.k, index),
+                                    row(&parts_query.v, index),
+                                    row(&parts_query.w, index),
+                                    row(&parts_query.a, index),
+                                    row(&parts_query.k_deformed, index),
+                                    Some(&sweep.matrix),
+                                    out_query,
+                                )
+                            }
+                        }
+                    }
+                    single_timestep_into(
+                        row(&parts.r, index),
+                        row(&parts.k, index),
+                        row(&parts.v, index),
+                        row(&parts.w, index),
+                        row(&parts.a, index),
+                        row(&parts.k_deformed, index),
+                        &sweep.matrix,
+                        out,
+                        &mut sweep.next_matrix,
+                    );
+                    std::mem::swap(&mut sweep.matrix, &mut sweep.next_matrix);
+                }
+                if let [sweep] = sweeps.as_mut_slice() {
+                    // One stream: no batch to build.
+                    let index = sweep.rows[position] as usize - chunk_start;
+                    plan.precision.round_written_matrix(
+                        &mut sweep.matrix,
+                        &mut sweep.packed_matrix,
+                        &sweep.next_matrix,
+                        row(&parts.v, index),
+                    );
+                } else {
+                    let mut writes: Vec<precision::WrittenMatrix<'_>> = sweeps
+                        .iter_mut()
+                        .filter(|sweep| position < sweep.rows.len())
+                        .map(|sweep| precision::WrittenMatrix {
+                            v: row(&parts.v, sweep.rows[position] as usize - chunk_start),
+                            values: &mut sweep.matrix,
+                            packed: &mut sweep.packed_matrix,
+                            previous: &sweep.next_matrix,
+                        })
+                        .collect();
+                    plan.precision.round_written_matrices(&mut writes);
+                }
+                if query_recurrence.after() {
+                    if let Some(parts_query) = &parts_query {
+                        for sweep in sweeps
+                            .iter_mut()
+                            .filter(|sweep| position < sweep.rows.len())
+                        {
+                            let index = sweep.rows[position] as usize - chunk_start;
+                            let out_query =
+                                &mut sweep.outs_query[position * D_MODEL..(position + 1) * D_MODEL];
                             single_timestep_query_fast_into(
                                 row(&parts_query.r, index),
                                 row(&parts_query.k, index),
@@ -1159,58 +1278,37 @@ fn finish_layer_time_stage(output: LayerTimeStageOutput<'_>) {
                                 row(&parts_query.w, index),
                                 row(&parts_query.a, index),
                                 row(&parts_query.k_deformed, index),
-                                Some(&matrix),
+                                plan.streams[sweep.stream_index]
+                                    .key
+                                    .map(|_| sweep.matrix.as_slice()),
                                 out_query,
-                            )
+                            );
                         }
                     }
                 }
-                single_timestep_into(
-                    row(&parts.r, index),
-                    row(&parts.k, index),
-                    row(&parts.v, index),
-                    row(&parts.w, index),
-                    row(&parts.a, index),
-                    row(&parts.k_deformed, index),
-                    &matrix,
-                    out,
-                    &mut next_matrix,
-                );
-                std::mem::swap(&mut matrix, &mut next_matrix);
-                plan.precision.round_written_matrix(
-                    &mut matrix,
-                    &mut packed_matrix,
-                    &next_matrix,
-                    row(&parts.v, index),
-                );
-                if query_recurrence.after() {
-                    if let Some(parts_query) = &parts_query {
-                        let out_query =
-                            &mut outs_query[position * D_MODEL..(position + 1) * D_MODEL];
-                        single_timestep_query_fast_into(
-                            row(&parts_query.r, index),
-                            row(&parts_query.k, index),
-                            row(&parts_query.v, index),
-                            row(&parts_query.w, index),
-                            row(&parts_query.a, index),
-                            row(&parts_query.k_deformed, index),
-                            plan.streams[stream_index].key.map(|_| matrix.as_slice()),
-                            out_query,
-                        );
+            }
+            sweeps
+                .into_iter()
+                .map(|sweep| {
+                    if plan.streams[sweep.stream_index].key.is_some() {
+                        let last = *sweep.rows.last().unwrap() as usize - chunk_start;
+                        sweep.layer_state.time = Some(TimeState {
+                            x_shift: row(&x_norm, last).to_vec(),
+                            matrix: sweep.matrix,
+                            packed_matrix: sweep.packed_matrix,
+                        });
                     }
-                }
-            }
-            if plan.streams[stream_index].key.is_some() {
-                let last = *stream_rows.last().unwrap() as usize - chunk_start;
-                layer_state.time = Some(TimeState {
-                    x_shift: row(&x_norm, last).to_vec(),
-                    matrix,
-                    packed_matrix,
-                });
-            }
-            Some((outs, outs_query))
+                    (sweep.stream_index, sweep.outs, sweep.outs_query)
+                })
+                .collect()
         })
         .collect();
+    drop(groups);
+    let mut sweep_outs: Vec<Option<(Vec<f32>, Vec<f32>)>> = Vec::with_capacity(stream_count);
+    sweep_outs.resize_with(stream_count, || None);
+    for (stream_index, outs, outs_query) in group_outs.into_iter().flatten() {
+        sweep_outs[stream_index] = Some((outs, outs_query));
+    }
     for &stream_index in &chunk_layout.streams {
         let Some((outs, outs_query)) = &sweep_outs[stream_index] else {
             continue;
