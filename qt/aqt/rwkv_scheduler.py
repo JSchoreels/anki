@@ -2889,6 +2889,21 @@ class RwkvStatefulReviewerBackend:
         )
         return predictions[0] if predictions else None
 
+    def fit_answer_time_recalibration(
+        self,
+        reviews: Sequence[RwkvReviewInput],
+        today: int,
+    ) -> tuple[float, ...] | None:
+        """Fit the rolling recalibration of the timed answer-time
+        probabilities (SM175) on a private replay of `reviews` (the whole
+        canonical history) for today's 7-day block; later answer-time
+        predictions use it. Never changes the reviewer's state."""
+        fit = getattr(self._runtime, "fit_answer_time_recalibration", None)
+        if not callable(fit) or not self.has_answer_time_head():
+            return None
+        encoded = fit(reviews, today)
+        return None if encoded is None else tuple(float(value) for value in encoded)
+
     def _prediction_request(
         self,
         identity: RwkvReviewIdentity,
@@ -8707,6 +8722,10 @@ def _rwkv_card_info_answer_time_prediction(
     try:
         if not has_head() or not _prepare_reviewer_backend_for_card_info(reviewer):
             return None
+        try:
+            _refresh_rwkv_answer_time_recalibration(reviewer, backend)
+        except Exception:
+            logger.debug("RWKV answer-time recalibration not started", exc_info=True)
         features = _rwkv_answer_time_history_features(reviewer, card_id)
         if features is None:
             return None
@@ -8729,6 +8748,70 @@ def _rwkv_card_info_answer_time_prediction(
         logger.debug("RWKV card info answer time unavailable", exc_info=True)
         return None
     return prediction
+
+
+_rwkv_answer_time_recalibration_lock = threading.Lock()
+# (backend, collection) -> the Anki day from which the fit must be redone
+# (the next 7-day block, or tomorrow after a short history or a failure);
+# None while a fit runs.
+_rwkv_answer_time_recalibration_until: dict[tuple[int, int], int | None] = {}
+
+
+def _refresh_rwkv_answer_time_recalibration(reviewer: object, backend: object) -> None:
+    """Start the background fit of the rolling recalibration of the timed
+    answer-time probabilities (SM175) when the backend has none for today's
+    7-day block. It replays the canonical history on a private copy of the
+    model; until it is set, Card Info shows the raw values."""
+    from aqt.rwkv_history import history_fingerprint_request, review_input_from_row
+
+    fit = getattr(backend, "fit_answer_time_recalibration", None)
+    collection = _collection(reviewer)
+    build = getattr(
+        getattr(collection, "_backend", None), "rwkv_historical_review_inputs", None
+    )
+    today = getattr(_timing_today(reviewer), "days_elapsed", None)
+    if not callable(fit) or not callable(build) or not isinstance(today, int):
+        return
+    key = (id(backend), id(collection))
+    with _rwkv_answer_time_recalibration_lock:
+        if key in _rwkv_answer_time_recalibration_until:
+            until = _rwkv_answer_time_recalibration_until[key]
+            if until is None or today < until:
+                return
+        _rwkv_answer_time_recalibration_until[key] = None
+    try:
+        ignored = frozenset(
+            _rwkv_state_cache_ignored_review_ids(
+                _read_rwkv_state_cache_metadata(reviewer)
+            )
+        )
+        request = scheduler_pb2.RwkvHistoricalReviewInputsRequest(
+            history=history_fingerprint_request(reviewer, ignored)
+        )
+    except Exception:
+        with _rwkv_answer_time_recalibration_lock:
+            _rwkv_answer_time_recalibration_until[key] = today + 1
+        raise
+
+    def run() -> None:
+        until = today + 1
+        try:
+            history = build(request)
+            reviews = [review_input_from_row(row) for row in history.reviews]
+            encoded = fit(reviews, today)
+            del reviews
+            if encoded is not None:
+                # The fit holds for its block: refit from the next one.
+                until = int(encoded[2])
+        except Exception:
+            logger.debug("RWKV answer-time recalibration unavailable", exc_info=True)
+        finally:
+            with _rwkv_answer_time_recalibration_lock:
+                _rwkv_answer_time_recalibration_until[key] = until
+
+    threading.Thread(
+        target=run, name="rwkv-answer-time-recalibration", daemon=True
+    ).start()
 
 
 _rwkv_answer_time_history_cache: tuple[tuple[object, ...], list[float]] | None = None

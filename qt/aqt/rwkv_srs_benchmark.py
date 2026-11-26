@@ -825,6 +825,31 @@ class _RustRwkvRuntime:
             raise ValueError("RWKV Rust answer-time prediction count mismatch")
         return [answer_time_prediction_from_native(output) for output in outputs]
 
+    def fit_answer_time_recalibration(
+        self,
+        reviews: Sequence[RwkvReviewInput],
+        today: int,
+    ) -> tuple[float, ...] | None:
+        """Fit the rolling recalibration of the timed answer-time
+        probabilities (SM175) for today's 7-day block from the whole
+        canonical history and use it for later answer-time predictions.
+        The replay runs on a private copy of the model, outside the process
+        lock, so the reviewer keeps its predictions meanwhile. Returns the
+        encoded fit (`None`: too little history, the raw values are kept)."""
+        make = getattr(self._process, "answer_time_recalibrator", None)
+        if not callable(make):
+            return None
+        with self._locked_process():
+            # A fit holds for its own block only.
+            self._process.set_answer_time_recalibration(None)
+            recalibrator = make()
+        if recalibrator is None:
+            return None
+        fit = recalibrator.fit_packed(_packed_warm_up_reviews(reviews), int(today))
+        with self._locked_process():
+            self._process.set_answer_time_recalibration(fit)
+        return None if fit is None else tuple(float(value) for value in fit)
+
     def predict_retrievability_many(
         self,
         requests: Sequence[RwkvReviewPredictionRequest],

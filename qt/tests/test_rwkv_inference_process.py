@@ -1212,9 +1212,12 @@ def test_rsbridge_rwkv_answer_time_head_is_optional() -> None:
     assert all(0 <= value <= 1 for value in fast)
     assert abs(sum(buttons) - 1) < 1e-5
     thresholds = [2.0, 3.890878606256521, 4.0, 6.0, 8.0, 10.0, 15.0, 20.0, 30.0]
-    ((detailed_medians, detailed_fast, detailed_mixed, detailed_buttons, under),) = (
-        with_head.predict_answer_times_with_thresholds([later_day], history, thresholds)
+    (detailed,) = with_head.predict_answer_times_with_thresholds(
+        [later_day], history, thresholds
     )
+    detailed_medians, detailed_fast, detailed_mixed, detailed_buttons = detailed[:4]
+    under, recalibrated = detailed[4:]
+    assert recalibrated is None
     assert (detailed_medians, detailed_fast, detailed_mixed, detailed_buttons) == (
         medians,
         fast,
@@ -1239,6 +1242,31 @@ def test_rsbridge_rwkv_answer_time_head_is_optional() -> None:
     ) == [None]
     with pytest.raises(Exception, match="thresholds"):
         with_head.predict_answer_times_with_thresholds([later_day], history, [0.4])
+    # The answer-time recalibration (SM175): with an identity fit the
+    # recalibrated events are the raw joint ones (the instant head's grade
+    # probabilities times P(within S | grade)); an off-grid threshold has none.
+    assert with_head.answer_time_recalibrator() is not None
+    assert without_head.answer_time_recalibrator() is None
+    identity = [1.0, 2000.0, 2007.0, 1000.0, 60000.0] + [1.0, 0.0, 1.0, 0.0] * 30
+    with_head.set_answer_time_recalibration(identity)
+    assert with_head.answer_time_recalibration() == identity
+    grid = [2.0, 4.0, 6.0, 8.0, 10.0, 15.0, 20.0, 30.0]
+    ((*_, grid_under, within),) = with_head.predict_answer_times_with_thresholds(
+        [later_day], history, grid
+    )
+    assert within is not None and len(within) == len(grid)
+    for (recalled, good_or_easy, easy), row in zip(within, grid_under, strict=True):
+        assert abs(easy - buttons[3] * row[3]) < 1e-5
+        assert abs(good_or_easy - buttons[2] * row[2] - buttons[3] * row[3]) < 1e-5
+        assert abs(recalled - sum(buttons[g] * row[g] for g in (1, 2, 3))) < 1e-5
+    ((*_, off_grid),) = with_head.predict_answer_times_with_thresholds(
+        [later_day], history, thresholds
+    )
+    assert off_grid is None
+    with pytest.raises(Exception, match="recalibration"):
+        with_head.set_answer_time_recalibration([1.0])
+    with_head.set_answer_time_recalibration(None)
+    assert with_head.answer_time_recalibration() is None
     assert with_head.predict_answer_times([same_day], history) == [None]
     assert without_head.predict_answer_times([later_day], history) == [None]
     # The SM117 heads (format 2) also answer a same-day query.

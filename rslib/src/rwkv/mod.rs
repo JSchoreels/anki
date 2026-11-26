@@ -12,6 +12,7 @@
 const SMALL_MODEL: bool = cfg!(feature = "rwkv-sm40");
 mod alternate;
 mod answer_time;
+mod answer_time_recal;
 mod api;
 pub mod paired;
 mod runtime;
@@ -19,6 +20,10 @@ pub use answer_time::AnswerTimeHistory;
 pub use answer_time::AnswerTimePrediction;
 pub use answer_time::ANSWER_TIME_BINS;
 pub use answer_time::ANSWER_TIME_FEATURES;
+pub use answer_time_recal::AnswerTimeRecalibration;
+pub use answer_time_recal::TimedEvents;
+pub use answer_time_recal::ANSWER_TIME_RECAL_SECONDS;
+pub use runtime::AnswerTimeRecalibrator;
 pub use runtime::ModelKind;
 pub use runtime::RwkvRuntime;
 pub use runtime::RwkvRuntimeState;

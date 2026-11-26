@@ -108,6 +108,51 @@ def test_invalid_or_decreasing_threshold_probabilities_are_rejected() -> None:
     )
 
 
+def test_recalibrated_answer_times_drive_the_recall_curve() -> None:
+    # The native runtime's sixth element (SM175): per threshold, recalibrated
+    # P(recalled / Good or Easy / Easy and answered within S s).
+    under = [(0.2, 0.4, 0.5, 0.7)] * 8
+    recalibrated = [
+        (0.10, 0.08, 0.01),
+        (0.30, 0.25, 0.03),
+        (0.45, 0.38, 0.05),
+        (0.55, 0.47, 0.06),
+        (0.62, 0.53, 0.07),
+        (0.70, 0.60, 0.08),
+        (0.74, 0.64, 0.09),
+        (0.78, 0.67, 0.09),
+    ]
+    prediction = answer_time_prediction_from_native((*NATIVE, under, recalibrated))
+    assert prediction is not None
+    assert prediction.recalibrated_within == tuple(recalibrated)
+    curve = answer_time_recall_curve(prediction, (0.2, 0.1, 0.6, 0.1))
+    assert [point[0] for point in curve] == [0, 2, 4, 6, 8, 10, 15, 20, 30]
+    assert [point[1] for point in curve] == pytest.approx(
+        [0, *(row[0] for row in recalibrated)]
+    )
+    # The chart's Good series is Good alone: Good or Easy minus Easy.
+    assert [point[2] for point in curve] == pytest.approx(
+        [0, *(row[1] - row[2] for row in recalibrated)]
+    )
+    assert [point[3] for point in curve] == pytest.approx(
+        [0, *(row[2] for row in recalibrated)]
+    )
+    # Without a fit the sixth element is None and the raw curve is kept.
+    raw = answer_time_prediction_from_native((*NATIVE, under, None))
+    assert raw is not None and raw.recalibrated_within == ()
+    assert answer_time_recall_curve(raw, (0.2, 0.1, 0.6, 0.1))[1][1] == pytest.approx(
+        0.1 * 0.4 + 0.6 * 0.5 + 0.1 * 0.7
+    )
+    # Incoherent recalibrated values are rejected.
+    for invalid in (
+        recalibrated[:7],
+        [(0.1, 0.2, 0.0)] + recalibrated[1:],
+        recalibrated[:7] + [(0.70, 0.60, 0.08)],
+        [(math.nan, 0.0, 0.0)] + recalibrated[1:],
+    ):
+        assert answer_time_prediction_from_native((*NATIVE, under, invalid)) is None
+
+
 def test_card_info_graph_uses_the_active_rwkv_button_probabilities(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
