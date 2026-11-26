@@ -7,7 +7,7 @@ import os
 import re
 import time
 from abc import ABC, abstractmethod
-from collections.abc import Sequence
+from collections.abc import Callable, Sequence
 from dataclasses import dataclass
 
 import aqt.forms
@@ -242,27 +242,43 @@ class ColpkgExporter(Exporter):
         options = gui_hooks.exporter_will_export(options, self)
         parent = _export_parent(mw, options)
 
-        def on_success(_: None) -> None:
-            mw.reopen()
+        def on_success() -> None:
             gui_hooks.exporter_did_export(options, self)
             _show_exported_tooltip(mw, options, tr.exporting_collection_exported())
 
-        def on_failure(exception: Exception) -> None:
-            mw.reopen()
-            show_exception(parent=parent, exception=exception)
+        export_collection_package(
+            mw,
+            parent,
+            options.out_path,
+            include_media=options.include_media,
+            legacy=options.legacy_support,
+            on_success=on_success,
+        )
 
-        gui_hooks.collection_will_temporarily_close(mw.col)
-        QueryOp(
-            parent=parent,
-            op=lambda col: col.export_collection_package(
-                options.out_path,
-                include_media=options.include_media,
-                legacy=options.legacy_support,
-            ),
-            success=on_success,
-        ).with_backend_progress(export_progress_update).failure(
-            on_failure
-        ).run_in_background()
+
+def export_collection_package(
+    mw: aqt.main.AnkiQt,
+    parent: QWidget,
+    path: str,
+    *,
+    include_media: bool,
+    legacy: bool,
+    on_success: Callable[[], None],
+) -> None:
+    def exported(_: None) -> None:
+        mw.reopen()
+        on_success()
+
+    def failed(exception: Exception) -> None:
+        mw.reopen()
+        show_exception(parent=parent, exception=exception)
+
+    gui_hooks.collection_will_temporarily_close(mw.col)
+    QueryOp(
+        parent=parent,
+        op=lambda col: col.export_collection_package(path, include_media, legacy),
+        success=exported,
+    ).with_backend_progress(export_progress_update).failure(failed).run_in_background()
 
 
 class ApkgExporter(Exporter):

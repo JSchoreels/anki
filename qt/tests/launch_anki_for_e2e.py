@@ -52,6 +52,7 @@ def _seed_prefs(base: Path) -> None:
         "check_for_updates": False,
     }
     profile = {
+        "donationCampaignReminder": None,
         "mainWindowGeom": None,
         "mainWindowState": None,
         "numBackups": 50,
