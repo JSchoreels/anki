@@ -560,14 +560,16 @@ Current exact-vs-scalar status:
   retention overrides included), desired retention and decay come from that
   preset (a Dynamic DR preset keeps the card's own desired retention), and
   `last_review_time` follows the merged log unless the history ends in Forget.
-  When the download added a rating review for the card, an unsuspended review
-  card takes the interval recorded in its newest rating entry, unless a later
-  set due date, Forget or reschedule entry owns the schedule. Reconciled cards
-  are saved as normal pending changes, with a modification time newer than the
-  merged row, so they upload in the same sync; no undo or revlog entry is
-  written. Cards whose home preset uses RWKV, cards without review history and
-  collections with FSRS off are untouched, and the server never reconciles. If
-  the computation fails, sync logs a warning and finishes without reconciling.
+  When the download added a rating review for the card, or the merged row's
+  `last_review_time` is older than the newest rating review (the winning device
+  had not seen it), an unsuspended review card takes the interval recorded in
+  that newest rating entry, unless a later set due date, Forget or reschedule
+  entry owns the schedule. Reconciled cards are saved as normal pending changes,
+  with a modification time newer than the merged row, so they upload in the same
+  sync; no undo or revlog entry is written. Cards whose home preset uses RWKV,
+  cards without review history and collections with FSRS off are untouched, and
+  the server never reconciles. If the computation fails, sync logs a warning and
+  finishes without reconciling.
 - FSRS-7's fast stability trace is stored in `card.data.s_fast` on new FSRS
   writes. Legacy card data without `s_fast` treats the internal slow stability
   as the fast trace fallback.
