@@ -65,6 +65,7 @@ Changes since [build 115](https://github.com/JSchoreels/anki/releases/tag/26.09.
 
 #### Fixes
 
+- **Use the latest RWKV-Instant scores when choosing the next card.** With **Precompute next card** off, Anki now updates the full queue after each answer for every sort order. Descending retrievability uses the updated ranking, and orders such as random or due date pick from the updated set of eligible reviews. The workload forecast follows the same rule.
 - **Find the next low-retrievability review more reliably.** With ascending R and faster approximate RWKV-Instant updates, Anki now also rechecks cards just outside the previous leaders. In a 351-decision backtest, the default 512-card update matched the full rescore 351 times, up from 348. At 64 cards it matched 263 times, up from 211.
 - **See which daily limit postponed a card.** Session Preview shows how many reviews, learning steps and new-card slots are queued. It identifies the limit that held a card back and keeps three-digit positions on one line.
 - **Keep RWKV due totals consistent when returning to the deck list.** The list waits for the reviewer’s background queue refresh before calculating how many reviews are due before daily limits.

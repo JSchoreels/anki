@@ -2351,14 +2351,14 @@ interval updates, Anki refreshes the answered card's score. Full-deck updates
 calculate each cached input's elapsed time from its last review or creation time
 at a single current timestamp; answered cards receive a fresh time reference.
 
-With precomputation disabled and Ascending Retrievability review order or
-retrievability-based new-card gathering selected, Anki waits for a full
-post-answer update before fetching the next card. It reloads current inputs and
-requests dynamic retention targets for all candidates, rather than reusing stale
-elapsed times or limiting the update to the candidate window. The Dynamic DR
+With precomputation disabled, Anki waits for a full post-answer update before
+fetching the next card, regardless of review order or new-card gather order.
+An answer can change which reviews meet their retention target even when the
+sort order is random or based on due date. Anki reloads current inputs and
+requests dynamic retention targets for all candidates. The Dynamic DR
 provider may still reuse session-cached rule matches if configured to do so.
 This takes precedence over the refresh interval and approximate-candidate
-setting. Other review orders continue to use their configured refresh interval.
+setting. The Instant workload forecast applies the same rule after each simulated answer.
 
 Both modes use the scheduler's normal answer, eligibility, review-limit, mixing,
 and repeat-spacing rules. Installed score requests include intervening-review

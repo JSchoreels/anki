@@ -6688,17 +6688,9 @@ def reviewer_queue_order_refresh_due(reviewer: object) -> bool:
 
 
 def reviewer_queue_order_refresh_before_next_card(reviewer: object) -> bool:
-    deck_id = _current_deck_id(reviewer)
-    if deck_id is None:
-        return False
-
-    deck_config = _deck_config_for_deck_id(reviewer, deck_id)
-    if not isinstance(deck_config, dict):
-        return False
-    review_order = deck_config.get("reviewOrder", deck_config.get("review_order"))
-    return not _rwkv_review_precompute_next_card(deck_config) and (
-        review_order == _REVIEW_ORDER_RETRIEVABILITY_ASCENDING
-        or _new_gather_uses_retrievability(deck_config)
+    deck_config = _deck_config_for_deck_id(reviewer, _current_deck_id(reviewer))
+    return isinstance(deck_config, dict) and not _rwkv_review_precompute_next_card(
+        deck_config
     )
 
 
@@ -16599,10 +16591,7 @@ def forecast_rwkv_workload(
                         root_config
                     )
                     order = int(scope.study_config.review_order)
-                    if not precompute and (
-                        order == _REVIEW_ORDER_RETRIEVABILITY_ASCENDING
-                        or _new_gather_uses_retrievability(root_config)
-                    ):
+                    if not precompute:
                         refresh_interval = 1
                         candidate_refresh = False
                     learn_ahead = _rwkv_forecast_col_config(col, "learnAheadSecs", 1200)

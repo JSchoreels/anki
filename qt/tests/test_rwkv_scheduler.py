@@ -275,12 +275,13 @@ def test_rwkv_queue_refresh_due_uses_nested_refresh_interval() -> None:
         (7, None, None, False),
         (7, None, True, False),
         (7, None, False, True),
-        (8, None, False, False),
+        (11, None, False, True),  # Descending retrievability
+        (8, None, False, True),  # Random
         (8, 7, True, False),
         (8, 7, False, True),
     ],
 )
-def test_retrievability_order_refreshes_before_next_card(
+def test_precompute_setting_controls_refresh_before_next_card(
     review_order: int,
     new_gather_priority: int | None,
     precompute: bool | None,

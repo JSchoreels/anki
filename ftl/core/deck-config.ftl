@@ -485,16 +485,15 @@ deck-config-rwkv-review-precompute-next-card = Precompute next card before this 
 deck-config-rwkv-review-precompute-next-card-tooltip =
     Use the queue scores computed before your answer to choose the next card,
     then update the scores in the background. This can show the next card
-    faster, but it may not have the lowest retrievability after your answer.
-    When disabled with retrievability ordering, Anki updates the full queue after
-    every answer before showing the next card. Anki also waits when the queue
-    must be rebuilt.
+    faster. Anki still waits when the queue must be rebuilt.
+    Turn this off to update the full queue after every answer, before
+    choosing the next card. This checks which reviews are due in every sort order.
 deck-config-rwkv-review-refresh-interval = Update the RWKV queue every
 deck-config-rwkv-review-refresh-interval-tooltip =
     How many answers to wait between RWKV queue updates. 1 updates the queue
     after every answer. Higher values reduce the work RWKV does while you
     review, but the queue may use older estimates between updates. With
-    precomputation off and retrievability ordering, Anki updates after every answer.
+    precomputation off, Anki updates after every answer in every sort order.
 deck-config-rwkv-review-refresh-on-exit = Update the RWKV queue after reviewing
 deck-config-rwkv-review-refresh-on-exit-tooltip =
     If you answered at least one card, update the RWKV estimates in the

@@ -559,10 +559,20 @@ def test_instant_scope_keeps_independent_deck_trees() -> None:
     assert scope.instant_decks == set()
 
 
+@pytest.mark.parametrize(
+    ("precompute", "refresh_interval", "candidate_refresh"),
+    [(True, 5, True), (False, 1, False)],
+)
 def test_forecast_dispatches_instant_with_history_and_scheduler_settings(
     monkeypatch: pytest.MonkeyPatch,
+    precompute: bool,
+    refresh_interval: int,
+    candidate_refresh: bool,
 ) -> None:
     day_start = 2_000_000_000
+    order = (
+        deck_config_pb2.DeckConfig.Config.REVIEW_CARD_ORDER_RETRIEVABILITY_DESCENDING
+    )
     preset = deck_config_pb2.DeckConfig(
         id=1,
         config=deck_config_pb2.DeckConfig.Config(
@@ -571,12 +581,12 @@ def test_forecast_dispatches_instant_with_history_and_scheduler_settings(
             rwkv_review_min_elapsed_secs=30,
             reviews_per_day=17,
             rwkv_review_minimum_reviews_per_day=4,
-            review_order=7,
+            review_order=order,
         ),
     )
     deck = decks_pb2.Deck(id=1, name="Study", normal=decks_pb2.Deck.Normal(config_id=1))
     legacy_config = {
-        "reviewOrder": 7,
+        "reviewOrder": order,
         "rev": {"perDay": 17},
         "new": {"perDay": 2},
         "jschoreels.rwkv": {
@@ -584,7 +594,7 @@ def test_forecast_dispatches_instant_with_history_and_scheduler_settings(
             "rwkv_review_refresh_interval": 5,
             "rwkv_review_candidate_refresh_enabled": True,
             "rwkv_review_batch_size": 64,
-            "rwkv_review_precompute_next_card": True,
+            "rwkv_review_precompute_next_card": precompute,
         },
     }
     rows = [
@@ -718,10 +728,11 @@ def test_forecast_dispatches_instant_with_history_and_scheduler_settings(
     assert call["timing_pattern_success_shares"] == [(0.5, 0.5, 0.0)]
     assert call["intervening_reviews"] == {8: 0, 7: 1}
     assert call["new_cards_ignore_review_limit"] is False
-    assert call["refresh_interval"] == 5
-    assert call["candidate_refresh_enabled"] is True
+    assert call["review_order"] == order
+    assert call["refresh_interval"] == refresh_interval
+    assert call["candidate_refresh_enabled"] is candidate_refresh
     assert call["candidate_refresh_limit"] == 64
-    assert call["precompute_next_card"] is True
+    assert call["precompute_next_card"] is precompute
     assert call["min_intervening_reviews"] == 2
     assert call["min_elapsed_secs"] == 30
     streamed: list[dict[str, object]] = []
@@ -736,8 +747,8 @@ def test_forecast_dispatches_instant_with_history_and_scheduler_settings(
     assert calls[-1]["stratified_bias_sd"] == 0.0
     assert calls[-1]["stratified_review_variance"] == 0.0
     assert "scenario_sigma" not in calls[-1]
-    assert calls[-1]["refresh_interval"] == 5
-    assert calls[-1]["candidate_refresh_enabled"] is True
+    assert calls[-1]["refresh_interval"] == refresh_interval
+    assert calls[-1]["candidate_refresh_enabled"] is candidate_refresh
     assert stratified["scenario_kind"] == "stratified"
     assert stratified["scenario_calibration"] == "insufficient_history"
     assert streamed[0]["scenario_kind"] == "stratified"
