@@ -806,6 +806,170 @@ impl RwkvInference {
         Ok(out)
     }
 
+    /// An independent copy that shares the model and its answer-time head
+    /// but no state, for [`Self::fit_answer_time_recalibration`]; `None`
+    /// without the head.
+    pub(crate) fn answer_time_recalibration_worker(&self) -> Option<Self> {
+        self.answer_time_head
+            .is_some()
+            .then(|| self.workload_worker(FeatureState::default(), HashMap::new()))
+    }
+
+    /// Fits the rolling recalibration of the timed answer-time
+    /// probabilities (SM175) for `today`'s 7-day block from the whole
+    /// canonical history `reviews` (the warm-up rows, in order). The history
+    /// is replayed on a private state: the head's raw prediction is taken
+    /// before each time-labelled review of the fit window (a recorded time
+    /// and a query the head predicts, so not a card's first review), exactly
+    /// as Card Info queries it, then the review advances the state.
+    /// `None` without the head or while fewer than 1,000 time-labelled
+    /// reviews precede today's block (the raw model is used). The resident
+    /// state is never touched.
+    pub(crate) fn fit_answer_time_recalibration(
+        &self,
+        reviews: &[ReviewInput],
+        today: i64,
+    ) -> io::Result<Option<crate::rwkv::AnswerTimeRecalibration>> {
+        use crate::rwkv::answer_time_recal as recal;
+        let Some((rows, window, cap)) = self.answer_time_recal_rows(reviews, today)? else {
+            return Ok(None);
+        };
+        let fit_window = recal::AnswerTimeRecalWindow {
+            fit: 0..rows.len(),
+            ..window
+        };
+        Ok(Some(recal::AnswerTimeRecalibration::fit(
+            &rows,
+            &fit_window,
+            cap,
+            recal::ANSWER_TIME_RECAL_SHIPPED,
+        )))
+    }
+
+    /// The fit rows of [`Self::fit_answer_time_recalibration`] (the head's
+    /// raw events before each time-labelled review of the window), the
+    /// window and the user's cap.
+    #[allow(clippy::type_complexity)]
+    pub(crate) fn answer_time_recal_rows(
+        &self,
+        reviews: &[ReviewInput],
+        today: i64,
+    ) -> io::Result<
+        Option<(
+            Vec<crate::rwkv::answer_time_recal::TimedRow>,
+            crate::rwkv::answer_time_recal::AnswerTimeRecalWindow,
+            i64,
+        )>,
+    > {
+        use crate::rwkv::answer_time_recal as recal;
+        let Some(head) = self.answer_time_head.clone() else {
+            return Ok(None);
+        };
+        let min_elapsed = head.min_elapsed_days();
+        // A card's first review (its learning start) has no time label.
+        let mut seen = HashSet::new();
+        let mut labelled = Vec::new();
+        for (index, input) in reviews.iter().enumerate() {
+            let first_review = seen.insert(input.card_id) || input.card_type == Some(0);
+            if !first_review
+                && input.ease.is_some_and(|ease| (1..=4).contains(&ease))
+                && input.duration_millis.is_some_and(|duration| duration > 0)
+                && input.day_offset.is_some()
+                && answer_time_query_elapsed_days(input) >= min_elapsed
+            {
+                labelled.push(index);
+            }
+        }
+        let days: Vec<i64> = labelled
+            .iter()
+            .map(|&index| reviews[index].day_offset.unwrap_or_default())
+            .collect();
+        if !days.windows(2).all(|pair| pair[0] <= pair[1]) {
+            return Ok(None);
+        }
+        let config = recal::ANSWER_TIME_RECAL_SHIPPED;
+        let Some(window) = recal::answer_time_recal_window(&days, today, config) else {
+            return Ok(None);
+        };
+        // The user's cap from every recorded time before the block.
+        let cap = recal::answer_time_user_cap_millis(
+            reviews
+                .iter()
+                .filter(|input| {
+                    input
+                        .day_offset
+                        .is_some_and(|day| day < window.block_start_day)
+                })
+                .filter_map(|input| input.duration_millis),
+        );
+        let first = labelled[window.fit.start];
+        let last = labelled[window.fit.end - 1];
+        let mut worker = self.workload_worker(FeatureState::default(), HashMap::new());
+        let mut history = answer_time_items::AnswerTimeHistory::new();
+        let push = |history: &mut answer_time_items::AnswerTimeHistory, input: &ReviewInput| {
+            history.push(
+                input.card_id,
+                input.ease.map_or(0, i64::from),
+                input.duration_millis.unwrap_or(0),
+            );
+        };
+        for input in &reviews[..first] {
+            push(&mut history, input);
+        }
+        worker.warm_up_reviews(reviews[..first].to_vec(), false)?;
+        let mut rows = Vec::with_capacity(window.fit.len());
+        let mut next = window.fit.start;
+        for (index, input) in reviews.iter().enumerate().take(last + 1).skip(first) {
+            if input.ease.is_none() {
+                push(&mut history, input);
+                continue;
+            }
+            let predict = next < window.fit.end && labelled[next] == index;
+            // Query features first, as the per-review warm-up assigns them.
+            let query = predict.then(|| {
+                let mut query = input.clone();
+                query.is_query = true;
+                query.ease = None;
+                query.duration_millis = None;
+                let elapsed = answer_time_query_elapsed_days(input);
+                (
+                    worker.features.features_for(&query),
+                    history.features(input.card_id, elapsed),
+                )
+            });
+            let features = worker.features.features_for(input);
+            let model = &*worker.model;
+            let state = worker.warm_up_states.state_ref(input);
+            let (time, heads) = match &query {
+                Some((query_features, explicit)) => {
+                    let (time, heads) = rayon::join(
+                        || {
+                            let (frozen, buttons) = model.answer_time_inputs(query_features, state);
+                            head.predict(&frozen, explicit, buttons)
+                        },
+                        || model.review(&features, state),
+                    );
+                    (Some(time), heads)
+                }
+                None => (None, model.review(&features, state)),
+            };
+            if let Some(time) = time {
+                rows.push(recal::TimedRow {
+                    day: input.day_offset.unwrap_or_default(),
+                    grade: input.ease.unwrap_or(1) - 1,
+                    duration_millis: input.duration_millis.unwrap_or(0),
+                    raw: recal::TimedEvents::from_prediction(&time),
+                });
+                next += 1;
+            }
+            worker.features.store_review(input);
+            worker.warm_up_states.store(input, heads.next_state);
+            push(&mut history, input);
+        }
+        debug_assert_eq!(rows.len(), window.fit.len());
+        Ok(Some((rows, window, cap)))
+    }
+
     /// Feeds the checkpoint leak-free inputs: the missing note, deck and
     /// preset flags are always zero, as in its training data. Call before
     /// the runtime is shared.
@@ -3542,6 +3706,16 @@ fn elapsed_seconds(input: &ReviewInput) -> i64 {
                 .map(|days| days * SECONDS_PER_DAY)
         })
         .unwrap_or(-1)
+}
+
+/// The elapsed days of the query before a history review, as the
+/// answer-time head reads them (negative for a card's first review).
+fn answer_time_query_elapsed_days(input: &ReviewInput) -> i64 {
+    let mut query = input.clone();
+    query.is_query = true;
+    query.ease = None;
+    query.duration_millis = None;
+    elapsed_days(&query, elapsed_seconds(&query))
 }
 
 fn elapsed_days(input: &ReviewInput, elapsed_seconds: i64) -> i64 {

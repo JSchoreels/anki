@@ -23,6 +23,17 @@ struct Backend {
 #[pyclass(module = "_rsbridge")]
 struct RwkvInference {
     inner: rwkv::RwkvRuntime,
+    /// The rolling recalibration of the timed answer-time probabilities
+    /// (SM175) for the current block, set by the desktop after a fit.
+    answer_time_recalibration: Option<rwkv::AnswerTimeRecalibration>,
+}
+
+/// An independent copy of the model that serves the answer times, for
+/// fitting the answer-time recalibration (SM175) without holding the
+/// runtime.
+#[pyclass(module = "_rsbridge")]
+struct RwkvAnswerTimeRecalibrator {
+    inner: rwkv::AnswerTimeRecalibrator,
 }
 
 #[pyclass(module = "_rsbridge")]
@@ -45,6 +56,9 @@ type RwkvAnswerTimeThresholdTuple = (
     f32,
     RwkvProbabilityTuple,
     Vec<RwkvProbabilityTuple>,
+    // Recalibrated P(recalled / Good or Easy / Easy and answered within S s)
+    // per threshold, when a recalibration is set (SM175).
+    Option<Vec<(f32, f32, f32)>>,
 );
 type RwkvSerializedStateMap = Vec<(i64, Py<PyBytes>)>;
 type RwkvSerializedState = (
@@ -242,8 +256,42 @@ impl RwkvInference {
                 ))
             }
         }
-        .map(|inner| Self { inner })
+        .map(|inner| Self {
+            inner,
+            answer_time_recalibration: None,
+        })
         .map_err(|err| PyException::new_err(err.to_string()))
+    }
+
+    /// A copy of the model that serves the answer times, for
+    /// `RwkvAnswerTimeRecalibrator.fit_packed`; `None` without an
+    /// answer-time head.
+    fn answer_time_recalibrator(&self) -> Option<RwkvAnswerTimeRecalibrator> {
+        self.inner
+            .answer_time_recalibrator()
+            .map(|inner| RwkvAnswerTimeRecalibrator { inner })
+    }
+
+    /// Sets (or with `None` clears) the answer-time recalibration used by
+    /// `predict_answer_times_with_thresholds`, as encoded by
+    /// `RwkvAnswerTimeRecalibrator.fit_packed`.
+    #[pyo3(signature = (values=None))]
+    fn set_answer_time_recalibration(&mut self, values: Option<Vec<f64>>) -> PyResult<()> {
+        self.answer_time_recalibration =
+            match values {
+                None => None,
+                Some(values) => Some(rwkv::AnswerTimeRecalibration::decode(&values).ok_or_else(
+                    || PyException::new_err("invalid RWKV answer-time recalibration"),
+                )?),
+            };
+        Ok(())
+    }
+
+    /// The recalibration set by `set_answer_time_recalibration`, encoded.
+    fn answer_time_recalibration(&self) -> Option<Vec<f64>> {
+        self.answer_time_recalibration
+            .as_ref()
+            .map(rwkv::AnswerTimeRecalibration::encode)
     }
 
     /// Whether an instant model runs beside the release model.
@@ -457,8 +505,25 @@ impl RwkvInference {
                                     })
                             })
                             .collect::<PyResult<Vec<_>>>()?;
+                        let recalibrated =
+                            self.answer_time_recalibration
+                                .as_ref()
+                                .and_then(|recalibration| {
+                                    let events = recalibration
+                                        .apply(&rwkv::TimedEvents::from_prediction(&prediction));
+                                    thresholds
+                                        .iter()
+                                        .map(|&seconds| {
+                                            events.within_seconds(seconds).map(
+                                                |[recalled, good, easy]| {
+                                                    (recalled as f32, good as f32, easy as f32)
+                                                },
+                                            )
+                                        })
+                                        .collect::<Option<Vec<_>>>()
+                                });
                         let (medians, fast, mixed, buttons) = answer_time_tuple(&prediction);
-                        Ok((medians, fast, mixed, buttons, under))
+                        Ok((medians, fast, mixed, buttons, under, recalibrated))
                     })
                     .transpose()
             })
@@ -1904,6 +1969,27 @@ fn parse_rwkv_workload_bucket_probabilities(
     Ok(probabilities)
 }
 
+#[pymethods]
+impl RwkvAnswerTimeRecalibrator {
+    /// Fits the rolling recalibration of the timed answer-time
+    /// probabilities (SM175) for the 7-day block holding `today` (an Anki
+    /// day) from the whole canonical history (packed warm-up rows, in
+    /// order), replayed on a private state. Returns the encoded fit for
+    /// `RwkvInference.set_answer_time_recalibration`, or `None` while fewer
+    /// than 1,000 time-labelled reviews precede the block.
+    fn fit_packed(
+        &self,
+        py: Python<'_>,
+        reviews: &Bound<'_, PyBytes>,
+        today: i64,
+    ) -> PyResult<Option<Vec<f64>>> {
+        let parsed_reviews = parse_packed_rwkv_review_inputs(reviews.as_bytes())?;
+        py.detach(|| self.inner.fit(&parsed_reviews, today))
+            .map(|fit| fit.as_ref().map(rwkv::AnswerTimeRecalibration::encode))
+            .map_err(|err| PyException::new_err(err.to_string()))
+    }
+}
+
 fn unrounded_interval_tuple(intervals: [Option<f32>; 4]) -> RwkvUnroundedIntervalTuple {
     (intervals[0], intervals[1], intervals[2], intervals[3])
 }
@@ -1940,6 +2026,7 @@ fn _rsbridge(_py: Python, m: &Bound<'_, PyModule>) -> PyResult<()> {
     m.add_class::<Backend>()?;
     m.add_class::<RwkvInference>()?;
     m.add_class::<RwkvInferenceState>()?;
+    m.add_class::<RwkvAnswerTimeRecalibrator>()?;
     m.add_wrapped(wrap_pyfunction!(rwkv_release_free_memory))
         .unwrap();
     m.add_wrapped(wrap_pyfunction!(buildhash)).unwrap();

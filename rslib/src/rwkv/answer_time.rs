@@ -261,6 +261,12 @@ impl AnswerTimePrediction {
     /// The first and last bins are open-ended, so their interiors cannot be
     /// interpolated; thresholds must be between their boundaries, inclusive.
     pub fn probabilities_under_seconds(&self, seconds: f64) -> Option<[f32; 4]> {
+        self.probabilities_under_seconds_f64(seconds)
+            .map(|values| values.map(|value| value as f32))
+    }
+
+    /// [`Self::probabilities_under_seconds`] before the rounding to f32.
+    pub(crate) fn probabilities_under_seconds_f64(&self, seconds: f64) -> Option<[f64; 4]> {
         if !seconds.is_finite() || !(0.5..=60.0).contains(&seconds) {
             return None;
         }
@@ -280,7 +286,7 @@ impl AnswerTimePrediction {
                     break;
                 }
             }
-            cumulative.clamp(0.0, 1.0) as f32
+            cumulative.clamp(0.0, 1.0)
         }))
     }
 }

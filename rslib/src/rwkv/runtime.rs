@@ -352,6 +352,31 @@ pub enum RwkvRuntime {
     AlternatePaired(Box<PairedRuntime<super::alternate::RwkvInference>>),
 }
 
+/// An independent copy of the model that serves a runtime's answer times
+/// (see [`RwkvRuntime::predict_answer_times`]), sharing its weights but no
+/// state, so the answer-time recalibration (SM175) can be fitted while the
+/// runtime keeps serving the reviewer.
+pub enum AnswerTimeRecalibrator {
+    Primary(Box<super::RwkvInference>),
+    Alternate(Box<super::alternate::RwkvInference>),
+}
+
+impl AnswerTimeRecalibrator {
+    /// See [`super::RwkvInference::fit_answer_time_recalibration`]: the fit
+    /// for `today`'s block from the whole canonical history (the warm-up
+    /// rows), or `None` while the history is too short.
+    pub fn fit(
+        &self,
+        reviews: &[ReviewInput],
+        today: i64,
+    ) -> io::Result<Option<super::AnswerTimeRecalibration>> {
+        match self {
+            Self::Primary(engine) => engine.fit_answer_time_recalibration(reviews, today),
+            Self::Alternate(engine) => engine.fit_answer_time_recalibration(reviews, today),
+        }
+    }
+}
+
 #[derive(Clone)]
 pub enum RwkvRuntimeState {
     Primary(super::RwkvInferenceState),
@@ -932,6 +957,31 @@ impl RwkvRuntime {
                     .predict_answer_times(release_requests(requests)?, history)
             }
         })
+    }
+
+    /// The model whose head serves [`Self::predict_answer_times`], as an
+    /// [`AnswerTimeRecalibrator`]; `None` without an answer-time head.
+    pub fn answer_time_recalibrator(&self) -> Option<AnswerTimeRecalibrator> {
+        fn primary(engine: &super::RwkvInference) -> Option<AnswerTimeRecalibrator> {
+            engine
+                .answer_time_recalibration_worker()
+                .map(|worker| AnswerTimeRecalibrator::Primary(Box::new(worker)))
+        }
+        fn alternate(engine: &super::alternate::RwkvInference) -> Option<AnswerTimeRecalibrator> {
+            engine
+                .answer_time_recalibration_worker()
+                .map(|worker| AnswerTimeRecalibrator::Alternate(Box::new(worker)))
+        }
+        match self {
+            Self::Primary(engine) | Self::InstantOnly(engine) => primary(engine),
+            Self::Alternate(engine) | Self::AlternateInstantOnly(engine) => alternate(engine),
+            Self::Paired(pair) if pair.instant.has_answer_time_head() => primary(&pair.instant),
+            Self::Paired(pair) => primary(&pair.release),
+            Self::AlternatePaired(pair) if pair.instant.has_answer_time_head() => {
+                alternate(&pair.instant)
+            }
+            Self::AlternatePaired(pair) => alternate(&pair.release),
+        }
     }
 
     pub fn predict_retrievability_many_from_warm_up(
@@ -1639,6 +1689,172 @@ mod tests {
     /// show-time big model (SM91s2) as
     /// `RWKV_trained_on_5000_10000.time_head.f32.bin` beside its weights.
     /// The SM117 heads (format 2) also answer same-day queries.
+    /// A synthetic history for the answer-time recalibration (SM175): 60
+    /// cards reviewed in turn, 45 reviews a day, varied grades and times.
+    fn recal_history(count: usize) -> Vec<ReviewInput> {
+        let mut last_day = std::collections::HashMap::new();
+        (0..count)
+            .map(|index| {
+                let card_id = 500 + (index % 60) as i64;
+                let day = 2_000 + (index / 45) as i64;
+                let previous = last_day.insert(card_id, day);
+                let grade = [3_u8, 3, 2, 3, 1, 3, 4, 3, 3, 2][index * 7 % 10];
+                ReviewInput {
+                    card_id,
+                    note_id: Some(card_id / 2),
+                    deck_id: Some(1 + (index % 3) as i64),
+                    preset_id: Some(1),
+                    is_query: false,
+                    ease: Some(grade),
+                    duration_millis: Some(1_200 + (index * 3_571 % 14_000) as i64),
+                    card_type: Some(if previous.is_none() { 0 } else { 2 }),
+                    day_offset: Some(day),
+                    current_elapsed_days: Some(previous.map_or(-1, |p| day - p)),
+                    current_elapsed_seconds: Some(previous.map_or(-1, |p| (day - p) * 86_400)),
+                    target_retentions: [Some(0.9); 4],
+                    enforce_grade_order: true,
+                }
+            })
+            .collect()
+    }
+
+    fn answer_time_query(review: &ReviewInput) -> ReviewInput {
+        let mut query = review.clone();
+        query.is_query = true;
+        query.ease = None;
+        query.duration_millis = None;
+        query
+    }
+
+    fn answer_time_history(reviews: &[ReviewInput]) -> super::super::AnswerTimeHistory {
+        let mut times = super::super::AnswerTimeHistory::new();
+        for review in reviews {
+            times.push(
+                review.card_id,
+                i64::from(review.ease.unwrap()),
+                review.duration_millis.unwrap(),
+            );
+        }
+        times
+    }
+
+    /// The recalibration replays the history on a private state with the
+    /// head's raw prediction taken exactly as Card Info queries it, fits
+    /// only on reviews before today's block, needs 1,000 of them, and leaves
+    /// the runtime's own grade and time outputs bitwise unchanged.
+    #[test]
+    fn rwkv_runtime_answer_time_recalibration_replays_privately() {
+        use crate::rwkv::answer_time_recal::answer_time_recal_window;
+        use crate::rwkv::answer_time_recal::ANSWER_TIME_RECAL_SHIPPED;
+        use crate::rwkv::TimedEvents;
+        let history = recal_history(1_500);
+        let today = history.last().unwrap().day_offset.unwrap() + 1;
+        let mut runtime = load(ModelKind::Sm130Th, StatePrecision::F32);
+        runtime.warm_up_reviews(history.clone(), false).unwrap();
+        let mut query = answer_time_query(&history[7]);
+        query.current_elapsed_days = Some(2);
+        query.current_elapsed_seconds = Some(2 * 86_400);
+        let features = answer_time_history(&history).features(query.card_id, 2);
+        let outputs = |runtime: &mut RwkvRuntime| {
+            let request = |runtime: &RwkvRuntime| ReviewPredictionRequest {
+                input: query.clone(),
+                state: runtime.warm_up_state(&query).unwrap(),
+            };
+            let requests = vec![request(runtime)];
+            let grades = runtime.predict_many(requests).unwrap();
+            let requests = vec![request(runtime)];
+            let time = runtime
+                .predict_answer_times(requests, vec![features])
+                .unwrap();
+            let grades: Vec<_> = grades
+                .iter()
+                .map(|output| {
+                    (
+                        output.retrievability.to_bits(),
+                        output.button_probabilities.map(f32::to_bits),
+                        output.curve_retrievability.map(f32::to_bits),
+                    )
+                })
+                .collect();
+            (grades, time)
+        };
+        let before = outputs(&mut runtime);
+        let recalibrator = runtime.answer_time_recalibrator().unwrap();
+        let fit = recalibrator.fit(&history, today).unwrap().unwrap();
+        assert_eq!(outputs(&mut runtime), before);
+
+        // The fit rows: every time-labelled review before today's block.
+        let labelled: Vec<i64> = history
+            .iter()
+            .filter(|review| review.card_type == Some(2))
+            .map(|review| review.day_offset.unwrap())
+            .collect();
+        let window = answer_time_recal_window(&labelled, today, ANSWER_TIME_RECAL_SHIPPED).unwrap();
+        assert_eq!(fit.fit_rows, window.fit.len());
+        assert_eq!(fit.block_start_day, window.block_start_day);
+        assert!(fit.fitted.iter().flatten().any(|&fitted| fitted));
+        let raw = TimedEvents::from_prediction(before.1[0].as_ref().unwrap());
+        assert_eq!(fit.apply(&raw).grade, raw.grade);
+
+        // Reviews of today's block do not enter the fit.
+        let mut changed = history.clone();
+        for review in changed
+            .iter_mut()
+            .filter(|review| review.day_offset.unwrap() >= fit.block_start_day)
+        {
+            review.ease = Some(1);
+            review.duration_millis = Some(59_000);
+        }
+        assert_eq!(
+            recalibrator.fit(&changed, today).unwrap(),
+            Some(fit.clone())
+        );
+        // A short history keeps the raw model.
+        assert_eq!(recalibrator.fit(&history[..900], today).unwrap(), None);
+
+        // The replay's raw prediction of a fit row equals the Card Info
+        // query on a runtime warmed up to just before that review.
+        let (rows, window, _) = match &recalibrator {
+            AnswerTimeRecalibrator::Primary(engine) => {
+                engine.answer_time_recal_rows(&history, today)
+            }
+            AnswerTimeRecalibrator::Alternate(engine) => {
+                engine.answer_time_recal_rows(&history, today)
+            }
+        }
+        .unwrap()
+        .unwrap();
+        let target = history
+            .iter()
+            .enumerate()
+            .filter(|(_, review)| review.card_type == Some(2))
+            .nth(window.fit.end - 1)
+            .unwrap()
+            .0;
+        let mut resident = load(ModelKind::Sm130Th, StatePrecision::F32);
+        resident
+            .warm_up_reviews(history[..target].to_vec(), false)
+            .unwrap();
+        let query = answer_time_query(&history[target]);
+        let elapsed = query.current_elapsed_days.unwrap();
+        let state = resident.warm_up_state(&query).unwrap();
+        let prediction = resident
+            .predict_answer_times(
+                vec![ReviewPredictionRequest {
+                    input: query.clone(),
+                    state,
+                }],
+                vec![answer_time_history(&history[..target]).features(query.card_id, elapsed)],
+            )
+            .unwrap()[0]
+            .clone()
+            .unwrap();
+        assert_eq!(
+            rows.last().unwrap().raw,
+            TimedEvents::from_prediction(&prediction)
+        );
+    }
+
     #[test]
     fn rwkv_runtime_answer_time_head_is_optional_and_leaves_grades_unchanged() {
         for (model, file, same_day) in [
