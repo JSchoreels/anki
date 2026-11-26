@@ -5,6 +5,8 @@ pub mod changes;
 pub mod chunks;
 pub mod download;
 pub mod finish;
+#[cfg(test)]
+mod fsrs_reconcile_tests;
 pub mod graves;
 pub mod meta;
 pub mod normal;

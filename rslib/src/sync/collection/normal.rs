@@ -12,6 +12,7 @@ use crate::error::SyncErrorKind;
 use crate::prelude::Usn;
 use crate::progress::ThrottlingProgressHandler;
 use crate::revlog::RevlogId;
+use crate::sync::collection::chunks::FsrsReconcileCandidates;
 use crate::sync::collection::progress::SyncStage;
 use crate::sync::collection::protocol::EmptyInput;
 use crate::sync::collection::protocol::SyncProtocol;
@@ -161,7 +162,10 @@ impl NormalSyncer<'_> {
         debug!("unchunked changes");
         self.process_unchunked_changes(&state).await?;
         debug!("begin stream from server");
-        self.process_chunks_from_server(&state).await?;
+        let mut fsrs_reconcile_candidates = FsrsReconcileCandidates::default();
+        self.process_chunks_from_server(&state, &mut fsrs_reconcile_candidates)
+            .await?;
+        self.reconcile_fsrs_state_after_download(&fsrs_reconcile_candidates)?;
         let foreign_cards = self.col.foreign_fsrs_repair_candidates()?;
         match self
             .col
@@ -189,6 +193,30 @@ impl NormalSyncer<'_> {
         output.remote_review_ids = std::mem::take(&mut self.remote_review_ids);
         output.remote_non_review_collection_changed = self.remote_non_review_collection_changed;
         Ok(output)
+    }
+
+    /// Rebuild locally modified cards whose downloaded row disagreed on FSRS
+    /// state, so they upload with the state of the merged history. The server
+    /// never reconciles. A failure to compute leaves the merged rows as they
+    /// are and lets the sync finish; a failure to save aborts it.
+    fn reconcile_fsrs_state_after_download(
+        &mut self,
+        candidates: &FsrsReconcileCandidates,
+    ) -> error::Result<()> {
+        debug!(
+            cards = candidates.cards.len(),
+            cards_with_new_reviews = candidates.cards_with_new_reviews.len(),
+            schedule_cards = candidates.cards_to_reschedule().len(),
+            "reconciling FSRS state after download"
+        );
+        match self.col.fsrs_cards_reconciled_after_sync(candidates) {
+            Ok(cards) => {
+                let cards = self.col.save_fsrs_cards_reconciled_after_sync(cards)?;
+                debug!(cards, "reconciled FSRS state after download");
+            }
+            Err(err) => tracing::warn!(?err, "reconciling FSRS state after download failed"),
+        }
+        Ok(())
     }
 
     pub(in crate::sync) fn mark_remote_non_review_collection_changed(&mut self, changed: bool) {

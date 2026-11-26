@@ -1277,7 +1277,7 @@ fn rwkv_enabled_deck_ids(
         .collect()
 }
 
-fn rwkv_config_active(config: &DeckConfig) -> bool {
+pub(crate) fn rwkv_config_active(config: &DeckConfig) -> bool {
     config.inner.rwkv_review_enabled || config.inner.rwkv_review_instant_order_enabled
 }
 

@@ -1,6 +1,8 @@
 // Copyright: Ankitects Pty Ltd and contributors
 // License: GNU AGPL, version 3 or later; http://www.gnu.org/licenses/agpl.html
 
+use std::collections::HashSet;
+
 use itertools::Itertools;
 use serde::Deserialize;
 use serde::Serialize;
@@ -10,6 +12,7 @@ use tracing::debug;
 use crate::card::Card;
 use crate::card::CardQueue;
 use crate::card::CardType;
+use crate::card::FsrsMemoryState;
 use crate::notes::Note;
 use crate::prelude::*;
 use crate::revlog::RevlogEntry;
@@ -36,6 +39,37 @@ pub(in crate::sync) struct AppliedChunk {
     /// A card-only boundary from an earlier build needs to be sent back in
     /// collection config before an older client can strip the card field.
     pub rwkv_mirror_added: bool,
+    /// Cards this chunk flagged for FSRS reconciliation after the download.
+    pub fsrs_reconcile: FsrsReconcileCandidates,
+}
+
+/// Cards collected while applying downloaded chunks, for FSRS reconciliation
+/// once the whole download has been merged. Chunks interleave revlog and card
+/// rows, so the reschedule decision must wait until the download is complete.
+#[derive(Debug, Default)]
+pub(crate) struct FsrsReconcileCandidates {
+    /// Locally modified cards whose incoming row differs in FSRS-relevant
+    /// fields.
+    pub(crate) cards: HashSet<CardId>,
+    /// Cards that received at least one new rating review in this download.
+    pub(crate) cards_with_new_reviews: HashSet<CardId>,
+}
+
+impl FsrsReconcileCandidates {
+    /// Flagged cards whose schedule may change: only new reviews move a
+    /// schedule, never deck moves, (un)suspend, flags or remote resets.
+    pub(crate) fn cards_to_reschedule(&self) -> HashSet<CardId> {
+        self.cards
+            .intersection(&self.cards_with_new_reviews)
+            .copied()
+            .collect()
+    }
+
+    pub(in crate::sync) fn extend(&mut self, other: FsrsReconcileCandidates) {
+        self.cards.extend(other.cards);
+        self.cards_with_new_reviews
+            .extend(other.cards_with_new_reviews);
+    }
 }
 
 pub(in crate::sync) struct ChunkableIds {
@@ -116,6 +150,7 @@ impl NormalSyncer<'_> {
     pub(in crate::sync) async fn process_chunks_from_server(
         &mut self,
         state: &ClientSyncState,
+        fsrs_reconcile_candidates: &mut FsrsReconcileCandidates,
     ) -> Result<()> {
         loop {
             let chunk = self.server.chunk(EmptyInput::request()).await?.json()?;
@@ -139,7 +174,8 @@ impl NormalSyncer<'_> {
             })?;
 
             let done = chunk.done;
-            let applied = self.col.apply_chunk(chunk, state.pending_usn)?;
+            let mut applied = self.col.apply_chunk(chunk, state.pending_usn)?;
+            fsrs_reconcile_candidates.extend(std::mem::take(&mut applied.fsrs_reconcile));
             self.rwkv_mirrors_need_upload |= applied.rwkv_mirror_added;
             // Reviews rewrite their card's scheduling fields, which is not a
             // change to the history the reviews belong to.
@@ -210,8 +246,9 @@ impl Collection {
         chunk: Chunk,
         pending_usn: Usn,
     ) -> Result<AppliedChunk> {
-        self.merge_revlog(chunk.revlog)?;
+        let cards_with_new_reviews = self.merge_revlog(chunk.revlog)?;
         let mut applied = self.merge_cards(chunk.cards, pending_usn)?;
+        applied.fsrs_reconcile.cards_with_new_reviews = cards_with_new_reviews;
         applied.note_ids = self.merge_notes(chunk.notes, pending_usn)?;
         let mut changed_card_ids = std::mem::take(&mut applied.card_ids);
         changed_card_ids.extend(self.storage.card_ids_of_notes(&applied.note_ids)?);
@@ -220,17 +257,32 @@ impl Collection {
         Ok(applied)
     }
 
-    fn merge_revlog(&self, entries: Vec<RevlogEntry>) -> Result<()> {
+    /// Returns the cards that received a newly inserted rating review.
+    fn merge_revlog(&self, entries: Vec<RevlogEntry>) -> Result<HashSet<CardId>> {
+        let mut cards_with_new_reviews = HashSet::new();
         for entry in entries {
-            self.storage.add_revlog_entry(&entry, false)?;
+            let added = self.storage.add_revlog_entry(&entry, false)?.is_some();
+            if added && entry.has_rating_and_affects_scheduling() {
+                cards_with_new_reviews.insert(entry.cid);
+            }
         }
-        Ok(())
+        Ok(cards_with_new_reviews)
     }
 
     fn merge_cards(&mut self, entries: Vec<CardEntry>, pending_usn: Usn) -> Result<AppliedChunk> {
         let mut applied = AppliedChunk::default();
         for entry in entries {
             let existing_card = self.storage.get_card(entry.id)?;
+            // Flag before the winner check: a stale local or remote row can
+            // win, and either way the card is rebuilt from the merged log.
+            if let Some(existing_card) = &existing_card {
+                if !self.server
+                    && existing_card.usn.is_pending_sync(pending_usn)
+                    && card_needs_fsrs_reconcile(existing_card, &entry)
+                {
+                    applied.fsrs_reconcile.cards.insert(entry.id);
+                }
+            }
             let proceed = existing_card.as_ref().is_none_or(|existing_card| {
                 !existing_card.usn.is_pending_sync(pending_usn) || existing_card.mtime < entry.mtime
             });
@@ -422,6 +474,45 @@ impl Collection {
 
         Ok(chunk)
     }
+}
+
+fn card_needs_fsrs_reconcile(existing: &Card, incoming: &CardEntry) -> bool {
+    let incoming_data = CardData::from_str(&incoming.data);
+    let incoming_memory_state = incoming_data.memory_state();
+    let has_fsrs = incoming_memory_state.is_some()
+        || incoming_data.fsrs_desired_retention.is_some()
+        || incoming_data.decay.is_some()
+        || existing.memory_state.is_some()
+        || existing.desired_retention.is_some()
+        || existing.decay.is_some();
+
+    has_fsrs
+        && (!same_public_memory_state(existing.memory_state, incoming_memory_state)
+            || existing.desired_retention != incoming_data.fsrs_desired_retention
+            || existing.decay != incoming_data.decay
+            || existing.last_review_time != incoming_data.last_review_time
+            || card_schedule_differs(existing, incoming))
+}
+
+/// Compares only the fields every client keeps. AnkiWeb and older clients
+/// strip FSRS-7's internal traces, which `CardData::memory_state()` then
+/// fills with defaults, so an otherwise identical row must not be flagged.
+fn same_public_memory_state(a: Option<FsrsMemoryState>, b: Option<FsrsMemoryState>) -> bool {
+    match (a, b) {
+        (None, None) => true,
+        (Some(a), Some(b)) => a.stability == b.stability && a.difficulty == b.difficulty,
+        _ => false,
+    }
+}
+
+fn card_schedule_differs(existing: &Card, incoming: &CardEntry) -> bool {
+    existing.deck_id != incoming.did
+        || existing.ctype != incoming.ctype
+        || existing.queue != incoming.queue
+        || existing.due != incoming.due
+        || existing.interval != incoming.ivl
+        || existing.original_due != incoming.odue
+        || existing.original_deck_id != incoming.odid
 }
 
 impl From<CardEntry> for Card {
@@ -697,7 +788,7 @@ mod test {
     }
 
     #[test]
-    fn fsrs6_sync_preserves_the_winning_state_and_schedule_without_repair_uploads() -> Result<()> {
+    fn fsrs6_sync_preserves_the_winning_state_and_schedule_without_history() -> Result<()> {
         for locally_newer in [false, true] {
             let mut col = Collection::new();
             col.set_config_bool(BoolKey::Fsrs, true, false)?;
@@ -950,5 +1041,222 @@ mod test {
         });
         assert!(col.apply_chunk(moved, Usn(-1))?.card_identity_changed);
         Ok(())
+    }
+
+    const PENDING: Usn = Usn(-1);
+
+    fn memory_state(stability: f32) -> Option<FsrsMemoryState> {
+        Some(FsrsMemoryState {
+            stability,
+            stability_internal: stability * 1.5,
+            difficulty: 5.0,
+            stability_fast: Some(stability / 2.0),
+        })
+    }
+
+    /// A collection holding one review card with FSRS data. The stored card is
+    /// modified locally (usn -1) unless the caller changes that.
+    fn col_with_fsrs_card() -> (Collection, Card) {
+        let mut col = Collection::new();
+        NoteAdder::basic(&mut col).add(&mut col);
+        let mut card = col.get_first_card();
+        card.ctype = CardType::Review;
+        card.queue = CardQueue::Review;
+        card.due = 100;
+        card.interval = 10;
+        card.memory_state = memory_state(10.0);
+        card.desired_retention = Some(0.9);
+        card.decay = Some(0.2);
+        card.last_review_time = Some(TimestampSecs(1_000_000));
+        card.usn = PENDING;
+        col.storage.update_card(&card).unwrap();
+        (col, card)
+    }
+
+    /// Applies one incoming card row and returns the cards flagged for FSRS
+    /// reconciliation.
+    fn apply(col: &mut Collection, entry: CardEntry, pending_usn: Usn) -> HashSet<CardId> {
+        col.merge_cards(vec![entry], pending_usn)
+            .unwrap()
+            .fsrs_reconcile
+            .cards
+    }
+
+    fn revlog_entry(
+        review_kind: RevlogReviewKind,
+        button_chosen: u8,
+        ease_factor: u32,
+    ) -> RevlogEntry {
+        RevlogEntry {
+            id: RevlogId(1_000_000_000),
+            cid: CardId(1),
+            usn: Usn(5),
+            button_chosen,
+            interval: 10,
+            last_interval: 5,
+            ease_factor,
+            taken_millis: 1000,
+            review_kind,
+        }
+    }
+
+    #[test]
+    fn card_not_in_collection_is_not_flagged_for_fsrs_reconcile() {
+        let (mut col, card) = col_with_fsrs_card();
+        let mut entry = CardEntry::from(card);
+        entry.id = CardId(entry.id.0 + 1);
+
+        assert!(apply(&mut col, entry, PENDING).is_empty());
+    }
+
+    #[test]
+    fn locally_unmodified_card_is_not_flagged_for_fsrs_reconcile() {
+        let (mut col, mut card) = col_with_fsrs_card();
+        card.usn = Usn(5);
+        col.storage.update_card(&card).unwrap();
+        let mut incoming = card.clone();
+        incoming.memory_state = memory_state(20.0);
+
+        assert!(apply(&mut col, incoming.into(), PENDING).is_empty());
+    }
+
+    #[test]
+    fn card_without_fsrs_data_on_either_side_is_not_flagged_for_fsrs_reconcile() {
+        let (mut col, mut card) = col_with_fsrs_card();
+        card.memory_state = None;
+        card.desired_retention = None;
+        card.decay = None;
+        col.storage.update_card(&card).unwrap();
+        let mut incoming = card.clone();
+        incoming.due += 5;
+        incoming.interval += 5;
+
+        assert!(apply(&mut col, incoming.into(), PENDING).is_empty());
+    }
+
+    #[test]
+    fn identical_incoming_card_is_not_flagged_for_fsrs_reconcile() {
+        let (mut col, card) = col_with_fsrs_card();
+
+        assert!(apply(&mut col, card.into(), PENDING).is_empty());
+    }
+
+    #[test]
+    fn stripped_fsrs7_traces_are_not_flagged_for_fsrs_reconcile() {
+        let (mut col, card) = col_with_fsrs_card();
+        let state = card.memory_state.unwrap();
+        let mut incoming: CardEntry = card.clone().into();
+        // AnkiWeb keeps only the public fields of an otherwise identical row.
+        incoming.data = json!({
+            "s": state.stability,
+            "d": state.difficulty,
+            "dr": card.desired_retention,
+            "decay": card.decay,
+            "lrt": card.last_review_time,
+        })
+        .to_string();
+        let stripped = CardData::from_str(&incoming.data).memory_state().unwrap();
+        assert_ne!(stripped, state);
+
+        assert!(apply(&mut col, incoming, PENDING).is_empty());
+    }
+
+    #[test]
+    fn memory_state_difference_is_flagged_for_fsrs_reconcile() {
+        let (mut col, card) = col_with_fsrs_card();
+        let mut incoming = card.clone();
+        incoming.memory_state = memory_state(card.memory_state.unwrap().stability + 1.0);
+
+        assert_eq!(
+            apply(&mut col, incoming.into(), PENDING),
+            HashSet::from([card.id])
+        );
+    }
+
+    #[test]
+    fn last_review_time_difference_is_flagged_for_fsrs_reconcile() {
+        let (mut col, card) = col_with_fsrs_card();
+        let mut incoming = card.clone();
+        incoming.last_review_time = Some(TimestampSecs(1_000_100));
+
+        assert_eq!(
+            apply(&mut col, incoming.into(), PENDING),
+            HashSet::from([card.id])
+        );
+    }
+
+    #[test]
+    fn due_and_interval_difference_is_flagged_for_fsrs_reconcile() {
+        let (mut col, card) = col_with_fsrs_card();
+        let mut incoming = card.clone();
+        incoming.due += 20;
+        incoming.interval += 20;
+
+        assert_eq!(
+            apply(&mut col, incoming.into(), PENDING),
+            HashSet::from([card.id])
+        );
+    }
+
+    #[test]
+    fn losing_incoming_row_is_still_flagged_for_fsrs_reconcile() {
+        let (mut col, mut card) = col_with_fsrs_card();
+        card.mtime = TimestampSecs(30);
+        col.storage.update_card(&card).unwrap();
+        let mut incoming = card.clone();
+        incoming.mtime = TimestampSecs(20);
+        incoming.memory_state = memory_state(20.0);
+
+        assert_eq!(
+            apply(&mut col, incoming.into(), PENDING),
+            HashSet::from([card.id])
+        );
+        assert_eq!(col.storage.get_card(card.id).unwrap().unwrap(), card);
+    }
+
+    #[test]
+    fn new_rating_review_is_recorded_as_new_review() {
+        let col = Collection::new();
+        let review = revlog_entry(RevlogReviewKind::Review, 3, 2500);
+
+        assert_eq!(
+            col.merge_revlog(vec![review]).unwrap(),
+            HashSet::from([CardId(1)])
+        );
+    }
+
+    #[test]
+    fn review_already_present_locally_is_not_recorded_as_new_review() {
+        let col = Collection::new();
+        let review = revlog_entry(RevlogReviewKind::Review, 3, 2500);
+        col.storage.add_revlog_entry(&review, false).unwrap();
+
+        assert!(col.merge_revlog(vec![review]).unwrap().is_empty());
+    }
+
+    #[test]
+    fn new_reset_entry_is_not_recorded_as_new_review() {
+        let col = Collection::new();
+        let reset = revlog_entry(RevlogReviewKind::Manual, 0, 0);
+
+        assert!(col.merge_revlog(vec![reset]).unwrap().is_empty());
+    }
+
+    #[test]
+    fn new_cramming_entry_is_not_recorded_as_new_review() {
+        let col = Collection::new();
+        let cramming = revlog_entry(RevlogReviewKind::Filtered, 3, 0);
+
+        assert!(col.merge_revlog(vec![cramming]).unwrap().is_empty());
+    }
+
+    #[test]
+    fn only_flagged_cards_with_new_reviews_are_rescheduled() {
+        let candidates = FsrsReconcileCandidates {
+            cards: HashSet::from([CardId(1), CardId(2)]),
+            cards_with_new_reviews: HashSet::from([CardId(2), CardId(3)]),
+        };
+
+        assert_eq!(candidates.cards_to_reschedule(), HashSet::from([CardId(2)]));
     }
 }

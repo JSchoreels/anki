@@ -876,20 +876,20 @@ impl SyncTestContext {
             .unwrap()
     }
 
-    async fn normal_sync(&self, col: &mut Collection) -> SyncOutput {
+    pub(in crate::sync) async fn normal_sync(&self, col: &mut Collection) -> SyncOutput {
         NormalSyncer::new(col, self.cloned_client())
             .sync()
             .await
             .unwrap()
     }
 
-    async fn full_upload(&self, col: Collection) {
+    pub(in crate::sync) async fn full_upload(&self, col: Collection) {
         col.full_upload_with_server(self.cloned_client())
             .await
             .unwrap()
     }
 
-    async fn full_download(&self, col: Collection) {
+    pub(in crate::sync) async fn full_download(&self, col: Collection) {
         col.full_download_with_server(self.cloned_client())
             .await
             .unwrap()

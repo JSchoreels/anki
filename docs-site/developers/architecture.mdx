@@ -551,6 +551,23 @@ Current exact-vs-scalar status:
   retention. Collection-open recovery also preserves the collection modification
   time, so repair alone does not request a sync or repeatedly upload changes that
   AnkiWeb strips again. Older FSRS models and complete FSRS-7 states are untouched.
+- Normal sync also reconciles FSRS state after the download, before that
+  repair and before local changes are sent. A card is reconciled when it was
+  modified locally and the downloaded row differs in `s`, `d`, desired
+  retention, decay, last review time or schedule; a row that differs only in
+  stripped `s_int`/`s_fast` traces is not. Its memory state is replayed from the
+  merged review log with the card's resolved preset (overlays and deck desired
+  retention overrides included), desired retention and decay come from that
+  preset (a Dynamic DR preset keeps the card's own desired retention), and
+  `last_review_time` follows the merged log unless the history ends in Forget.
+  When the download added a rating review for the card, an unsuspended review
+  card takes the interval recorded in its newest rating entry, unless a later
+  set due date, Forget or reschedule entry owns the schedule. Reconciled cards
+  are saved as normal pending changes, with a modification time newer than the
+  merged row, so they upload in the same sync; no undo or revlog entry is
+  written. Cards whose home preset uses RWKV, cards without review history and
+  collections with FSRS off are untouched, and the server never reconciles. If
+  the computation fails, sync logs a warning and finishes without reconciling.
 - FSRS-7's fast stability trace is stored in `card.data.s_fast` on new FSRS
   writes. Legacy card data without `s_fast` treats the internal slow stability
   as the fast trace fallback.
