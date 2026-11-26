@@ -143,51 +143,55 @@ def test_execution_log_exports_rotated_parts_oldest_first(tmp_path: Path) -> Non
         log.close()
 
 
-def test_github_draft_uses_only_reviewed_excerpt(tmp_path, monkeypatch):
-    from urllib.parse import parse_qs, urlsplit
-
+def test_github_attachment_keeps_full_rotated_log(tmp_path, monkeypatch):
     from aqt import execution_logs
     from aqt.log import ExecutionLog
+    from aqt.qt import QApplication, QTimer
 
-    data = ("older private line\n" + "日#&%+" * 1200 + "\nnewest line").encode()
-    excerpt = execution_logs._recent_excerpt(data)
-    assert excerpt.endswith("newest line")
-    assert "older private line" not in excerpt
-    assert len(execution_logs._issue_url(excerpt)) <= execution_logs._MAX_ISSUE_URL
-
-    edits = iter(
-        [("too long" * 2000, True), ("edited 日本 & # + %", True), ("", False)]
-    )
-    opened = []
-    monkeypatch.setattr(execution_logs.tr, "_translate", lambda *args, **kwargs: "")
-    monkeypatch.setattr(
-        execution_logs.QInputDialog, "getMultiLineText", lambda *args: next(edits)
-    )
-    monkeypatch.setattr(execution_logs, "openLink", opened.append)
+    app = QApplication.instance() or QApplication([])
+    older = ("older 日本語 & # + %\r\n" * 6000).encode()
+    latest = "session\u00a0finished\r\n".encode()
     log = ExecutionLog(tmp_path / "execution.log")
+    Path(log.baseFilename + ".1").write_bytes(older)
+    Path(log.baseFilename).write_bytes(latest)
+    opened = []
+    folders = []
+    reviews = []
+
+    def accept():
+        dialog = app.activeModalWidget()
+        reviews.append(dialog.textValue())
+        dialog.accept()
+
+    monkeypatch.setattr(execution_logs.tr, "_translate", lambda *args, **kwargs: "")
+    monkeypatch.setattr(execution_logs, "openLink", opened.append)
+    monkeypatch.setattr(
+        execution_logs, "openFolder", lambda path: folders.append(Path(path))
+    )
     try:
-        Path(log.baseFilename).write_bytes(data)
+        QTimer.singleShot(0, lambda: app.activeModalWidget().reject())
         execution_logs.post_logs(None, log)
+        assert not opened and not folders
+
+        QTimer.singleShot(0, accept)
         execution_logs.post_logs(None, log)
+        assert reviews[0].count("older 日本語") == 6000
+        assert "finished" in reviews[0]
+        assert opened == ["https://github.com/JSchoreels/anki/issues/new"]
+        assert (folders[0] / "anki-execution.log").read_bytes() == older + latest
     finally:
         log.close()
-    (url,) = opened
-    assert urlsplit(url).path == "/JSchoreels/anki/issues/new"
-    assert parse_qs(urlsplit(url).query)["body"] == [
-        "### Execution log\n\n    edited 日本 & # + %"
-    ]
 
 
 def test_help_menu_exports_and_opens_a_reviewed_issue(tmp_path, monkeypatch):
     import logging
     from types import SimpleNamespace
-    from urllib.parse import parse_qs, urlsplit
 
     from aqt import execution_logs
     from aqt.forms.main import Ui_MainWindow
     from aqt.log import ExecutionLog
     from aqt.main import AnkiQt
-    from aqt.qt import QApplication, QMainWindow
+    from aqt.qt import QApplication, QMainWindow, QTimer
     from aqt.utils import tr
 
     app = QApplication.instance() or QApplication([])
@@ -215,16 +219,21 @@ def test_help_menu_exports_and_opens_a_reviewed_issue(tmp_path, monkeypatch):
 
         opened = []
 
-        def review(parent, title, prompt, text):
-            assert text == "review complete"
-            return "edited review", True
+        def edit_attachment():
+            dialog = app.activeModalWidget()
+            dialog.setTextValue("edited review")
+            dialog.accept()
 
-        monkeypatch.setattr(execution_logs.QInputDialog, "getMultiLineText", review)
         monkeypatch.setattr(execution_logs, "openLink", opened.append)
+        folders = []
+        monkeypatch.setattr(
+            execution_logs, "openFolder", lambda path: folders.append(Path(path))
+        )
+        QTimer.singleShot(0, edit_attachment)
         report.trigger()
-        assert parse_qs(urlsplit(opened[0]).query)["body"] == [
-            "### Execution log\n\n    edited review"
-        ]
+        assert opened == ["https://github.com/JSchoreels/anki/issues/new"]
+        assert (folders[0] / "anki-execution.log").read_bytes() == b"edited review"
+        assert log.snapshot() == b"review complete\n"
     finally:
         log.close()
         window.deleteLater()

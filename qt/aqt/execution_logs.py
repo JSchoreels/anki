@@ -3,17 +3,15 @@
 
 from __future__ import annotations
 
+import atexit
 from pathlib import Path
-from textwrap import indent
-from urllib.parse import urlencode
+from tempfile import TemporaryDirectory
 
 from aqt.log import ExecutionLog
 from aqt.qt import QFileDialog, QInputDialog, QIODevice, QSaveFile, QWidget
-from aqt.utils import openLink, showWarning, tr
+from aqt.utils import openFolder, openLink, showWarning, tr
 
 _ISSUE_URL = "https://github.com/JSchoreels/anki/issues/new"
-# Leave room for the browser and OS to pass the URL to GitHub.
-_MAX_ISSUE_URL = 2000
 
 
 def export_log(parent: QWidget, log: ExecutionLog) -> None:
@@ -43,38 +41,35 @@ def export_log(parent: QWidget, log: ExecutionLog) -> None:
         showWarning(tr.qt_misc_log_export_failed(reason=str(exc)), parent=parent)
 
 
-def _issue_url(excerpt: str) -> str:
-    body = "### Execution log\n\n" + indent(excerpt, "    ")
-    return _ISSUE_URL + "?" + urlencode({"body": body})
-
-
-def _recent_excerpt(data: bytes) -> str:
-    # Prefer whole recent lines. If even the last line is too long, keep its tail.
-    tail = data[-_MAX_ISSUE_URL:].decode("utf-8", errors="replace").rstrip()
-    while len(_issue_url(tail)) > _MAX_ISSUE_URL:
-        if "\n" in tail:
-            tail = tail.split("\n", 1)[1]
-        else:
-            tail = tail[max(1, len(tail) // 8) :]
-    return tail
-
-
 def post_logs(parent: QWidget, log: ExecutionLog) -> None:
     try:
-        excerpt = _recent_excerpt(log.snapshot())
+        data = log.snapshot()
     except OSError as exc:
         showWarning(tr.qt_misc_log_export_failed(reason=str(exc)), parent=parent)
         return
 
-    prompt = tr.qt_misc_review_log_excerpt()
-    while True:
-        excerpt, accepted = QInputDialog.getMultiLineText(
-            parent, tr.qt_misc_post_logs_on_github_issues(), prompt, excerpt
-        )
-        if not accepted:
-            return
-        url = _issue_url(excerpt)
-        if len(url) <= _MAX_ISSUE_URL:
-            openLink(url)
-            return
-        prompt = tr.qt_misc_log_excerpt_too_long()
+    dialog = QInputDialog(parent)
+    dialog.setWindowTitle(tr.qt_misc_post_logs_on_github_issues())
+    dialog.setLabelText(tr.qt_misc_review_log_attachment())
+    dialog.setOption(QInputDialog.InputDialogOption.UsePlainTextEditForTextInput)
+    dialog.setTextValue(data.decode("utf-8", errors="replace"))
+    # Qt normalizes line endings and some Unicode whitespace in the editor.
+    original = dialog.textValue()
+    accepted = dialog.exec()
+    edited = dialog.textValue()
+    dialog.deleteLater()
+    if not accepted:
+        return
+    if edited != original:
+        data = edited.encode("utf-8")
+
+    try:
+        directory = TemporaryDirectory(prefix="anki-github-issue-")
+        # The browser may still be uploading after this action returns.
+        atexit.register(directory.cleanup)
+        (Path(directory.name) / "anki-execution.log").write_bytes(data)
+    except OSError as exc:
+        showWarning(tr.qt_misc_log_export_failed(reason=str(exc)), parent=parent)
+        return
+    openFolder(directory.name)
+    openLink(_ISSUE_URL)

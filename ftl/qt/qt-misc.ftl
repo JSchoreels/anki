@@ -102,7 +102,8 @@ qt-misc-replace-your-collection-with-an-earlier = Replace your collection with a
 
 qt-misc-export-execution-log = Export Execution Log…
 qt-misc-post-logs-on-github-issues = Post Logs on GitHub Issues…
-qt-misc-review-log-excerpt = Review the recent log excerpt before opening a draft on GitHub. You can edit it here. To include more, attach an exported log to the draft.
-qt-misc-log-excerpt-too-long = Shorten the excerpt to fit in the GitHub draft link.
+qt-misc-review-log-attachment =
+    Review or edit the full execution log.
+    After you click OK, drag anki-execution.log from the folder Anki opens into the GitHub issue description.
 qt-misc-log-export-failed = Could not export the execution log. { $reason }
 qt-misc-choose-another-log-file = Choose a destination outside the files Anki uses for logging.
