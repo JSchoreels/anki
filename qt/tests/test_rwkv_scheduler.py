@@ -16289,6 +16289,7 @@ def test_deck_browser_counts_wait_for_startup_cache_load(
     updates: list[tuple[int, object | None]] = []
     completed: list[bool] = []
     refreshes: list[str] = []
+    timers: list[Callable[[], None]] = []
     prewarm_calls: list[int] = []
 
     class Taskman:
@@ -16315,13 +16316,19 @@ def test_deck_browser_counts_wait_for_startup_cache_load(
             uses_collection: bool,
         ) -> None:
             future: Future[object] = Future()
-            future.set_result(task())
+            try:
+                future.set_result(task())
+            except Exception as exc:
+                future.set_exception(exc)
             on_done(future)
 
     taskman = Taskman()
     mw = SimpleNamespace(
         taskman=taskman,
         state="deckBrowser",
+        progress=SimpleNamespace(
+            single_shot=lambda delay, callback: timers.append(callback)
+        ),
         onRefreshTimer=lambda: refreshes.append("refresh"),
     )
     monkeypatch.setattr(
@@ -16332,7 +16339,7 @@ def test_deck_browser_counts_wait_for_startup_cache_load(
     monkeypatch.setattr(
         rwkv_scheduler,
         "_rwkv_score_prewarm_work_for_deck",
-        lambda _reviewer, *, deck_id, reason: prewarm_calls.append(deck_id),
+        lambda _reviewer, *, deck_id, **kwargs: prewarm_calls.append(deck_id),
     )
 
     rwkv_scheduler.load_rwkv_state_cache_with_progress(mw)
@@ -16346,7 +16353,8 @@ def test_deck_browser_counts_wait_for_startup_cache_load(
         on_done=completed.append,
     )
     assert updates == []
-    assert completed == [False]
+    assert completed == []
+    assert len(timers) == 1
     assert prewarm_calls == []
 
     assert taskman.progress_task is not None
@@ -16357,6 +16365,9 @@ def test_deck_browser_counts_wait_for_startup_cache_load(
 
     assert rwkv_scheduler.rwkv_state_cache_loading(mw) is False
     assert refreshes == ["refresh"]
+    timers.pop()()
+    assert prewarm_calls == [10]
+    assert completed == [True]
 
 
 def test_startup_load_skips_full_cache_preflight(monkeypatch) -> None:
@@ -19841,13 +19852,14 @@ def test_deck_browser_counts_score_off_collection_and_update_incrementally(
         *,
         deck_id: int,
         reason: str,
+        raise_on_busy: bool,
     ) -> SimpleNamespace | None:
         events.append(("prepare", deck_id))
         if deck_id == 20:
             return None
         return SimpleNamespace(deck_id=deck_id, context=context)
 
-    def score(work: SimpleNamespace) -> SimpleNamespace:
+    def score(work: SimpleNamespace, *, raise_on_busy: bool) -> SimpleNamespace:
         events.append(("score", work.deck_id))
         return SimpleNamespace(
             deck_id=work.deck_id,
@@ -19936,6 +19948,8 @@ def _run_deck_browser_counts(
     failing_decks: Sequence[int] = (),
     not_applicable: Sequence[int] = (),
     unprepared: Sequence[int] = (),
+    busy_stage: str = "",
+    leave_before_retry: bool = False,
 ) -> tuple[list[tuple[int, bool]], list[tuple[int, str]], list[int]]:
     """Run the incremental count flow synchronously with scripted outcomes."""
 
@@ -19948,13 +19962,22 @@ def _run_deck_browser_counts(
         study_queue_generation=0,
     )
 
-    def prepare(reviewer: object, *, deck_id: int, reason: str) -> object | None:
+    timers: list[Callable[[], None]] = []
+    active = True
+
+    def simulate_contention(stage: str) -> None:
+        if stage == busy_stage and len(prepared) <= 3:
+            raise rwkv_scheduler._ReviewerBackendPredictionBusy
+
+    def prepare(reviewer: object, *, deck_id: int, **_kwargs: object) -> object | None:
         prepared.append(deck_id)
+        simulate_contention("prepare")
         if deck_id in not_applicable or deck_id in unprepared:
             return None
         return SimpleNamespace(deck_id=deck_id, context=context)
 
-    def score(work: SimpleNamespace) -> SimpleNamespace:
+    def score(work: SimpleNamespace, **_kwargs: object) -> SimpleNamespace:
+        simulate_contention("score")
         if work.deck_id in failing_decks:
             raise RuntimeError("scoring failed")
         return SimpleNamespace(
@@ -19968,6 +19991,7 @@ def _run_deck_browser_counts(
     def install(
         reviewer: object, deck_id: int, *_args: object, **_kwargs: object
     ) -> bool:
+        simulate_contention("install")
         attempt = install_attempts.get(deck_id, 0)
         install_attempts[deck_id] = attempt + 1
         return install_results[deck_id][attempt]
@@ -20005,15 +20029,38 @@ def _run_deck_browser_counts(
             sched=SimpleNamespace(deck_due_tree=lambda: SimpleNamespace())
         ),
         taskman=Taskman(),
+        progress=SimpleNamespace(
+            single_shot=lambda delay, callback: timers.append(callback)
+        ),
     )
     rwkv_scheduler.prepare_deck_browser_rwkv_counts_incrementally(
         mw,
         deck_ids,
-        should_continue=lambda: True,
+        should_continue=lambda: active,
         on_update=lambda deck_id, tree: updates.append((deck_id, tree is not None)),
         on_unavailable=lambda deck_id, reason: unavailable.append((deck_id, reason)),
     )
+    while timers:
+        assert len(timers) == 1
+        assert not updates and not unavailable
+        active = not leave_before_retry
+        timers.pop()()
     return updates, unavailable, prepared
+
+
+@pytest.mark.parametrize("stage", ["prepare", "score", "install"])
+@pytest.mark.parametrize("leave", [False, True])
+def test_deck_browser_retries_busy_counts_while_open(monkeypatch, stage, leave):
+    updates, unavailable, prepared = _run_deck_browser_counts(
+        monkeypatch,
+        [10],
+        install_results={10: [True]},
+        busy_stage=stage,
+        leave_before_retry=leave,
+    )
+    assert prepared == ([10] if leave else [10, 10, 10, 10])
+    assert updates == ([] if leave else [(10, True)])
+    assert unavailable == []
 
 
 def test_deck_browser_count_stale_result_is_retried_then_installed(
@@ -20095,6 +20142,7 @@ def test_deck_browser_count_prepare_skips_work_cancelled_while_queued(
         *,
         deck_id: int,
         reason: str,
+        raise_on_busy: bool,
     ) -> None:
         prepared_deck_ids.append(deck_id)
 
@@ -20142,6 +20190,7 @@ def test_deck_browser_count_prepare_failure_after_cancellation_is_ignored(
         *,
         deck_id: int,
         reason: str,
+        raise_on_busy: bool,
     ) -> None:
         nonlocal active
         active = False

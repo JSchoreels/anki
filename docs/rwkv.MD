@@ -1483,12 +1483,11 @@ bar shows the same uncapped total in grey beside the green review count when
 the total is larger, for example `157 (/959)`. It includes the selected deck's
 subdecks and updates after answers and RWKV queue refreshes. While the review
 count is pending, the total label is hidden until fresh counts are available.
-The currently
-selected scope is processed first. While a scope is pending, its review due count and the
-review due counts of its descendants display an ellipsis instead of the stored
-FSRS count. A completed scope reveals its RWKV count; a skipped or failed scope
-falls back to its stored count. A scope deferred during state-cache restoration
-remains pending until the completion refresh starts a fresh count pass. Leaving
+The deck browser processes the selected scope first. While a scope is pending,
+its deck and descendants show `…`. If RWKV is busy or restoring its state,
+the list retries automatically while it is open. A successful calculation
+replaces the ellipsis with the RWKV count. If the calculation fails, the
+affected rows show `?` with the stored due-date count in the tooltip. Leaving
 or refreshing the deck browser, or unloading the profile, cancels queued
 preparation and later UI updates, and preparing a reviewer queue clears the
 count-only cache. This keeps startup responsive while allowing every displayed

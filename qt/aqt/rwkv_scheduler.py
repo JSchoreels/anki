@@ -3825,6 +3825,7 @@ def _try_reviewer_backend_prediction_access(
     expected_resident_state_generation: int | None = None,
     expected_state_token: _ReviewerBackendPredictionStateToken | None = None,
     wait_for_access: bool = False,
+    raise_on_busy: bool = False,
     wait_timeout_seconds: float | None = None,
 ) -> Iterator[RwkvReviewerBackend | None]:
     """Claim access to resident backend state for prediction."""
@@ -3852,6 +3853,8 @@ def _try_reviewer_backend_prediction_access(
         else _reviewer_backend_execution_lock.acquire(blocking=wait_for_access)
     )
     if not acquired:
+        if raise_on_busy:
+            raise _ReviewerBackendPredictionBusy
         yield None
         return
 
@@ -6125,6 +6128,7 @@ def score_reviewer_queue_order_async_work(
     work: RwkvReviewQueueOrderAsyncWork,
     *,
     wait_for_backend: bool = False,
+    raise_on_busy: bool = False,
 ) -> RwkvReviewQueueOrderAsyncResult:
     if not _rwkv_review_queue_async_collection_is_current(work):
         return _aborted_reviewer_queue_order_async_result(work)
@@ -6135,6 +6139,7 @@ def score_reviewer_queue_order_async_work(
         expected_resident_state_key=work.resident_state_key,
         expected_resident_state_generation=work.resident_state_generation,
         wait_for_access=wait_for_backend,
+        raise_on_busy=raise_on_busy,
     ) as backend:
         if backend is None:
             logger.debug(
@@ -7707,18 +7712,13 @@ def prepare_deck_browser_rwkv_counts_incrementally(
     start = time.monotonic()
     first_update_elapsed_ms: float | None = None
     updated_scopes = 0
-    deferred_scopes = 0
 
-    def finish(*, clear_pending: bool | None = None) -> None:
-        if clear_pending is None:
-            clear_pending = deferred_scopes == 0
+    def finish() -> None:
         logger.debug(
             "RWKV deck browser incremental counts finished: scopes=%s updated=%s "
-            "deferred=%s clear_pending=%s first_update_elapsed_ms=%s elapsed_ms=%.1f",
+            "first_update_elapsed_ms=%s elapsed_ms=%.1f",
             len(deck_ids),
             updated_scopes,
-            deferred_scopes,
-            clear_pending,
             (
                 f"{first_update_elapsed_ms:.1f}"
                 if first_update_elapsed_ms is not None
@@ -7727,7 +7727,7 @@ def prepare_deck_browser_rwkv_counts_incrementally(
             (time.monotonic() - start) * 1000,
         )
         if on_done is not None:
-            on_done(clear_pending)
+            on_done(True)
 
     def mark_unavailable(deck_id: int, reason: str) -> None:
         logger.info(
@@ -7758,36 +7758,41 @@ def prepare_deck_browser_rwkv_counts_incrementally(
         prepare_deck(deck_id, _RWKV_DECK_BROWSER_STALE_RETRIES)
 
     def prepare_deck(deck_id: int, retries_left: int) -> None:
-        def prepare() -> tuple[RwkvReviewQueueOrderAsyncWork | None, bool]:
+        if not should_continue():
+            finish()
+            return
+
+        def retry_when_idle() -> None:
+            getattr(mw, "progress").single_shot(
+                250, partial(prepare_deck, deck_id, retries_left)
+            )
+
+        def prepare() -> RwkvReviewQueueOrderAsyncWork | None:
             if not should_continue():
-                return None, False
+                return None
             if rwkv_state_cache_loading(mw):
-                return None, True
+                raise _ReviewerBackendPredictionBusy
             work = _rwkv_score_prewarm_work_for_deck(
                 reviewer,
                 deck_id=deck_id,
                 reason="deck browser counts",
+                raise_on_busy=True,
             )
-            return work, rwkv_state_cache_loading(mw)
+            if work is None and rwkv_state_cache_loading(mw):
+                raise _ReviewerBackendPredictionBusy
+            return work
 
-        def prepared(
-            future: Future[tuple[RwkvReviewQueueOrderAsyncWork | None, bool]],
-        ) -> None:
-            nonlocal deferred_scopes
+        def prepared(future: Future[RwkvReviewQueueOrderAsyncWork | None]) -> None:
             try:
-                work, loading = future.result()
+                work = future.result()
+            except _ReviewerBackendPredictionBusy:
+                retry_when_idle()
+                return
             except Exception:
                 fail("preparation", deck_id)
                 return
             if work is None:
-                if loading:
-                    deferred_scopes += 1
-                    logger.debug(
-                        "RWKV deck browser count deferred during state cache load: "
-                        "deck_id=%s",
-                        deck_id,
-                    )
-                elif should_continue():
+                if should_continue():
                     if _rwkv_score_prewarm_applies(reviewer, deck_id):
                         mark_unavailable(deck_id, "scores_not_prepared")
                     else:
@@ -7799,11 +7804,14 @@ def prepare_deck_browser_rwkv_counts_incrementally(
                 return
 
             def score() -> RwkvReviewQueueOrderAsyncResult:
-                return score_reviewer_queue_order_async_work(work)
+                return score_reviewer_queue_order_async_work(work, raise_on_busy=True)
 
             def scored(future: Future[RwkvReviewQueueOrderAsyncResult]) -> None:
                 try:
                     result = future.result()
+                except _ReviewerBackendPredictionBusy:
+                    retry_when_idle()
+                    return
                 except Exception:
                     fail("scoring", deck_id)
                     return
@@ -7883,6 +7891,7 @@ def prepare_deck_browser_rwkv_counts_incrementally(
                     else:
                         with _try_reviewer_backend_prediction_access(
                             expected_backend=result_backend,
+                            raise_on_busy=True,
                             expected_backend_assignment_generation=getattr(
                                 result,
                                 "backend_assignment_generation",
@@ -7991,6 +8000,9 @@ def prepare_deck_browser_rwkv_counts_incrementally(
                     nonlocal first_update_elapsed_ms, updated_scopes
                     try:
                         tree = future.result()
+                    except _ReviewerBackendPredictionBusy:
+                        retry_when_idle()
+                        return
                     except Exception:
                         fail("installation", deck_id)
                         return
@@ -8296,6 +8308,7 @@ def _rwkv_score_prewarm_work_for_deck(
     *,
     deck_id: int,
     reason: str,
+    raise_on_busy: bool = False,
 ) -> RwkvReviewQueueOrderAsyncWork | None:
     """Snapshot optional prewarm work; backend failures intentionally skip fallback."""
 
@@ -8364,6 +8377,7 @@ def _rwkv_score_prewarm_work_for_deck(
         build_start=start,
         fresh_for_backend_state=False,
         expected_backend=backend,
+        raise_on_busy=raise_on_busy,
     )
 
 
@@ -25002,6 +25016,7 @@ def _rwkv_review_queue_async_work_from_input_build(  # noqa: PLR0913
     fresh_for_backend_state: bool,
     expected_backend: RwkvReviewerBackend | None = None,
     wait_for_backend: bool = False,
+    raise_on_busy: bool = False,
 ) -> RwkvReviewQueueOrderAsyncWork | None:
     collection_owner = getattr(reviewer, "mw", None)
     collection = _collection(reviewer)
@@ -25023,6 +25038,7 @@ def _rwkv_review_queue_async_work_from_input_build(  # noqa: PLR0913
         expected_backend_assignment_generation=backend_assignment_generation,
         expected_state_generation=state_generation,
         wait_for_access=wait_for_backend,
+        raise_on_busy=raise_on_busy,
     ) as backend:
         if backend is None:
             logger.debug(
