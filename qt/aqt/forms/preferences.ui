@@ -798,6 +798,13 @@
         </widget>
        </item>
        <item>
+        <widget class="QCheckBox" name="campaign_monthly">
+         <property name="text">
+          <string>qt_misc_campaign_monthly_pref</string>
+         </property>
+        </widget>
+       </item>
+       <item>
         <widget class="QGroupBox" name="groupBox_6">
          <property name="title">
           <string>preferences_account</string>

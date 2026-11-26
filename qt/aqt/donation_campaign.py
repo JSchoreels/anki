@@ -3,7 +3,9 @@
 
 from __future__ import annotations
 
+import json
 import re
+from collections.abc import Iterable
 from concurrent.futures import Future
 from dataclasses import dataclass
 from html import escape
@@ -17,14 +19,41 @@ from requests.exceptions import RequestException
 from anki.httpclient import HttpClient
 from anki.utils import int_time
 from aqt.import_export.exporting import export_collection_package
-from aqt.qt import QDateTime, QMessageBox, Qt
-from aqt.utils import openFolder, openLink, show_info, tr
+from aqt.qt import (
+    QByteArray,
+    QCheckBox,
+    QDateTime,
+    QDialog,
+    QDialogButtonBox,
+    QFile,
+    QIODevice,
+    QLabel,
+    QNetworkAccessManager,
+    QNetworkReply,
+    QNetworkRequest,
+    QProgressBar,
+    Qt,
+    QUrl,
+    QVBoxLayout,
+    QWebEnginePage,
+    QWebEngineProfile,
+    QWebEngineView,
+    QWidget,
+    pyqtSignal,
+    qconnect,
+)
+from aqt.utils import show_info, tr
 
 if TYPE_CHECKING:
     from aqt.main import AnkiQt
 
 CAMPAIGN_PAGE = "https://jschoreels.github.io/anki-rwkv/donations.html"
 STATUS_URL = "https://jschoreels.github.io/anki-rwkv/data/donations.json"
+UPLOAD_BROKER = (
+    "https://anki-rwkv-donations.jonathan-schoreels.workers.dev/v1/upload-link"
+)
+AUTO_UPLOAD = "donationCampaignAutomaticUpload"
+MAX_UPLOAD_BYTES = 150_000_000
 REMINDER = "donationCampaignReminder"
 
 
@@ -86,7 +115,12 @@ def check_campaign(mw: AnkiQt) -> None:
                 and mw.isEnabled()
                 and not mw._unload_profile_and_exit_pending
             ):
-                _invite(mw, campaign)
+                if profile.get(REMINDER, 0) != due:
+                    return
+                if profile.get(AUTO_UPLOAD) is True:
+                    _prepare(mw, campaign, automatic=True)
+                else:
+                    _invite(mw, campaign)
 
         mw.progress.single_shot(0, prompt)
 
@@ -94,28 +128,100 @@ def check_campaign(mw: AnkiQt) -> None:
     mw.taskman.run_in_background(_load_campaign, loaded, uses_collection=False)
 
 
-def _ask(mw: AnkiQt, body: str, action: str) -> bool:
-    dialog = QMessageBox(mw)
-    dialog.setWindowTitle(tr.qt_misc_campaign_title())
-    dialog.setTextFormat(Qt.TextFormat.RichText)
-    dialog.setTextInteractionFlags(Qt.TextInteractionFlag.TextBrowserInteraction)
-    dialog.setText(body)
-    proceed = dialog.addButton(action, QMessageBox.ButtonRole.AcceptRole)
-    stop = dialog.addButton(
-        tr.qt_misc_campaign_stop(), QMessageBox.ButtonRole.ActionRole
+class CampaignDialog(QDialog):
+    STOP_REMINDERS = 2
+
+    def __init__(self, mw: AnkiQt, body: str, action: str) -> None:
+        super().__init__(mw)
+        self.mw = mw
+        self.setWindowTitle(tr.qt_misc_campaign_title())
+        self.setAttribute(Qt.WidgetAttribute.WA_DeleteOnClose)
+        self.content = QVBoxLayout(self)
+        self.instructions = QLabel(body)
+        self.instructions.setWordWrap(True)
+        self.instructions.setOpenExternalLinks(True)
+        self.content.addWidget(self.instructions)
+        self.buttons = QDialogButtonBox(self)
+        role = QDialogButtonBox.ButtonRole
+        self.proceed = self.buttons.addButton(action, role.AcceptRole)
+        stop = self.buttons.addButton(tr.qt_misc_campaign_stop(), role.ActionRole)
+        later = self.buttons.addButton(tr.qt_misc_campaign_later(), role.RejectRole)
+        later.setDefault(True)
+        qconnect(self.buttons.accepted, self.accept)
+        qconnect(self.buttons.rejected, self.reject)
+        qconnect(stop.clicked, lambda: self.done(self.STOP_REMINDERS))
+
+    def ask(self) -> bool:
+        self.content.addWidget(self.buttons)
+        profile = self.mw.pm.profile
+        result = self.exec()
+        if self.mw.pm.profile is not profile:
+            return False
+        if result == QDialog.DialogCode.Accepted:
+            return True
+        if result == self.STOP_REMINDERS:
+            profile.pop(AUTO_UPLOAD, None)
+        profile[REMINDER] = (
+            None if result == self.STOP_REMINDERS else int_time() + 86_400
+        )
+        self.mw.pm.save()
+        return False
+
+
+class DropboxRequestPage(QWebEnginePage):
+    file_selected = pyqtSignal()
+
+    def __init__(
+        self, profile: QWebEngineProfile, request_url: QUrl, path: Path, parent: QWidget
+    ) -> None:
+        super().__init__(profile, parent)
+        self.request_url = request_url
+        self.path = path
+
+    def _is_request(self, url: QUrl) -> bool:
+        return (
+            url.scheme() == "https"
+            and url.authority() == "www.dropbox.com"
+            and url.path().rstrip("/") == self.request_url.path().rstrip("/")
+        )
+
+    def acceptNavigationRequest(
+        self, url: QUrl, kind: QWebEnginePage.NavigationType, is_main_frame: bool
+    ) -> bool:
+        # Qt's file chooser callback does not identify the requesting frame.
+        return is_main_frame and self._is_request(url)
+
+    def chooseFiles(
+        self,
+        mode: QWebEnginePage.FileSelectionMode,
+        old_files: Iterable[str | None],
+        accepted_mime_types: Iterable[str | None],
+    ) -> list[str]:
+        if self._is_request(self.url()) and mode in (
+            self.FileSelectionMode.FileSelectOpen,
+            self.FileSelectionMode.FileSelectOpenMultiple,
+        ):
+            self.file_selected.emit()
+            return [str(self.path)]
+        return []
+
+
+def _show_upload_form(mw: AnkiQt, request_url: str, path: Path) -> bool:
+    dialog = CampaignDialog(
+        mw, tr.qt_misc_campaign_handoff(), tr.qt_misc_campaign_uploaded()
     )
-    later = dialog.addButton(
-        tr.qt_misc_campaign_later(), QMessageBox.ButtonRole.RejectRole
-    )
-    dialog.setDefaultButton(later)
-    dialog.setEscapeButton(later)
-    dialog.exec()
-    clicked = dialog.clickedButton()
-    if clicked == proceed:
-        return True
-    mw.pm.profile[REMINDER] = None if clicked == stop else int_time() + 86_400
-    mw.pm.save()
-    return False
+    view = QWebEngineView(dialog)
+    # The view owns the page and is destroyed before this private profile.
+    profile = QWebEngineProfile(dialog)
+    page = DropboxRequestPage(profile, QUrl(request_url), path, view)
+    view.setPage(page)
+    view.setContextMenuPolicy(Qt.ContextMenuPolicy.NoContextMenu)
+    dialog.content.addWidget(view, 1)
+    dialog.proceed.setEnabled(False)
+    qconnect(page.file_selected, lambda: dialog.proceed.setEnabled(True))
+    dialog.resize(850, 700)
+    view.load(page.request_url)
+    return dialog.ask()
 
 
 def _link(url: str, label: str) -> str:
@@ -135,26 +241,50 @@ def _invite(mw: AnkiQt, campaign: Campaign) -> None:
             escape(tr.qt_misc_campaign_consent()),
         )
     )
-    if not _ask(
+    dialog = CampaignDialog(
         mw, "<p>" + "</p><p>".join(paragraphs) + "</p>", tr.qt_misc_campaign_upload()
-    ):
-        return
+    )
+    monthly = QCheckBox(tr.qt_misc_campaign_monthly())
+    dialog.content.addWidget(monthly)
+    # The dialog deletes its children on close.
+    automatic = False
 
+    def choose(checked: bool) -> None:
+        nonlocal automatic
+        automatic = checked
+
+    qconnect(monthly.toggled, choose)
+    if dialog.ask():
+        _prepare(mw, campaign, automatic=automatic)
+
+
+def _prepare(mw: AnkiQt, campaign: Campaign, *, automatic: bool) -> None:
+    profile = mw.pm.profile
+    if automatic:
+        # Defer another attempt if export fails or the app quits mid-transfer.
+        profile[REMINDER] = int_time() + 86_400
+        mw.pm.save()
     # The callback keeps the private directory alive until the donor finishes in Dropbox.
     directory = TemporaryDirectory(prefix="anki-donation-")
     path = Path(directory.name) / "collection.colpkg"
 
     def on_exported() -> None:
         with directory:
-            openFolder(directory.name)
-            openLink(campaign.request_url)
-            body = (
-                f"<p>{escape(tr.qt_misc_campaign_handoff())}</p>"
-                f"<p>{escape(tr.qt_misc_campaign_file())}<br>{escape(str(path))}</p>"
-                + _link(campaign.request_url, tr.qt_misc_campaign_open_dropbox())
-            )
-            if _ask(mw, body, tr.qt_misc_campaign_uploaded()):
-                mw.pm.profile[REMINDER] = (
+            if mw.pm.profile is not profile:
+                return
+            native = automatic and path.stat().st_size <= MAX_UPLOAD_BYTES
+            if automatic and not native:
+                profile.pop(AUTO_UPLOAD, None)
+                mw.pm.save()
+                show_info(tr.qt_misc_campaign_too_large(), parent=mw)
+            if native:
+                success = _upload(mw, path)
+            else:
+                success = _show_upload_form(mw, campaign.request_url, path)
+            if success and mw.pm.profile is profile:
+                if native:
+                    profile[AUTO_UPLOAD] = True
+                profile[REMINDER] = (
                     QDateTime.currentDateTime().addMonths(1).toSecsSinceEpoch()
                 )
                 mw.pm.save()
@@ -163,3 +293,91 @@ def _invite(mw: AnkiQt, campaign: Campaign) -> None:
     export_collection_package(
         mw, mw, str(path), include_media=False, legacy=False, on_success=on_exported
     )
+
+
+def _upload(mw: AnkiQt, path: Path) -> bool:
+    dialog = CampaignDialog(mw, tr.qt_misc_campaign_uploading(), "")
+    dialog.proceed.hide()
+    bar = QProgressBar(dialog)
+    bar.setRange(0, 0)
+    dialog.content.addWidget(bar)
+    manager = QNetworkAccessManager(dialog)
+    file = QFile(str(path), dialog)
+    failed = False
+
+    def request(url: QUrl) -> QNetworkRequest:
+        req = QNetworkRequest(url)
+        req.setTransferTimeout(60_000)
+        req.setAttribute(
+            QNetworkRequest.Attribute.RedirectPolicyAttribute,
+            QNetworkRequest.RedirectPolicy.ManualRedirectPolicy,
+        )
+        return req
+
+    reply = manager.post(request(QUrl(UPLOAD_BROKER)), QByteArray())
+
+    def payload() -> dict:
+        if (
+            reply.error() == QNetworkReply.NetworkError.NoError
+            and reply.attribute(QNetworkRequest.Attribute.HttpStatusCodeAttribute)
+            == 200
+        ):
+            try:
+                data = json.loads(reply.readAll().data())
+                if isinstance(data, dict):
+                    return data
+            except (ValueError, UnicodeError):
+                pass
+        return {}
+
+    def finish(success: bool) -> None:
+        nonlocal failed
+        failed = not success
+        if success:
+            dialog.accept()
+        else:
+            dialog.reject()
+
+    def send_file() -> None:
+        nonlocal reply
+        link = payload().get("link")
+        if (
+            not isinstance(link, str)
+            or not link.startswith("https://content.dropboxapi.com/apitul/1/")
+            or not file.open(QIODevice.OpenModeFlag.ReadOnly)
+        ):
+            finish(False)
+            return
+        req = request(QUrl(link))
+        req.setHeader(
+            QNetworkRequest.KnownHeaders.ContentTypeHeader, "application/octet-stream"
+        )
+        bar.setRange(0, 100)
+        reply = manager.post(req, file)
+        qconnect(
+            reply.uploadProgress,
+            lambda sent, total: (
+                bar.setValue(100 * sent // total) if total > 0 else None
+            ),
+        )
+
+        def uploaded() -> None:
+            receipt = payload().get("content-hash")
+            finish(
+                isinstance(receipt, str) and bool(re.fullmatch("[0-9a-f]+", receipt))
+            )
+
+        qconnect(reply.finished, uploaded)
+
+    qconnect(reply.finished, send_file)
+
+    def stop(_: int) -> None:
+        if reply.isRunning():
+            reply.finished.disconnect()
+            reply.abort()
+
+    qconnect(dialog.finished, stop)
+    accepted = dialog.ask()
+    if failed:
+        show_info(tr.qt_misc_campaign_upload_failed(), parent=mw)
+    return accepted

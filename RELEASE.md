@@ -39,7 +39,7 @@ Changes since [build 115](https://github.com/JSchoreels/anki/releases/tag/26.09.
 
 #### New Features
 
-- **Contribute to the Anki-RWKV data campaign.** An online startup invitation shows campaign progress and can prepare a media-free collection for you to upload through Dropbox. Choose **Later** for a one-day reminder or **Don’t remind me** to opt out for this profile. After a confirmed donation, Anki waits a month before asking again.
+- **Contribute to the Anki-RWKV data campaign.** An online startup invitation shows campaign progress and prepares a media-free collection on request. Choose **Add files** in the embedded Dropbox form to select the prepared collection, then submit it in Anki. Choose **Later** for a one-day reminder or **Don’t remind me** to opt out for this profile. After a confirmed donation, Anki waits a month before asking again. Select **Automatically upload every month** to send future media-free copies at the first eligible profile startup. You can turn this off in Preferences → Syncing.
 - **Export execution logs from Help.** Anki keeps recent desktop Python console output across restarts. Choose **Export Execution Log…** to save the retained history, or **Post Logs on GitHub Issues…** to review the full log and open a GitHub issue draft. Anki opens a folder containing the reviewed log file, ready to drag into the issue description.
 
 - **Preview a study session while editing Deck Options.** See cards from the selected deck, their positions, and why they were chosen or postponed. Try the same settings on a 120-card example or a learning-steps example. Learning and Reviews group related controls together. The Classic view switch applies to all decks in the profile.

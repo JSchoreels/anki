@@ -16,6 +16,7 @@ from anki.collection import OpChanges
 from anki.utils import is_mac
 from aqt import AnkiQt
 from aqt.ankihub import ankihub_login, ankihub_logout
+from aqt.donation_campaign import AUTO_UPLOAD
 from aqt.operations.collection import set_preferences
 from aqt.profiles import VideoDriver
 from aqt.qt import *
@@ -219,9 +220,15 @@ class Preferences(QDialog):
     def setup_profile(self) -> None:
         "Setup options stored in the user profile."
         self.setup_network()
+        # Enrollment and disclosure happen together in the campaign invitation.
+        assert self.prof is not None
+        self.form.campaign_monthly.setVisible(self.prof.get(AUTO_UPLOAD) is True)
+        self.form.campaign_monthly.setChecked(self.prof.get(AUTO_UPLOAD) is True)
 
     def update_profile(self) -> None:
         self.update_network()
+        if self.prof is not None and not self.form.campaign_monthly.isChecked():
+            self.prof.pop(AUTO_UPLOAD, None)
 
     # Profile: network
     ######################################################################
