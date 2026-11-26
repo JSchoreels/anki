@@ -47,7 +47,7 @@ from anki.utils import (
     is_win,
     split_fields,
 )
-from aqt import gui_hooks
+from aqt import execution_logs, gui_hooks
 from aqt.addons import DownloadLogEntry, check_and_prompt_for_updates, show_log_to_user
 from aqt.debug_console import show_debug_console
 from aqt.flags import FlagManager
@@ -1704,6 +1704,14 @@ title="{}" {}>{}</button>""".format(
 
         # Help
         qconnect(m.actionDocumentation.triggered, self.onDocumentation)
+        qconnect(
+            m.actionExportExecutionLog.triggered,
+            lambda: execution_logs.export_log(self, self.app.execution_log),
+        )
+        qconnect(
+            m.actionPostLogs.triggered,
+            lambda: execution_logs.post_logs(self, self.app.execution_log),
+        )
         qconnect(m.actionDonate.triggered, self.onDonate)
         qconnect(m.actionAbout.triggered, self.onAbout)
         m.actionAbout.setText(tr.qt_accel_about_mac())

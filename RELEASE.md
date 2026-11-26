@@ -39,6 +39,8 @@ Changes since [build 115](https://github.com/JSchoreels/anki/releases/tag/26.09.
 
 #### New Features
 
+- **Export execution logs from Help.** Anki keeps recent desktop Python console output across restarts. Choose **Export Execution Log…** to save the retained history, or **Post Logs on GitHub Issues…** to review a recent excerpt and open a prefilled issue draft.
+
 - **Preview a study session while editing Deck Options.** See cards from the selected deck, their positions, and why they were chosen or postponed. Try the same settings on a 120-card example or a learning-steps example. Learning and Reviews group related controls together. The Classic view switch applies to all decks in the profile.
 - **Study suspended cards under your daily new-card limit.** In Learning, choose Suspended before New, New before Suspended, or Mix new and suspended cards. In Classic view, use **Include suspended cards in the learnable pool** under Daily Limits. Answering a suspended card unsuspends it and resumes its existing schedule.
 - **Gather new cards by a note field.** In Learning, or Display Order in Classic view, choose a field and ascending or descending order. Numbers sort by value. Mixed ranks ordinary new and suspended cards together. Either “before” option ranks by field within each group.

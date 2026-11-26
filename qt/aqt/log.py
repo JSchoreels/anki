@@ -7,9 +7,11 @@ import errno
 import logging
 import os
 import sys
-from logging.handlers import TimedRotatingFileHandler
+from collections.abc import Iterable
+from io import TextIOWrapper
+from logging.handlers import RotatingFileHandler, TimedRotatingFileHandler
 from pathlib import Path
-from typing import Optional, cast
+from typing import Any, Optional, TextIO, cast
 
 # All loggers with the following prefix will be treated as add-on loggers
 #
@@ -22,6 +24,78 @@ ADDON_LOGGER_PREFIX = "addon."
 
 # Formatter used for all loggers
 FORMATTER = logging.Formatter("%(asctime)s:%(levelname)s:%(name)s: %(message)s")
+
+
+class ExecutionLog(RotatingFileHandler):
+    """Retain the desktop application's Python console output across restarts."""
+
+    terminator = ""
+
+    def __init__(self, path: Path) -> None:
+        super().__init__(
+            path,
+            maxBytes=2 * 1024 * 1024,
+            backupCount=2,
+            delay=True,
+            encoding="utf-8",
+            errors="backslashreplace",
+        )
+        self.write_error: str | None = None
+
+    def _open(self) -> TextIOWrapper:
+        return open(
+            self.baseFilename,
+            "a",
+            encoding=self.encoding,
+            errors=self.errors,
+            opener=lambda path, flags: os.open(path, flags, 0o600),
+        )
+
+    def handleError(self, record: logging.LogRecord) -> None:
+        # The default handler prints to stderr, which also feeds this log.
+        self.write_error = str(sys.exc_info()[1])
+
+    def paths(self) -> list[Path]:
+        return [
+            Path(f"{self.baseFilename}.{index}")
+            for index in range(self.backupCount, 0, -1)
+        ] + [Path(self.baseFilename)]
+
+    def snapshot(self) -> bytes:
+        self.acquire()
+        try:
+            self.flush()
+            chunks = []
+            for path in self.paths():
+                if path.exists():
+                    chunks.append(path.read_bytes())
+            if self.write_error:
+                chunks.append(
+                    f"\nExecution log write failed: {self.write_error}\n".encode()
+                )
+            return b"".join(chunks)
+        finally:
+            self.release()
+
+
+class _LoggedStream:
+    def __init__(self, stream: TextIO, log: ExecutionLog) -> None:
+        self.stream = stream
+        self.log = log
+
+    def write(self, text: str) -> int:
+        if text:
+            self.log.handle(
+                logging.LogRecord("console", logging.INFO, "", 0, text, (), None)
+            )
+        return self.stream.write(text)
+
+    def writelines(self, lines: Iterable[str]) -> None:
+        for line in lines:
+            self.write(line)
+
+    def __getattr__(self, name: str) -> Any:
+        return getattr(self.stream, name)
 
 
 class ConsoleHandler(logging.StreamHandler):
@@ -92,13 +166,13 @@ def find_addon_logger(module: str) -> logging.Logger | None:
     )
 
 
-def setup_logging(path: Path | str, **kwargs) -> None:
+def setup_logging(path: Path | str, **kwargs) -> ExecutionLog:
     """
     Set up logging for the application.
 
-    Configures the root logger to output logs to stdout by default, with custom
-    handling for add-on logs. The add-on logs are saved to a separate folder and file
-    for each add-on, under the path provided.
+    Mirror Python console output to a rotating execution log under path. Add-on
+    loggers also keep their separate files. If the execution log cannot be
+    opened, continue with console and add-on logging.
 
     Args:
         path (Path): The path where the log files should be stored.
@@ -111,6 +185,16 @@ def setup_logging(path: Path | str, **kwargs) -> None:
     )
     logging.Logger.manager = logger_manager
 
+    # Capture the same formatted records as the console, plus print() and
+    # tracebacks. ErrorHandler forwards stderr to stdout after the UI starts.
+    if isinstance(sys.stdout, _LoggedStream):
+        sys.stdout.log.close()
+        sys.stdout = sys.stdout.stream
+    if isinstance(sys.stderr, _LoggedStream):
+        sys.stderr = sys.stderr.stream
+    execution_log = ExecutionLog(Path(path) / "execution.log")
+    sys.stdout = cast(TextIO, _LoggedStream(sys.stdout, execution_log))
+    sys.stderr = cast(TextIO, _LoggedStream(sys.stderr, execution_log))
     stdout_handler = ConsoleHandler(stream=sys.stdout)
     stdout_handler.setFormatter(FORMATTER)
     logging.basicConfig(handlers=[stdout_handler], force=True, **kwargs)
@@ -123,3 +207,5 @@ def setup_logging(path: Path | str, **kwargs) -> None:
     for logger in silenced_loggers:
         logging.getLogger(logger).setLevel(logging.CRITICAL)
         logging.getLogger(logger).propagate = False
+
+    return execution_log

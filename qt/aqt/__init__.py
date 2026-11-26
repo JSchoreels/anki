@@ -51,12 +51,13 @@ from pathlib import Path
 
 import anki.lang
 from anki._backend import RustBackend
+from anki.buildinfo import buildhash
 from anki.buildinfo import version as _version
 from anki.collection import Collection
 from anki.consts import HELP_SITE
 from anki.utils import checksum, is_gnome, is_lin, is_mac
 from aqt import gui_hooks
-from aqt.log import setup_logging
+from aqt.log import ExecutionLog, setup_logging
 from aqt.qt import *
 from aqt.qt import sip
 from aqt.utils import TR, tr
@@ -340,6 +341,8 @@ class AnkiApp(QApplication):
     ##################################################
 
     appMsg = pyqtSignal(str)
+
+    execution_log: ExecutionLog
 
     KEY = (
         os.environ.get("ANKI_SINGLE_INSTANCE_KEY")
@@ -742,10 +745,12 @@ def _run(argv: list[str] | None = None, exec: bool = True) -> AnkiApp | None:
             QMessageBox.critical(None, "Startup Failed", "Unable to create data folder")
         return None
 
-    setup_logging(
+    app.execution_log = setup_logging(
         pm.addon_logs(),
         level=logging.DEBUG if int(os.getenv("ANKIDEV", "0")) else logging.INFO,
     )
+
+    logging.getLogger(__name__).info("Anki %s (%s) started", _version, buildhash)
 
     # disable icons on mac; this must be done before window created
     if is_mac:
