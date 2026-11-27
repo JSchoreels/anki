@@ -312,12 +312,15 @@ fn rwkv_state_precision_queue_scoring_reports_invalid_resident_state() {
 
 fn check_queue_scoring_reports_invalid_resident_state(weights: &Path) {
     let mut inference = runtime(weights, StatePrecision::Int4CardsInt8Notes, [false; 3]);
-    let mut answer = reviews(1).remove(0);
-    // Malformed historical data can produce a non-finite in-memory state.
-    answer.duration_millis = Some(-10);
+    let answer = reviews(1).remove(0);
     inference
         .warm_up_reviews(vec![answer.clone()], false)
         .unwrap();
+    // A non-finite in-memory state (from malformed history or a bad update).
+    let state = inference.warm_up_states.card.get_mut(&answer.card_id).unwrap();
+    let mut decoded = state.try_decoded().unwrap().into_owned();
+    decoded.layers[0].time.as_mut().unwrap().x_shift[0] = f32::NAN;
+    *state = decoded.compact(StatePrecision::Int4);
 
     let mut query = answer;
     query.is_query = true;
