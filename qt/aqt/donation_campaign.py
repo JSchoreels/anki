@@ -3,7 +3,6 @@
 
 from __future__ import annotations
 
-import json
 import re
 from collections.abc import Iterable
 from concurrent.futures import Future
@@ -20,17 +19,11 @@ from anki.httpclient import HttpClient
 from anki.utils import int_time
 from aqt.import_export.exporting import export_collection_package
 from aqt.qt import (
-    QByteArray,
     QCheckBox,
     QDateTime,
     QDialog,
     QDialogButtonBox,
-    QFile,
-    QIODevice,
     QLabel,
-    QNetworkAccessManager,
-    QNetworkReply,
-    QNetworkRequest,
     QProgressBar,
     Qt,
     QUrl,
@@ -302,88 +295,26 @@ def _prepare(mw: AnkiQt, campaign: Campaign, *, automatic: bool) -> None:
 
 
 def _upload(mw: AnkiQt, path: Path) -> bool:
+    from aqt.donation_upload import CampaignUpload
+
     dialog = CampaignDialog(mw, tr.qt_misc_campaign_uploading(), "")
     dialog.proceed.hide()
     bar = QProgressBar(dialog)
     bar.setRange(0, 0)
     dialog.content.addWidget(bar)
-    manager = QNetworkAccessManager(dialog)
-    file = QFile(str(path), dialog)
-    failed = False
+    upload = CampaignUpload(path, UPLOAD_BROKER, {}, MAX_UPLOAD_BYTES)
 
-    def request(url: QUrl) -> QNetworkRequest:
-        req = QNetworkRequest(url)
-        req.setTransferTimeout(60_000)
-        req.setAttribute(
-            QNetworkRequest.Attribute.RedirectPolicyAttribute,
-            QNetworkRequest.RedirectPolicy.ManualRedirectPolicy,
-        )
-        return req
-
-    reply = manager.post(request(QUrl(UPLOAD_BROKER)), QByteArray())
-
-    def payload() -> dict:
-        if (
-            reply.error() == QNetworkReply.NetworkError.NoError
-            and reply.attribute(QNetworkRequest.Attribute.HttpStatusCodeAttribute)
-            == 200
-        ):
-            try:
-                data = json.loads(reply.readAll().data())
-                if isinstance(data, dict):
-                    return data
-            except (ValueError, UnicodeError):
-                pass
-        return {}
-
-    def finish(success: bool) -> None:
-        nonlocal failed
-        failed = not success
-        if success:
-            dialog.accept()
-        else:
-            dialog.reject()
-
-    def send_file() -> None:
-        nonlocal reply
-        link = payload().get("link")
-        if (
-            not isinstance(link, str)
-            or not link.startswith("https://content.dropboxapi.com/apitul/1/")
-            or not file.open(QIODevice.OpenModeFlag.ReadOnly)
-        ):
-            finish(False)
-            return
-        req = request(QUrl(link))
-        req.setHeader(
-            QNetworkRequest.KnownHeaders.ContentTypeHeader, "application/octet-stream"
-        )
+    def show_progress(percent: int) -> None:
         bar.setRange(0, 100)
-        reply = manager.post(req, file)
-        qconnect(
-            reply.uploadProgress,
-            lambda sent, total: (
-                bar.setValue(100 * sent // total) if total > 0 else None
-            ),
-        )
+        bar.setValue(percent)
 
-        def uploaded() -> None:
-            receipt = payload().get("content-hash")
-            finish(
-                isinstance(receipt, str) and bool(re.fullmatch("[0-9a-f]+", receipt))
-            )
-
-        qconnect(reply.finished, uploaded)
-
-    qconnect(reply.finished, send_file)
-
-    def stop(_: int) -> None:
-        if reply.isRunning():
-            reply.finished.disconnect()
-            reply.abort()
-
-    qconnect(dialog.finished, stop)
-    accepted = dialog.ask()
-    if failed:
+    qconnect(upload.progress, show_progress)
+    qconnect(upload.done, dialog.done)
+    upload.start()
+    try:
+        accepted = dialog.ask()
+    finally:
+        upload.stop()
+    if upload.failed:
         show_info(tr.qt_misc_campaign_upload_failed(), parent=mw)
     return accepted

@@ -172,18 +172,17 @@ def test_native_upload_requires_dropbox_receipt(tmp_path, monkeypatch, valid_rec
     from http.server import BaseHTTPRequestHandler, HTTPServer
     from threading import Thread
 
-    from aqt.qt import QNetworkAccessManager, QUrl
+    from aqt import donation_upload
 
     monkeypatch.setenv("QT_QPA_PLATFORM", "offscreen")
     app = QApplication.instance() or QApplication(["anki-upload-test"])
-    link = "https://content.dropboxapi.com/apitul/1/synthetic"
     uploaded = []
 
     class Handler(BaseHTTPRequestHandler):
         def do_POST(self):
             body = self.rfile.read(int(self.headers.get("Content-Length", 0)))
             if self.path == "/v1/upload-link":
-                response = {"link": link}
+                response = {"link": origin + "/collection"}
             else:
                 uploaded.append((self.path, self.headers["Content-Type"], body))
                 response = {"content-hash": "ab" * 32} if valid_receipt else {}
@@ -195,18 +194,14 @@ def test_native_upload_requires_dropbox_receipt(tmp_path, monkeypatch, valid_rec
     Thread(target=server.serve_forever, daemon=True).start()
     origin = f"http://127.0.0.1:{server.server_port}"
 
-    class LocalNetwork(QNetworkAccessManager):
-        def post(self, request, data):
-            if request.url().toString() == link:
-                request.setUrl(QUrl(origin + "/collection"))
-            return super().post(request, data)
-
     path = tmp_path / "collection.colpkg"
     path.write_bytes(b"synthetic archive")
     mw = QWidget()
     mw.pm = SimpleNamespace(profile={}, save=Mock())
     monkeypatch.setattr(campaign, "UPLOAD_BROKER", origin + "/v1/upload-link")
-    monkeypatch.setattr(campaign, "QNetworkAccessManager", LocalNetwork)
+    monkeypatch.setattr(
+        donation_upload, "DROPBOX_UPLOAD_PREFIX", origin + "/collection"
+    )
     monkeypatch.setattr(campaign, "tr", Mock())
     campaign.tr.qt_misc_campaign_title.return_value = "Campaign"
     campaign.tr.qt_misc_campaign_stop.return_value = "Don’t remind me"

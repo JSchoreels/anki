@@ -13,6 +13,7 @@ urls."Source Code" = "https://github.com/ankitects/anki"
 urls.homepage = "https://github.com/ankitects/anki"
 
 dependencies = [
+  "aiohttp>=3.10",
   "beautifulsoup4",
   "flask[async]",
   "jsonschema",
