@@ -3,10 +3,10 @@
 
 # Anki Architecture
 
-<!-- <<<cog
+<!-- <<<<cog
 from cogdocs import get_file_contents
 cog.out(get_file_contents("architecture"))
->>> -->
+>>>> -->
 
 Very brief notes for now.
 
@@ -597,4 +597,4 @@ Current exact-vs-scalar status:
   public S90. They give 90% recall at that interval. Standard recall searches
   and ordering use the resolved preset's full model.
 
-<!-- <<<end>>> -->
+<!-- <<<<end>>>> -->

@@ -1,4 +1,4 @@
-// Copyright: Ankitects Pty Ltd and contributors
+// Copyright: Anki Software, LLC and contributors
 // License: GNU AGPL, version 3 or later; http://www.gnu.org/licenses/agpl.html
 
 use anyhow::Result;
@@ -88,7 +88,6 @@ pub fn check_pylib(build: &mut Build) -> Result<()> {
         PythonTest {
             folder: "pylib/tests",
             ignore: None,
-            python_path: &["$builddir/pylib"],
             deps: inputs![":pylib:anki", glob!["pylib/{anki,tests}/**"]],
         },
     )?;

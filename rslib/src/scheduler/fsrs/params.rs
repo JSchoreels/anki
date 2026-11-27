@@ -1,4 +1,4 @@
-// Copyright: Ankitects Pty Ltd and contributors
+// Copyright: Anki Software, LLC and contributors
 // License: GNU AGPL, version 3 or later; http://www.gnu.org/licenses/agpl.html
 use std::collections::HashMap;
 use std::collections::HashSet;
@@ -2704,8 +2704,10 @@ pub(crate) mod tests {
                 .map(|row| (row.revlog_id.0, row.prediction))
                 .collect_vec();
             expected.sort_by_key(|row| row.0);
-            let actual = bytes
-                .chunks_exact(12)
+            let (chunks, remainder) = bytes.as_chunks::<12>();
+            assert!(remainder.is_empty());
+            let actual = chunks
+                .iter()
                 .map(|chunk| {
                     (
                         i64::from_le_bytes(chunk[..8].try_into().unwrap()),
