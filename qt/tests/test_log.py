@@ -143,6 +143,58 @@ def test_execution_log_exports_rotated_parts_oldest_first(tmp_path: Path) -> Non
         log.close()
 
 
+@pytest.mark.parametrize(
+    ("message", "expected"),
+    [
+        (
+            '{"password": "two \\"quoted\\" words", "status": 401}',
+            '{"password": "<redacted>", "status": 401}',
+        ),
+        ("Authorization: Bearer example-token", "Authorization: <redacted>"),
+        ("Authorization: Basic dXNlcjpwYXNz", "Authorization: <redacted>"),
+        ("--password 'secret words'", "--password '<redacted>'"),
+        ("syncKey=one&two more", "syncKey=<redacted>"),
+        ("GET /?access_token=private&deck=12", "GET /?access_token=<redacted>&deck=12"),
+        ("https://me:secret@example.org/path", "https://<redacted>@example.org/path"),
+        ("user+anki%40example.org", "<redacted>"),
+        ("tokenizer=ready token_count=12", "tokenizer=ready token_count=12"),
+        ("found ghp_fake123", "found <redacted>"),
+    ],
+)
+def test_redacts_recognizable_log_values(message: str, expected: str) -> None:
+    from aqt.log_redaction import redact_log_text
+
+    assert redact_log_text(message) == expected
+    assert redact_log_text(expected) == expected
+
+
+def test_secrets_are_redacted_before_log_files_are_written(tmp_path: Path) -> None:
+    script = """
+import logging, sys
+from aqt.log import setup_logging
+log = setup_logging(sys.argv[1], level=logging.INFO)
+sys.stdout.write("pass")
+sys.stderr.write("user+")
+sys.stdout.write("word=synthetic-pass")
+sys.stdout.flush()
+assert b"synthetic-pass" not in log.snapshot()
+sys.stderr.write("anki@example.invalid\\n")
+print()
+logging.getLogger("addon.example").warning("Authorization: Bearer %s", "synthetic-token")
+sys.stderr.write("token=synthetic-unfinished")
+"""
+    subprocess.run(
+        [sys.executable, "-c", script, str(tmp_path)], check=True, capture_output=True
+    )
+    execution = (tmp_path / "execution.log").read_text()
+    addon = (tmp_path / "addons/example/example.log").read_text()
+    assert execution.count("<redacted>") == 4
+    assert "Authorization: <redacted>" in addon
+    for secret in ("synthetic-", "user+", "example.invalid"):
+        assert secret not in execution
+        assert secret not in addon
+
+
 def test_github_attachment_keeps_full_rotated_log(tmp_path, monkeypatch):
     from aqt import execution_logs
     from aqt.log import ExecutionLog
@@ -152,8 +204,8 @@ def test_github_attachment_keeps_full_rotated_log(tmp_path, monkeypatch):
     older = ("older 日本語 & # + %\r\n" * 6000).encode()
     latest = "session\u00a0finished\r\n".encode()
     log = ExecutionLog(tmp_path / "execution.log")
-    Path(log.baseFilename + ".1").write_bytes(older)
-    Path(log.baseFilename).write_bytes(latest)
+    Path(log.baseFilename + ".1").write_bytes(older + b"password=")
+    Path(log.baseFilename).write_bytes(b"legacy password\r\n" + latest)
     opened = []
     folders = []
     reviews = []
@@ -177,8 +229,11 @@ def test_github_attachment_keeps_full_rotated_log(tmp_path, monkeypatch):
         execution_logs.post_logs(None, log)
         assert reviews[0].count("older 日本語") == 6000
         assert "finished" in reviews[0]
+        assert "password=<redacted>" in reviews[0]
+        assert "legacy password" not in reviews[0]
         assert opened == ["https://github.com/JSchoreels/anki/issues/new"]
-        assert (folders[0] / "anki-execution.log").read_bytes() == older + latest
+        attachment = (folders[0] / "anki-execution.log").read_bytes()
+        assert attachment == older + b"password=<redacted>\r\n" + latest
     finally:
         log.close()
 
@@ -221,7 +276,7 @@ def test_help_menu_exports_and_opens_a_reviewed_issue(tmp_path, monkeypatch):
 
         def edit_attachment():
             dialog = app.activeModalWidget()
-            dialog.setTextValue("edited review")
+            dialog.setTextValue("edited review by reviewer@example.invalid")
             dialog.accept()
 
         monkeypatch.setattr(execution_logs, "openLink", opened.append)
@@ -232,7 +287,8 @@ def test_help_menu_exports_and_opens_a_reviewed_issue(tmp_path, monkeypatch):
         QTimer.singleShot(0, edit_attachment)
         report.trigger()
         assert opened == ["https://github.com/JSchoreels/anki/issues/new"]
-        assert (folders[0] / "anki-execution.log").read_bytes() == b"edited review"
+        attachment = (folders[0] / "anki-execution.log").read_bytes()
+        assert attachment == b"edited review by <redacted>"
         assert log.snapshot() == b"review complete\n"
     finally:
         log.close()

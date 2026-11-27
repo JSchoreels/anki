@@ -8,6 +8,7 @@ from pathlib import Path
 from tempfile import TemporaryDirectory
 
 from aqt.log import ExecutionLog
+from aqt.log_redaction import redact_log_text
 from aqt.qt import QFileDialog, QInputDialog, QIODevice, QSaveFile, QWidget
 from aqt.utils import openFolder, openLink, showWarning, tr
 
@@ -61,7 +62,7 @@ def post_logs(parent: QWidget, log: ExecutionLog) -> None:
     if not accepted:
         return
     if edited != original:
-        data = edited.encode("utf-8")
+        data = redact_log_text(edited).encode("utf-8")
 
     try:
         directory = TemporaryDirectory(prefix="anki-github-issue-")

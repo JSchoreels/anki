@@ -8,10 +8,13 @@ import logging
 import os
 import sys
 from collections.abc import Iterable
-from io import TextIOWrapper
+from io import StringIO, TextIOWrapper
 from logging.handlers import RotatingFileHandler, TimedRotatingFileHandler
 from pathlib import Path
+from threading import get_ident
 from typing import Any, Optional, TextIO, cast
+
+from aqt.log_redaction import redact_log_text
 
 # All loggers with the following prefix will be treated as add-on loggers
 #
@@ -23,7 +26,13 @@ from typing import Any, Optional, TextIO, cast
 ADDON_LOGGER_PREFIX = "addon."
 
 # Formatter used for all loggers
-FORMATTER = logging.Formatter("%(asctime)s:%(levelname)s:%(name)s: %(message)s")
+_LOG_FORMAT = "%(asctime)s:%(levelname)s:%(name)s: %(message)s"
+FORMATTER = logging.Formatter(_LOG_FORMAT)
+
+
+class _RedactingFormatter(logging.Formatter):
+    def format(self, record: logging.LogRecord) -> str:
+        return redact_log_text(super().format(record))
 
 
 class ExecutionLog(RotatingFileHandler):
@@ -40,7 +49,34 @@ class ExecutionLog(RotatingFileHandler):
             encoding="utf-8",
             errors="backslashreplace",
         )
+        self.setFormatter(_RedactingFormatter())
         self.write_error: str | None = None
+        self._partial_lines: dict[tuple[str, int], StringIO] = {}
+
+    def write_console(self, stream: str, text: str) -> None:
+        # print() may write a label, a secret and the newline separately.
+        key = (stream, get_ident())
+        with self.lock:
+            complete, newline, tail = text.rpartition("\n")
+            if newline:
+                partial = self._partial_lines.pop(key, None)
+                if partial:
+                    complete = partial.getvalue() + complete
+                self._write_record(complete + newline)
+            if tail:
+                if key not in self._partial_lines:
+                    self._partial_lines[key] = StringIO()
+                self._partial_lines[key].write(tail)
+
+    def _write_record(self, text: str) -> None:
+        self.handle(logging.LogRecord("console", logging.INFO, "", 0, text, (), None))
+
+    def close(self) -> None:
+        with self.lock:
+            for partial in self._partial_lines.values():
+                self._write_record(partial.getvalue() + "\n")
+            self._partial_lines.clear()
+            super().close()
 
     def _open(self) -> TextIOWrapper:
         return open(
@@ -62,32 +98,35 @@ class ExecutionLog(RotatingFileHandler):
         ] + [Path(self.baseFilename)]
 
     def snapshot(self) -> bytes:
-        self.acquire()
-        try:
+        with self.lock:
             self.flush()
             chunks = []
             for path in self.paths():
                 if path.exists():
                     chunks.append(path.read_bytes())
+            for partial in self._partial_lines.values():
+                chunks.append(
+                    (partial.getvalue() + "\n").encode(errors="backslashreplace")
+                )
             if self.write_error:
                 chunks.append(
                     f"\nExecution log write failed: {self.write_error}\n".encode()
                 )
-            return b"".join(chunks)
-        finally:
-            self.release()
+        # Older files may predate redaction. Join rotations first because older
+        # versions could rotate between individual writes from the same print().
+        text = b"".join(chunks).decode("utf-8", errors="surrogateescape")
+        return redact_log_text(text).encode("utf-8", errors="surrogateescape")
 
 
 class _LoggedStream:
-    def __init__(self, stream: TextIO, log: ExecutionLog) -> None:
+    def __init__(self, stream: TextIO, log: ExecutionLog, name: str) -> None:
         self.stream = stream
         self.log = log
+        self.name = name
 
     def write(self, text: str) -> int:
         if text:
-            self.log.handle(
-                logging.LogRecord("console", logging.INFO, "", 0, text, (), None)
-            )
+            self.log.write_console(self.name, text)
         return self.stream.write(text)
 
     def writelines(self, lines: Iterable[str]) -> None:
@@ -148,7 +187,7 @@ class AnkiLoggerManager(logging.Manager):
             handler = TimedRotatingFileHandler(
                 filename=path, when="D", interval=1, backupCount=10, encoding="utf-8"
             )
-            handler.setFormatter(FORMATTER)
+            handler.setFormatter(_RedactingFormatter(_LOG_FORMAT))
 
             logger.addHandler(handler)
 
@@ -193,8 +232,8 @@ def setup_logging(path: Path | str, **kwargs) -> ExecutionLog:
     if isinstance(sys.stderr, _LoggedStream):
         sys.stderr = sys.stderr.stream
     execution_log = ExecutionLog(Path(path) / "execution.log")
-    sys.stdout = cast(TextIO, _LoggedStream(sys.stdout, execution_log))
-    sys.stderr = cast(TextIO, _LoggedStream(sys.stderr, execution_log))
+    sys.stdout = cast(TextIO, _LoggedStream(sys.stdout, execution_log, "stdout"))
+    sys.stderr = cast(TextIO, _LoggedStream(sys.stderr, execution_log, "stderr"))
     stdout_handler = ConsoleHandler(stream=sys.stdout)
     stdout_handler.setFormatter(FORMATTER)
     logging.basicConfig(handlers=[stdout_handler], force=True, **kwargs)
