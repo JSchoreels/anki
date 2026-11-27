@@ -322,10 +322,14 @@ def _rwkv_historical_answer_sql_condition(alias: str | None = None) -> str:
 def _rwkv_history_reset_after_sql(card_alias: str = "c") -> str:
     data = f"{card_alias}.data"
     return (
-        "coalesce((select case when json_valid(cast(val as text)) then "
+        # Skip the per-card config lookup when no reset key exists: each miss
+        # is slow next to a large config value. "`" follows "_" in ASCII.
+        "coalesce(case when (select count() from config "
+        "where key >= 'rwkvHistoryReset_' and key < 'rwkvHistoryReset`') > 0 then "
+        "(select case when json_valid(cast(val as text)) then "
         "case when json_type(cast(val as text), '$.after') = 'integer' "
         "then max(json_extract(cast(val as text), '$.after'), 0) end end "
-        f"from config where key = 'rwkvHistoryReset_' || {card_alias}.id), "
+        f"from config where key = 'rwkvHistoryReset_' || {card_alias}.id) end, "
         f"case when json_valid({data}) then "
         f"case when json_type({data}, '$.rwkv_reset_after') = 'integer' "
         f"then max(json_extract({data}, '$.rwkv_reset_after'), 0) "
