@@ -41,6 +41,13 @@ impl crate::services::ImportExportService for Collection {
         .map(Into::into)
     }
 
+    fn export_campaign_package(
+        &mut self,
+        input: anki_proto::import_export::ExportCampaignPackageRequest,
+    ) -> Result<()> {
+        self.write_campaign_package(input)
+    }
+
     fn get_csv_metadata(
         &mut self,
         input: anki_proto::import_export::CsvMetadataRequest,

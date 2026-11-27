@@ -95,7 +95,7 @@ impl Collection {
         Ok(data)
     }
 
-    fn new_minimal(path: impl Into<PathBuf>) -> Result<Self> {
+    pub(in crate::import_export) fn new_minimal(path: impl Into<PathBuf>) -> Result<Self> {
         let col = CollectionBuilder::new(path).build()?;
         col.storage.db.execute_batch("DELETE FROM notetypes")?;
         Ok(col)

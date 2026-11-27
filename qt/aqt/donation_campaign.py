@@ -4,49 +4,40 @@
 from __future__ import annotations
 
 import re
-from collections.abc import Iterable
 from concurrent.futures import Future
 from dataclasses import dataclass
 from html import escape
 from html.parser import HTMLParser
-from pathlib import Path
-from tempfile import TemporaryDirectory
 from typing import TYPE_CHECKING
 
 from requests.exceptions import RequestException
 
 from anki.httpclient import HttpClient
 from anki.utils import int_time
-from aqt.import_export.exporting import export_collection_package
+from aqt.donation_sharing import SHARING, SharingDialog, describe_sharing
 from aqt.qt import (
     QCheckBox,
-    QDateTime,
     QDialog,
     QDialogButtonBox,
+    QFrame,
     QLabel,
-    QProgressBar,
+    QLocale,
+    QPushButton,
     Qt,
-    QUrl,
+    QToolButton,
     QVBoxLayout,
-    QWebEnginePage,
-    QWebEngineProfile,
-    QWebEngineView,
-    QWidget,
-    pyqtSignal,
     qconnect,
 )
-from aqt.utils import show_info, tr
+from aqt.utils import openLink, show_info, tooltip, tr
 
 if TYPE_CHECKING:
     from aqt.main import AnkiQt
 
 CAMPAIGN_PAGE = "https://jschoreels.github.io/anki-rwkv/donations.html"
 STATUS_URL = "https://jschoreels.github.io/anki-rwkv/data/donations.json"
-UPLOAD_BROKER = (
-    "https://anki-rwkv-donations.jonathan-schoreels.workers.dev/v1/upload-link"
-)
 AUTO_UPLOAD = "donationCampaignAutomaticUpload"
-MAX_UPLOAD_BYTES = 150_000_000
+COLLECTION_ID = "donationCampaignCollectionId"
+RELAY_CONSENT = "donationCampaignLargeUploadConsent"
 REMINDER = "donationCampaignReminder"
 
 
@@ -90,28 +81,69 @@ def _load_campaign() -> Campaign | None:
         return Campaign(parser.url, totals)
 
 
-def check_campaign(mw: AnkiQt, *, profile_ready: Future[None] | None = None) -> None:
+def setup_support_menu(mw: AnkiQt) -> None:
+    menu = mw.form
+    sharing = menu.menuSupport.addAction(tr.qt_misc_campaign_preferences())
+    menu.menuSupport.insertAction(menu.actionCampaignDetails, sharing)
+    qconnect(sharing.triggered, lambda: SharingDialog(mw, mw).exec())
+
+    def update() -> None:
+        profile = mw.pm.profile
+        available = profile is not None and bool(mw.col)
+        menu.actionCampaignUpload.setEnabled(available)
+        sharing.setEnabled(available)
+        menu.actionStopMonthlyUploads.setEnabled(
+            profile is not None and profile.get(AUTO_UPLOAD) is True
+        )
+
+    def stop_monthly() -> None:
+        if (profile := mw.pm.profile) is not None:
+            profile.pop(AUTO_UPLOAD, None)
+            profile.pop(RELAY_CONSENT, None)
+            mw.pm.save()
+
+    qconnect(menu.menuSupport.aboutToShow, update)
+    qconnect(
+        menu.actionCampaignUpload.triggered, lambda: check_campaign(mw, manual=True)
+    )
+    qconnect(menu.actionCampaignDetails.triggered, lambda: openLink(CAMPAIGN_PAGE))
+    qconnect(menu.actionStopMonthlyUploads.triggered, stop_monthly)
+
+
+def check_campaign(
+    mw: AnkiQt, *, profile_ready: Future[None] | None = None, manual: bool = False
+) -> None:
+    # donation_transfer imports this module, so it is imported late.
+    from aqt import donation_transfer
+
     profile = mw.pm.profile
+    if profile is None:
+        return
+    if manual and donation_transfer.busy():
+        tooltip(tr.qt_misc_campaign_upload_in_progress(), parent=mw)
+        return
     due = profile.get(REMINDER, 0)
-    if due is None or due > int_time():
+    if not manual and (due is None or due > int_time()):
         return
 
     def loaded(result: Future[Campaign | None]) -> None:
         campaign = result.result()
         if campaign is None:
+            if manual and mw.pm.profile is profile:
+                show_info(tr.qt_misc_campaign_unavailable(), parent=mw)
             return
 
         def prompt() -> None:
             if (
                 mw.pm.profile is profile
-                and mw.state == "deckBrowser"
+                and (manual or mw.state == "deckBrowser")
                 and mw.isEnabled()
                 and not mw._unload_profile_and_exit_pending
             ):
                 if profile.get(REMINDER, 0) != due:
                     return
-                if profile.get(AUTO_UPLOAD) is True:
-                    _prepare(mw, campaign, automatic=True)
+                if not manual and profile.get(AUTO_UPLOAD) is True:
+                    donation_transfer.prepare(mw, automatic=True, scheduled=True)
                 else:
                     _invite(mw, campaign)
 
@@ -124,7 +156,12 @@ def check_campaign(mw: AnkiQt, *, profile_ready: Future[None] | None = None) -> 
             )
 
     # A network check must not block the reviewer or collection operations.
-    mw.taskman.run_in_background(_load_campaign, loaded, uses_collection=False)
+    if manual:
+        mw.taskman.with_progress(
+            _load_campaign, loaded, parent=mw, immediate=True, uses_collection=False
+        )
+    else:
+        mw.taskman.run_in_background(_load_campaign, loaded, uses_collection=False)
 
 
 class CampaignDialog(QDialog):
@@ -160,67 +197,11 @@ class CampaignDialog(QDialog):
             return True
         if result == self.STOP_REMINDERS:
             profile.pop(AUTO_UPLOAD, None)
-        profile[REMINDER] = (
-            None if result == self.STOP_REMINDERS else int_time() + 86_400
-        )
+            profile[REMINDER] = None
+        elif profile.get(REMINDER, 0) is not None:
+            profile[REMINDER] = int_time() + 86_400
         self.mw.pm.save()
         return False
-
-
-class DropboxRequestPage(QWebEnginePage):
-    file_selected = pyqtSignal()
-
-    def __init__(
-        self, profile: QWebEngineProfile, request_url: QUrl, path: Path, parent: QWidget
-    ) -> None:
-        super().__init__(profile, parent)
-        self.request_url = request_url
-        self.path = path
-
-    def _is_request(self, url: QUrl) -> bool:
-        return (
-            url.scheme() == "https"
-            and url.authority() == "www.dropbox.com"
-            and url.path().rstrip("/") == self.request_url.path().rstrip("/")
-        )
-
-    def acceptNavigationRequest(
-        self, url: QUrl, kind: QWebEnginePage.NavigationType, is_main_frame: bool
-    ) -> bool:
-        # Qt's file chooser callback does not identify the requesting frame.
-        return is_main_frame and self._is_request(url)
-
-    def chooseFiles(
-        self,
-        mode: QWebEnginePage.FileSelectionMode,
-        old_files: Iterable[str | None],
-        accepted_mime_types: Iterable[str | None],
-    ) -> list[str]:
-        if self._is_request(self.url()) and mode in (
-            self.FileSelectionMode.FileSelectOpen,
-            self.FileSelectionMode.FileSelectOpenMultiple,
-        ):
-            self.file_selected.emit()
-            return [str(self.path)]
-        return []
-
-
-def _show_upload_form(mw: AnkiQt, request_url: str, path: Path) -> bool:
-    dialog = CampaignDialog(
-        mw, tr.qt_misc_campaign_handoff(), tr.qt_misc_campaign_uploaded()
-    )
-    view = QWebEngineView(dialog)
-    # The view owns the page and is destroyed before this private profile.
-    profile = QWebEngineProfile(dialog)
-    page = DropboxRequestPage(profile, QUrl(request_url), path, view)
-    view.setPage(page)
-    view.setContextMenuPolicy(Qt.ContextMenuPolicy.NoContextMenu)
-    dialog.content.addWidget(view, 1)
-    dialog.proceed.setEnabled(False)
-    qconnect(page.file_selected, lambda: dialog.proceed.setEnabled(True))
-    dialog.resize(850, 700)
-    view.load(page.request_url)
-    return dialog.ask()
 
 
 def _link(url: str, label: str) -> str:
@@ -228,25 +209,94 @@ def _link(url: str, label: str) -> str:
 
 
 def _invite(mw: AnkiQt, campaign: Campaign) -> None:
-    paragraphs = [escape(tr.qt_misc_campaign_invitation())]
+    paragraphs = [
+        escape(tr.qt_misc_campaign_invitation()),
+    ]
     if campaign.totals is not None:
         donors, reviews = campaign.totals
         paragraphs.append(
-            escape(tr.qt_misc_campaign_status(count=donors, reviews=reviews))
+            escape(
+                tr.qt_misc_campaign_status(
+                    donors_formatted=QLocale().toString(donors),
+                    reviews_formatted=QLocale().toString(reviews),
+                )
+            )
         )
-    paragraphs.extend(
-        (
-            _link(CAMPAIGN_PAGE, tr.qt_misc_campaign_details()),
-            escape(tr.qt_misc_campaign_consent()),
-        )
-    )
+    paragraphs.append(_link(CAMPAIGN_PAGE, tr.qt_misc_campaign_details()))
     dialog = CampaignDialog(
-        mw, "<p>" + "</p><p>".join(paragraphs) + "</p>", tr.qt_misc_campaign_upload()
+        mw,
+        f"<h2>{escape(tr.qt_misc_campaign_heading())}</h2><p>"
+        + "</p><p>".join(paragraphs)
+        + "</p>",
+        tr.qt_misc_campaign_upload(),
     )
+    dialog.setMinimumWidth(540)
+    dialog.content.setContentsMargins(22, 18, 22, 16)
+    dialog.content.setSpacing(12)
+
+    group = QFrame()
+    group.setObjectName("campaignSharing")
+    group.setStyleSheet(
+        "QFrame#campaignSharing { background: palette(alternate-base); border: 1px solid palette(mid); border-radius: 8px; }"
+    )
+    details = QVBoxLayout(group)
+    details.setContentsMargins(14, 12, 14, 12)
+    details.setSpacing(8)
+    heading = QLabel(f"<b>{escape(tr.qt_misc_campaign_sharing())}</b>")
+    details.addWidget(heading)
+    summary = QLabel(tr.qt_misc_campaign_summary())
+    summary.setWordWrap(True)
+    details.addWidget(summary)
+    sharing = QLabel()
+    sharing.setObjectName("campaignSharingState")
+    sharing.setTextFormat(Qt.TextFormat.PlainText)
+    sharing.setWordWrap(True)
+    details.addWidget(sharing)
+
+    def show_sharing() -> None:
+        sharing.setText(describe_sharing(mw.col, mw.pm.profile.get(SHARING)))
+
+    def edit_sharing() -> None:
+        if SharingDialog(mw, dialog).exec() == QDialog.DialogCode.Accepted:
+            show_sharing()
+
+    show_sharing()
+    preferences = QPushButton(tr.qt_misc_campaign_preferences())
+    details.addWidget(preferences, 0, Qt.AlignmentFlag.AlignLeft)
+    qconnect(preferences.clicked, edit_sharing)
+    transfer = QToolButton()
+    transfer.setText(tr.qt_misc_campaign_transfer())
+    transfer.setToolButtonStyle(Qt.ToolButtonStyle.ToolButtonTextBesideIcon)
+    transfer.setFocusPolicy(Qt.FocusPolicy.TabFocus)
+    transfer.setStyleSheet(
+        "QToolButton { background: transparent; border: 1px solid transparent; border-radius: 3px; }"
+        "QToolButton:focus { border-color: palette(highlight); }"
+    )
+    transfer.setArrowType(Qt.ArrowType.RightArrow)
+    transfer.setCheckable(True)
+    details.addWidget(transfer, 0, Qt.AlignmentFlag.AlignLeft)
+    disclosure = QLabel(tr.qt_misc_campaign_consent())
+    disclosure.setWordWrap(True)
+    disclosure.hide()
+
+    def toggle_transfer(expanded: bool) -> None:
+        transfer.setArrowType(
+            Qt.ArrowType.DownArrow if expanded else Qt.ArrowType.RightArrow
+        )
+        disclosure.setVisible(expanded)
+        dialog.adjustSize()
+
+    qconnect(transfer.toggled, toggle_transfer)
+    details.addWidget(disclosure)
+    dialog.content.addWidget(group)
     monthly = QCheckBox(tr.qt_misc_campaign_monthly())
     dialog.content.addWidget(monthly)
-    # The dialog deletes its children on close.
-    automatic = False
+    help_text = QLabel(tr.qt_misc_campaign_monthly_help())
+    help_text.setWordWrap(True)
+    help_text.setContentsMargins(22, 0, 0, 0)
+    dialog.content.addWidget(help_text)
+    automatic = mw.pm.profile.get(AUTO_UPLOAD) is True
+    monthly.setChecked(automatic)
 
     def choose(checked: bool) -> None:
         nonlocal automatic
@@ -254,67 +304,9 @@ def _invite(mw: AnkiQt, campaign: Campaign) -> None:
 
     qconnect(monthly.toggled, choose)
     if dialog.ask():
-        _prepare(mw, campaign, automatic=automatic)
+        if not automatic:
+            mw.pm.profile.pop(AUTO_UPLOAD, None)
+            mw.pm.profile.pop(RELAY_CONSENT, None)
+        from aqt import donation_transfer
 
-
-def _prepare(mw: AnkiQt, campaign: Campaign, *, automatic: bool) -> None:
-    profile = mw.pm.profile
-    if automatic:
-        # Defer another attempt if export fails or the app quits mid-transfer.
-        profile[REMINDER] = int_time() + 86_400
-        mw.pm.save()
-    # The callback keeps the private directory alive until the donor finishes in Dropbox.
-    directory = TemporaryDirectory(prefix="anki-donation-")
-    path = Path(directory.name) / "collection.colpkg"
-
-    def on_exported() -> None:
-        with directory:
-            if mw.pm.profile is not profile:
-                return
-            native = automatic and path.stat().st_size <= MAX_UPLOAD_BYTES
-            if automatic and not native:
-                profile.pop(AUTO_UPLOAD, None)
-                mw.pm.save()
-                show_info(tr.qt_misc_campaign_too_large(), parent=mw)
-            if native:
-                success = _upload(mw, path)
-            else:
-                success = _show_upload_form(mw, campaign.request_url, path)
-            if success and mw.pm.profile is profile:
-                if native:
-                    profile[AUTO_UPLOAD] = True
-                profile[REMINDER] = (
-                    QDateTime.currentDateTime().addMonths(1).toSecsSinceEpoch()
-                )
-                mw.pm.save()
-                show_info(tr.qt_misc_campaign_thanks(), parent=mw)
-
-    export_collection_package(
-        mw, mw, str(path), include_media=False, legacy=False, on_success=on_exported
-    )
-
-
-def _upload(mw: AnkiQt, path: Path) -> bool:
-    from aqt.donation_upload import CampaignUpload
-
-    dialog = CampaignDialog(mw, tr.qt_misc_campaign_uploading(), "")
-    dialog.proceed.hide()
-    bar = QProgressBar(dialog)
-    bar.setRange(0, 0)
-    dialog.content.addWidget(bar)
-    upload = CampaignUpload(path, UPLOAD_BROKER, {}, MAX_UPLOAD_BYTES)
-
-    def show_progress(percent: int) -> None:
-        bar.setRange(0, 100)
-        bar.setValue(percent)
-
-    qconnect(upload.progress, show_progress)
-    qconnect(upload.done, dialog.done)
-    upload.start()
-    try:
-        accepted = dialog.ask()
-    finally:
-        upload.stop()
-    if upload.failed:
-        show_info(tr.qt_misc_campaign_upload_failed(), parent=mw)
-    return accepted
+        donation_transfer.prepare(mw, automatic=automatic)

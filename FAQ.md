@@ -5,7 +5,7 @@ questions are quoted and linked below. Related questions are summarized first.
 For a deeper explanation of RWKV and this fork's implementation, see
 [RWKV FAQ](RWKV_FAQ.md).
 
-Last reviewed: 2026-11-21.
+Last reviewed: 2026-11-25.
 
 ## Common questions
 
@@ -130,9 +130,38 @@ and [queue refresh behavior](docs/rwkv.MD).
 
 ### Can I donate my review history for research?
 
-A way to donate review history is in development. The plan is to make uploads
-easy directly from the desktop fork. We’ll share more details in the coming
-weeks.
+Yes. We’re building a community dataset of Anki review histories to train and
+release future RWKV models. We’ll publish the dataset under the
+[MIT License](https://opensource.org/license/mit).
+If you’d like to contribute, you can upload a collection or a single deck
+through the [Dropbox file request](https://www.dropbox.com/request/hfrfyf6vnsapkxnfpobe).
+
+For an in-app contribution, open **Support → Sharing preferences**. Choose
+which field values and card template layouts to include for each note type.
+All fields start selected, and the invitation shows what is currently
+selected. **Exclude all note fields** lets you contribute review history
+without note text. Tags, deck and preset names, deck descriptions, and media
+files are always left out. Save your choices, then choose **Support → Upload
+my collection**. Manual and monthly campaign uploads use the same settings for
+this profile.
+
+To prepare a file yourself for the Dropbox request, open **File → Export**.
+
+- **Whole collection.** Choose **Anki Collection Package** (`.colpkg`), which
+  includes your review history. You can also close Anki and upload a copy of
+  `collection.anki2` from your profile folder.
+- **Single deck.** Choose **Anki Deck Package** (`.apkg`), select the deck,
+  and check **Include scheduling information** so the export includes your reviews.
+
+You can uncheck **Include media** before exporting to leave out images, audio,
+and video, including NSFW or copyrighted media. The export still includes your
+note text. We’ll also clean up submitted media when preparing the dataset.
+
+You can upload without a Dropbox account. If the form asks for a name, use
+your Discord nickname or a pseudonym. Reuse that name on future uploads so we
+can spot duplicate reviews. If you sent something by mistake or want your
+contribution removed from the dataset, DM **@SoundJona** on Discord with the
+name you used.
 
 Source: [Q7](#q7--donating-review-history).
 

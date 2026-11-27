@@ -1,20 +1,52 @@
 qt-misc-addon-will-be-installed-when-a = Add-on will be installed when a profile is opened.
 qt-misc-addons = Add-ons
-qt-misc-campaign-title = Help train the next spaced repetition models
-qt-misc-campaign-invitation = How do people remember what they study? The Anki-RWKV campaign is collecting review histories to train the next generation of open-source scheduling models.
-qt-misc-campaign-status = So far, { $count } donors have contributed { $reviews } unique reviews.
+qt-misc-campaign-title = Anki research
+qt-misc-campaign-heading = Help improve review scheduling
+qt-misc-campaign-invitation = The Anki-RWKV campaign uses shared collections to train open-source scheduling models.
+qt-misc-campaign-status = { $donors-formatted } donors · { $reviews-formatted } unique reviews
 qt-misc-campaign-details = Campaign details and progress
-qt-misc-campaign-consent = If you take part, Anki will prepare a copy of this profile’s collection, including note text, decks, cards, and review history. Media files are excluded. Dropbox delivers the file to the campaign. If you opt into monthly uploads, Anki sends a fresh copy when you next open this profile after a month. You can turn this off in Preferences.
+qt-misc-campaign-sharing = What you’ll share
+qt-misc-campaign-summary = This upload includes your deck structure, cards, review history, and the note fields and card layouts you choose. Tags, deck and preset names, and media files are left out.
+qt-misc-campaign-sharing-nothing = No note text is shared, only review history and card structure.
+qt-misc-campaign-sharing-all =
+    { $notetype-count ->
+        [one] Sharing all fields of { $notetype-count } note type.
+       *[other] Sharing all fields of { $notetype-count } note types.
+    }
+qt-misc-campaign-sharing-some =
+    { $notetype-count ->
+        [one] Sharing { $selected } of { $total } fields from { $included-count } of { $notetype-count } note type.
+       *[other] Sharing { $selected } of { $total } fields from { $included-count } of { $notetype-count } note types.
+    }
+qt-misc-campaign-preferences = Sharing preferences
+qt-misc-campaign-save = Save preferences
+qt-misc-campaign-note-types = Note types
+qt-misc-campaign-templates = Card templates
+qt-misc-campaign-template-help = Include the layout of each selected template.
+qt-misc-campaign-fields = Note fields
+qt-misc-campaign-field-help = Card text could help future schedulers learn which material is harder to remember.
+qt-misc-campaign-selected = { $selected } of { $total } selected
+qt-misc-campaign-find = Find a field
+qt-misc-campaign-include-all = Include all
+qt-misc-campaign-exclude-all = Exclude all
+qt-misc-campaign-saved = Future manual and automatic uploads from this profile use your saved choices.
+qt-misc-campaign-transfer = How uploads work
+qt-misc-campaign-consent = A random ID syncs with your collection so the campaign can group donations from your devices. Dropbox delivers the file to the campaign. For files over 150 MB, Anki sends the collection in chunks through the campaign’s Cloudflare service to Dropbox.
+qt-misc-campaign-monthly-help = Send a fresh copy when you next open this profile after a month. You can turn this off in Preferences.
 qt-misc-campaign-upload = Upload my collection
 qt-misc-campaign-monthly = Automatically upload every month
 qt-misc-campaign-monthly-pref = Automatically donate this profile’s media-free collection to the Anki-RWKV campaign every month
-qt-misc-campaign-uploading = Uploading your collection to the Anki-RWKV campaign…
+qt-misc-campaign-uploading = Uploading your collection to the Anki-RWKV campaign… { $percent }%
+qt-misc-campaign-preparing = Preparing your collection…
+qt-misc-campaign-upload-in-progress = Your collection is already being uploaded in the background.
+qt-misc-campaign-waiting-for-receipt = 100% sent. Waiting for Dropbox to confirm receipt…
 qt-misc-campaign-upload-failed = Dropbox did not confirm the donation. You can try again when you reopen this profile in a day.
-qt-misc-campaign-too-large = This collection exceeds the 150 MB automatic upload limit. You can donate it through the Dropbox form instead. Monthly automatic uploads are off for this profile.
+qt-misc-campaign-large-monthly-consent = This collection exceeds 150 MB. To continue monthly donations, allow Anki to send large collections in chunks through the campaign’s Cloudflare service to Dropbox. You can turn off monthly uploads in the Support menu.
+qt-misc-campaign-support = Support
+qt-misc-campaign-stop-monthly = Turn off monthly collection uploads
+qt-misc-campaign-unavailable = The campaign is unavailable. Please check your connection and try again later.
 qt-misc-campaign-later = Later
 qt-misc-campaign-stop = Don’t remind me
-qt-misc-campaign-handoff = Choose Add files in the Dropbox form. If asked, choose files from your computer. Anki selects collection.colpkg for you. Click Upload in Dropbox, then confirm below when Dropbox shows that the upload is complete.
-qt-misc-campaign-uploaded = I’ve finished uploading
 qt-misc-campaign-thanks = Thank you for sharing your collection! Your review history helps us build better scheduling models for everyone who studies with Anki.
 qt-misc-all-cards-notes-and-media-for = All cards, notes, and media for this profile will be deleted. Are you sure?
 qt-misc-all-cards-notes-and-media-for2 = All cards, notes, and media for the profile "{ $name }" will be deleted. Are you sure?

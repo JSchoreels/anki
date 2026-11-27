@@ -526,6 +526,16 @@ class Collection(DeprecatedNamesMixin):
             out_path=out_path, include_media=include_media, legacy=legacy
         )
 
+    def export_campaign_package(
+        self,
+        out_path: str,
+        selections: Sequence[import_export_pb2.CampaignNotetypeSelection],
+        collection_id: str,
+    ) -> None:
+        self._backend.export_campaign_package(
+            out_path=out_path, selections=selections, collection_id=collection_id
+        )
+
     def import_anki_package(
         self, request: ImportAnkiPackageRequest
     ) -> ImportLogWithChanges:

@@ -23,6 +23,8 @@ service ImportExportService {
   rpc ExportCardCsv(ExportCardCsvRequest) returns (generic.UInt32);
   rpc ImportJsonFile(generic.String) returns (ImportResponse);
   rpc ImportJsonString(generic.String) returns (ImportResponse);
+  rpc ExportCampaignPackage(ExportCampaignPackageRequest)
+      returns (generic.Empty);
 }
 
 // Implicitly includes any of the above methods that are not listed in the
@@ -32,6 +34,20 @@ service BackendImportExportService {
       returns (generic.Empty);
   rpc ExportCollectionPackage(ExportCollectionPackageRequest)
       returns (generic.Empty);
+}
+
+// Only the explicitly selected content is written to a campaign snapshot.
+message CampaignNotetypeSelection {
+  int64 notetype_id = 1;
+  // "id:<id>:<name>" keys, or "name:<name>" for legacy items without IDs.
+  repeated string fields = 2;
+  repeated string templates = 3;
+}
+
+message ExportCampaignPackageRequest {
+  string out_path = 1;
+  repeated CampaignNotetypeSelection selections = 2;
+  string collection_id = 3;
 }
 
 message ImportCollectionPackageRequest {

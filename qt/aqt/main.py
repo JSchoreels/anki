@@ -1712,6 +1712,10 @@ title="{}" {}>{}</button>""".format(
         qconnect(m.action_open_backup.triggered, self.onOpenBackup)
         qconnect(m.actionExit.triggered, self.close)
 
+        from aqt.donation_campaign import setup_support_menu
+
+        setup_support_menu(self)
+
         # Help
         qconnect(m.actionDocumentation.triggered, self.onDocumentation)
         qconnect(

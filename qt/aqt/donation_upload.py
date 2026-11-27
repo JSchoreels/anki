@@ -6,7 +6,8 @@ from __future__ import annotations
 import asyncio
 import logging
 import re
-from collections.abc import Callable
+from collections.abc import Awaitable, Callable, Sequence
+from functools import partial
 from pathlib import Path
 from typing import BinaryIO
 from urllib.parse import urljoin
@@ -19,6 +20,42 @@ from aqt.qt import QDialog, QThread, pyqtSignal
 
 DROPBOX_UPLOAD_PREFIX = "https://content.dropboxapi.com/apitul/1/"
 TIMEOUT_SECONDS = 60
+# Pauses before resending a chunk after a transient failure.
+RETRY_DELAYS: tuple[float, ...] = (2, 10, 30)
+
+logger = logging.getLogger(__name__)
+
+
+class CampaignStatusError(ValueError):
+    def __init__(self, status: int) -> None:
+        super().__init__(f"Campaign request failed ({status})")
+        self.status = status
+
+
+def _transient(exc: Exception) -> bool:
+    # Other 4xx statuses mean an expired or invalid cursor or link.
+    if isinstance(exc, CampaignStatusError):
+        return exc.status == 429 or exc.status >= 500
+    return isinstance(exc, (aiohttp.ClientError, TimeoutError))
+
+
+async def _retry(
+    attempt: Callable[[], Awaitable[dict]], delays: Sequence[float]
+) -> dict:
+    for delay in delays:
+        try:
+            return await attempt()
+        except Exception as exc:
+            if not _transient(exc):
+                raise
+            # Network exceptions can include the private upload URL.
+            logger.info(
+                "Campaign request failed (%s), retrying in %ss",
+                type(exc).__name__,
+                delay,
+            )
+        await asyncio.sleep(delay)
+    return await attempt()
 
 
 async def _post(
@@ -31,7 +68,7 @@ async def _post(
         url, headers=headers, data=body, allow_redirects=False
     ) as response:
         if response.status != 200:
-            raise ValueError("Campaign request failed")
+            raise CampaignStatusError(response.status)
         data = await response.json(content_type=None)
         if not isinstance(data, dict):
             raise ValueError("Invalid campaign response")
@@ -88,7 +125,11 @@ async def _send_archive(
     ) as session:
         with path.open("rb") as file:
 
-            async def send(url: str, length: int, headers: dict[str, str]) -> dict:
+            async def send(
+                url: str, start: int, length: int, headers: dict[str, str]
+            ) -> dict:
+                # A retry resends the whole range.
+                file.seek(start)
                 body = _ArchiveBody(file, length, size, progress)
                 reply = await _post(session, url, headers, body)
                 if body.remaining:
@@ -96,13 +137,18 @@ async def _send_archive(
                 return reply
 
             if size <= direct_limit:
-                data = await _post(session, broker, broker_headers)
-                link = data.get("link")
-                if not isinstance(link, str) or not link.startswith(
-                    DROPBOX_UPLOAD_PREFIX
-                ):
-                    return False
-                data = await send(link, size, {})
+
+                async def direct() -> dict:
+                    # A failed link may be spent, so each attempt requests a new one.
+                    data = await _post(session, broker, broker_headers)
+                    link = data.get("link")
+                    if not isinstance(link, str) or not link.startswith(
+                        DROPBOX_UPLOAD_PREFIX
+                    ):
+                        raise ValueError("Invalid campaign upload link")
+                    return await send(link, 0, size, {})
+
+                data = await _retry(direct, RETRY_DELAYS[:1])
             else:
                 headers = {**broker_headers, "X-Upload-Size": str(size)}
                 data = await _post(session, urljoin(broker, "upload-session"), headers)
@@ -118,10 +164,17 @@ async def _send_archive(
                         or data.get("offset") != file.tell()
                     ):
                         return False
-                    data = await send(
-                        urljoin(broker, "upload-chunk"),
-                        min(length, size - file.tell()),
-                        {"Authorization": "Bearer " + token},
+                    # The broker accepts a resent chunk with the same cursor.
+                    start = file.tell()
+                    data = await _retry(
+                        partial(
+                            send,
+                            urljoin(broker, "upload-chunk"),
+                            start,
+                            min(length, size - start),
+                            {"Authorization": "Bearer " + token},
+                        ),
+                        RETRY_DELAYS,
                     )
         receipt = data.get("content-hash")
         return isinstance(receipt, str) and bool(re.fullmatch("[0-9a-f]+", receipt))
@@ -150,9 +203,7 @@ class CampaignUpload(QThread):
             return
         except Exception as exc:
             # Network exceptions can include the private upload URL.
-            logging.getLogger(__name__).warning(
-                "Campaign upload failed (%s)", type(exc).__name__
-            )
+            logger.warning("Campaign upload failed (%s)", type(exc).__name__)
             success = False
         self.failed = not success
         self.done.emit(
