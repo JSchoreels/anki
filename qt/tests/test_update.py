@@ -20,7 +20,7 @@ from anki.collection import GithubRelease
 from aqt.preferences import Preferences
 from aqt.profiles import ProfileManager
 from aqt.progress import ProgressUpdate
-from aqt.qt import QApplication, QCheckBox, QMessageBox, QTimer, QWidget
+from aqt.qt import QApplication, QCheckBox, QMessageBox, Qt, QWidget
 from aqt.update import _release_is_newer
 
 
@@ -279,22 +279,21 @@ def test_portable_update_prompt_downloads_only_after_yes(
     monkeypatch.setattr(aqt.update, "_download_github_update_and_install", download)
     window = QWidget()
     update = release("26.09.3+fsrs7.build.110", "bbbbbbbb1234")
-    prompt_text = []
-
-    def answer():
-        dialog = QApplication.activeModalWidget()
-        assert isinstance(dialog, QMessageBox)
-        prompt_text.append(dialog.text())
+    try:
+        dialog = aqt.update.prompt_and_install_github_update(window, update)
+        # Returns without a nested modal loop, so a sheet opened on the main
+        # window meanwhile cannot deadlock against it on macOS.
+        assert dialog.isVisible()
+        assert dialog.windowModality() == Qt.WindowModality.NonModal
+        assert QApplication.activeModalWidget() is None
+        assert "restart automatically" in dialog.text()
+        assert "Anki Portable Data" in dialog.text()
+        download.assert_not_called()
         button = (
             QMessageBox.StandardButton.Yes if accept else QMessageBox.StandardButton.No
         )
         dialog.button(button).click()
-
-    QTimer.singleShot(0, answer)
-    try:
-        aqt.update.prompt_and_install_github_update(window, update)
-        assert "restart automatically" in prompt_text[0]
-        assert "Anki Portable Data" in prompt_text[0]
+        QApplication.processEvents()
         if accept:
             download.assert_called_once_with(update)
         else:

@@ -68,24 +68,36 @@ def check_for_update(*, parent: aqt.AnkiQt, manual: bool) -> None:
     op.run_in_background()
 
 
-def prompt_and_install_github_update(mw: aqt.AnkiQt, release: GithubRelease) -> None:
+def prompt_and_install_github_update(
+    mw: aqt.AnkiQt, release: GithubRelease
+) -> QMessageBox:
     msg = tr.qt_misc_anki_updatedanki_has_been_released(val=release.tag_name)
     if aqt.is_portable():
         msg += tr.qt_misc_portable_update_download() + "<br><br>"
     msg += tr.qt_misc_would_you_like_to_download_it()
 
     msgbox = QMessageBox(mw)
+    msgbox.setIcon(QMessageBox.Icon.Information)
+    msgbox.setTextFormat(Qt.TextFormat.RichText)
+    msgbox.setText(msg)
     msgbox.setStandardButtons(
         QMessageBox.StandardButton.Yes | QMessageBox.StandardButton.No
     )
-    msgbox.setIcon(QMessageBox.Icon.Information)
-    msgbox.setText(msg)
-
     msgbox.setDefaultButton(QMessageBox.StandardButton.Yes)
-    ret = msgbox.exec()
 
-    if ret == QMessageBox.StandardButton.Yes:
-        _download_github_update_and_install(release)
+    def on_finished(_result: int) -> None:
+        if msgbox.clickedButton() is msgbox.button(QMessageBox.StandardButton.Yes):
+            _download_github_update_and_install(release)
+
+    msgbox.finished.connect(on_finished)
+    # Non-modal, shown without exec()/open(): the check finishes in the
+    # background, often while a window-modal sheet on the main window is up. On
+    # macOS an exec() here started an app-modal session that only let this
+    # prompt take clicks, while Qt blocked it under a sheet opened later,
+    # freezing both.
+    msgbox.setWindowModality(Qt.WindowModality.NonModal)
+    msgbox.show()
+    return msgbox
 
 
 def get_latest_release_op(

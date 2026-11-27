@@ -67,6 +67,8 @@ Changes since [build 115](https://github.com/JSchoreels/anki/releases/tag/26.09.
 
 #### Fixes
 
+- **Keep macOS dialogs responsive during update checks.** When Anki finds an update while another dialog is open, you can finish using that dialog and respond to the update prompt afterward.
+
 - **Start RWKV campaign uploads sooner.** If the first server address is slow to connect, Anki tries the next address after 250 ms. On an affected connection, establishing HTTPS took 0.33 seconds, down from 30.4 seconds.
 
 - **See the campaign invitation sooner.** When a reminder is due, Anki fetches the campaign details while opening your profile so the invitation can appear as soon as startup sync and the lookup finish.
