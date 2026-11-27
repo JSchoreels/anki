@@ -518,7 +518,7 @@ def test_rsbridge_rwkv_queue_scoring_returns_an_exception_for_invalid_state(
         state_precision="cards_int4_notes_int8",
         model="sm40",
     )
-    invalid_answer = {**_RWKV_REVIEWS[0], "duration": -10}
+    answer = _RWKV_REVIEWS[0]
 
     def input_row(review, *, is_query):
         return (
@@ -534,11 +534,19 @@ def test_rsbridge_rwkv_queue_scoring_returns_an_exception_for_invalid_state(
             True,
         )
 
-    runtime.warm_up_reviews([input_row(invalid_answer, is_query=False)], False)
+    runtime.warm_up_reviews([input_row(answer, is_query=False)], False)
 
-    with pytest.raises(Exception, match="RWKV card state:.*non-finite shift"):
-        runtime.predict_retrievability_many_from_warm_up(
-            [input_row(invalid_answer, is_query=True)]
+    # A damaged state holds a non-finite shift: overwrite the first f16 shift
+    # value of the packed card state with NaN (magic, precision byte, layer
+    # count, shift count, then the value). The bridge reports it as an
+    # exception, not a panic.
+    card_state, *other_states = runtime.warm_up_state(input_row(answer, is_query=True))
+    damaged = bytearray(card_state)
+    offset = len(b"ARWKVMODSTATE2") + 1 + 4 + 4
+    damaged[offset : offset + 2] = (0x7E00).to_bytes(2, "little")
+    with pytest.raises(Exception, match="non-finite shift") as invalid_state:
+        runtime.restore_warm_up_state(
+            *input_row(answer, is_query=True)[:4], bytes(damaged), *other_states
         )
 
     class Taskman:
@@ -552,28 +560,28 @@ def test_rsbridge_rwkv_queue_scoring_returns_an_exception_for_invalid_state(
 
     completed = []
     reviewer = Reviewer.__new__(Reviewer)
-    reviewer.card = SimpleNamespace(id=invalid_answer["card_id"])
+    reviewer.card = SimpleNamespace(id=answer["card_id"])
     reviewer.mw = SimpleNamespace(taskman=Taskman())
     monkeypatch.setattr(
         rwkv_scheduler,
         "prepare_reviewer_queue_order_async_work",
         lambda *_args, **_kwargs: object(),
     )
+
+    def score_with_invalid_state(*_args, **_kwargs):
+        raise invalid_state.value
+
     monkeypatch.setattr(
         rwkv_scheduler,
         "score_reviewer_queue_order_async_work",
-        lambda *_args, **_kwargs: runtime.predict_retrievability_many_from_warm_up(
-            [input_row(invalid_answer, is_query=True)]
-        ),
+        score_with_invalid_state,
     )
 
     reviewer._prepare_rwkv_queue_order_async(on_finished=completed.append)
 
     assert completed == [False]
     assert reviewer._rwkv_queue_refresh_in_flight is False
-    assert (
-        "RWKV card state: invalid RWKV compact state: non-finite shift" in caplog.text
-    )
+    assert "invalid RWKV compact state: non-finite shift" in caplog.text
 
 
 def _load_rsbridge_runtime(

@@ -309,6 +309,9 @@ class Collection(DeprecatedNamesMixin):
         self._backend = backend or RustBackend(server=server)
         self.db: DBProxy | None = None
         self._last_sync_remote_collection_changed: bool | None = None
+        # Sticky: set when a sync brought remote changes, cleared only once the
+        # RWKV state has been reconciled with them.
+        self._rwkv_sync_changes_pending = False
         self.server = server
         self.path = os.path.abspath(path)
         self.reopen()
@@ -1387,6 +1390,8 @@ class Collection(DeprecatedNamesMixin):
         self._last_sync_remote_collection_changed = (
             output.remote_collection_changed or output.required != output.NO_CHANGES
         )
+        if self._last_sync_remote_collection_changed:
+            self._rwkv_sync_changes_pending = True
         return output
 
     def sync_media(self, auth: SyncAuth) -> None:

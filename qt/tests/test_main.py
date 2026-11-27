@@ -461,6 +461,84 @@ def test_addon_sync_reconciles_rwkv_after_remote_changes(
     assert calls == (["refresh"] if refresh_expected else [])
 
 
+def _ankiconnect_style_sync(
+    monkeypatch, refresh
+) -> tuple[AnkiQt, SimpleNamespace, list[str]]:
+    """Direct Collection.sync_collection with remote changes, then a GUI sync."""
+    calls: list[str] = []
+    first = SyncOutput(required=SyncOutput.NO_CHANGES, remote_collection_changed=True)
+    col = SimpleNamespace(
+        db=object(),
+        _backend=SimpleNamespace(sync_collection=lambda **_kw: first),
+        models=SimpleNamespace(_clear_cache=lambda: None),
+        _last_sync_remote_collection_changed=None,
+    )
+    mw = AnkiQt.__new__(AnkiQt)
+    mw.col = col
+    mw.state = "review"
+    mw._rwkv_builtin_sync_finishing = False
+    mw.reset = lambda: calls.append("reset")  # type: ignore[method-assign]
+    # Real hook wiring as registered in AnkiQt.setupHooks.
+    monkeypatch.setattr(aqt.main.gui_hooks, "sync_will_start", mw._rwkv_sync_will_start)
+    monkeypatch.setattr(aqt.main.gui_hooks, "sync_did_finish", mw._rwkv_sync_did_finish)
+    monkeypatch.setattr(aqt.rwkv_scheduler, "refresh_rwkv_state_after_sync", refresh)
+
+    def gui_sync_collection(
+        _mw: object,
+        on_done: Callable[[], None],
+        *,
+        on_remote_collection_changes: Callable[
+            [aqt.sync.RemoteCollectionChanges], None
+        ],
+    ) -> None:
+        on_remote_collection_changes(aqt.sync.RemoteCollectionChanges())
+        on_done()
+
+    monkeypatch.setattr(aqt.main, "sync_collection", gui_sync_collection)
+    # AnkiConnect calls Collection.sync_collection directly, without hooks.
+    Collection.sync_collection(col, None, False)  # type: ignore[arg-type]
+    return mw, col, calls
+
+
+def test_ankiconnect_sync_sequence_refreshes_rwkv(monkeypatch) -> None:
+    refreshes: list[str] = []
+    mw, col, calls = _ankiconnect_style_sync(
+        monkeypatch,
+        lambda _mw, on_done: (refreshes.append("refresh"), on_done()),
+    )
+    assert col._rwkv_sync_changes_pending is True
+
+    # mw.onSync() follows, and the server has nothing new to report.
+    mw._sync_collection_and_media(lambda: calls.append("done"))
+
+    assert refreshes == ["refresh"]
+    assert calls == ["reset", "done"]
+
+
+def test_rwkv_pending_sync_flag_clears_after_refresh(monkeypatch) -> None:
+    refreshes: list[str] = []
+    real_refresh = aqt.rwkv_scheduler.refresh_rwkv_state_after_sync
+
+    def counting_refresh(mw_: object, on_done: Callable[[], None]) -> None:
+        refreshes.append("refresh")
+        real_refresh(mw_, on_done)
+
+    mw, col, calls = _ankiconnect_style_sync(monkeypatch, counting_refresh)
+    monkeypatch.setattr(
+        aqt.rwkv_scheduler,
+        "_rwkv_collection_config_state",
+        lambda _reviewer: SimpleNamespace(review_enabled=False),
+    )
+
+    mw._sync_collection_and_media(lambda: calls.append("done"))
+    assert refreshes == ["refresh"]
+    assert col._rwkv_sync_changes_pending is False
+
+    # A later sync with no changes must not refresh again.
+    mw._sync_collection_and_media(lambda: calls.append("done"))
+    assert refreshes == ["refresh"]
+
+
 def test_addon_sync_reconciles_rwkv_when_sync_outcome_is_unknown(monkeypatch) -> None:
     calls: list[str] = []
     mw = AnkiQt.__new__(AnkiQt)

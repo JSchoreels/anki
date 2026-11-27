@@ -1331,7 +1331,10 @@ title="{}" {}>{}</button>""".format(
             def finish_sync() -> None:
                 after_sync()
 
-            if refresh_rwkv_state and remote_collection_changes.collection_changed:
+            if refresh_rwkv_state and (
+                remote_collection_changes.collection_changed
+                or getattr(self.col, "_rwkv_sync_changes_pending", False)
+            ):
                 rwkv_scheduler.refresh_rwkv_state_after_sync(
                     self,
                     finish_sync,
@@ -1358,7 +1361,9 @@ title="{}" {}>{}</button>""".format(
         col = self.col
         if col is None or col.db is None:
             return
-        if getattr(col, "_last_sync_remote_collection_changed", None) is False:
+        if getattr(col, "_last_sync_remote_collection_changed", None) is False and not (
+            getattr(col, "_rwkv_sync_changes_pending", False)
+        ):
             return
 
         from aqt import rwkv_scheduler

@@ -3738,7 +3738,7 @@ fn creation_elapsed_is_query_only(input: &ReviewInput) -> bool {
 fn scaled_duration(input: &ReviewInput) -> f32 {
     input
         .duration_millis
-        .map_or(0.0, |millis| scale_duration(millis as f32))
+        .map_or(0.0, |millis| scale_duration(millis.max(0) as f32))
 }
 
 fn scale_elapsed_days(x: i64) -> f32 {
@@ -3782,11 +3782,11 @@ fn scale_state(x: i64) -> f32 {
 }
 
 fn scale_day_offset_diff(x: i64) -> f32 {
-    (std::f32::consts::E + x as f32).ln().ln()
+    (std::f32::consts::E + x.max(-1) as f32).ln().ln()
 }
 
 fn log_elapsed(x: i64) -> f32 {
-    if x == -1 {
+    if x <= -1 {
         0.0
     } else {
         (1.0 + 1e-5 + x as f32).ln()
@@ -13498,6 +13498,51 @@ order by e.id, e.cid
             ..input
         });
         assert_eq!(query_values[8], 0.0);
+    }
+
+    #[test]
+    fn feature_scaling_clamps_negative_inputs_to_finite_values() {
+        let input = ReviewInput {
+            card_id: 123,
+            note_id: Some(456),
+            deck_id: Some(789),
+            preset_id: Some(10),
+            is_query: false,
+            ease: Some(3),
+            duration_millis: Some(-2605),
+            card_type: Some(2),
+            day_offset: Some(42),
+            current_elapsed_days: Some(-7),
+            current_elapsed_seconds: Some(-9),
+            target_retentions: [None; 4],
+            enforce_grade_order: true,
+        };
+        let zero = ReviewInput {
+            duration_millis: Some(0),
+            ..input
+        };
+        let negative_values = FeatureState::default().features_for(&input);
+        let zero_values = FeatureState::default().features_for(&zero);
+        assert!(negative_values.iter().all(|value| value.is_finite()));
+        assert_eq!(negative_values[8], zero_values[8]);
+        assert_eq!(negative_values[8], scale_duration(0.0));
+        assert_eq!(
+            scaled_duration(&ReviewInput {
+                duration_millis: Some(1234),
+                ..input
+            }),
+            scale_duration(1234.0)
+        );
+
+        assert_eq!(log_elapsed(-2), 0.0);
+        assert_eq!(log_elapsed(-1), 0.0);
+        assert_eq!(log_elapsed(0), (1.0f32 + 1e-5).ln());
+        assert_eq!(scale_day_offset_diff(-5), scale_day_offset_diff(-1));
+        assert!(scale_day_offset_diff(-5).is_finite());
+        assert_eq!(
+            scale_day_offset_diff(3),
+            (std::f32::consts::E + 3.0f32).ln().ln()
+        );
     }
 
     #[test]

@@ -28,11 +28,19 @@ pub(crate) const RWKV_REVIEW_RETRIEVABILITY_CACHE_TABLE: &str =
 const REVIEW_RETRIEVABILITY_CACHE_CLEANUP_FULL_SYNC_MARKER: &str =
     "reviewRetrievabilityCacheCleanupFullSync";
 const REVIEW_RETRIEVABILITY_CACHE_WRITE_SAVEPOINT: &str = "review_retrievability_cache_write";
+// The reset keys are read once through a subquery with `limit -1`, which stops
+// SQLite flattening it: it is then materialized with an automatic index. A
+// per-card point lookup in `config` (a WITHOUT ROWID table) reads the overflow
+// pages of any large unrelated value next to the missing key, which made 66k
+// cards take 1.8 s with a 200 KB add-on value. The backtick follows `_`, so
+// the range is exactly the key prefix.
 const RWKV_HISTORY_RESET_AFTER_SQL: &str = "coalesce(
-    (select case when json_valid(cast(val as text)) then
-       case when json_type(cast(val as text), '$.after') = 'integer'
-       then max(json_extract(cast(val as text), '$.after'), 0) end end
-     from config where key = 'rwkvHistoryReset_' || c.id),
+    (select case when json_valid(cast(rwkv_resets.val as text)) then
+       case when json_type(cast(rwkv_resets.val as text), '$.after') = 'integer'
+       then max(json_extract(cast(rwkv_resets.val as text), '$.after'), 0) end end
+     from (select key, val from config
+           where key >= 'rwkvHistoryReset_' and key < 'rwkvHistoryReset`' limit -1) rwkv_resets
+     where rwkv_resets.key = 'rwkvHistoryReset_' || c.id),
     case when json_valid(c.data) then
       case when json_type(c.data, '$.rwkv_reset_after') = 'integer'
       then max(json_extract(c.data, '$.rwkv_reset_after'), 0) else 0 end else 0 end)";
@@ -1923,6 +1931,41 @@ order by e.id, e.cid"
             })?
             .collect::<std::result::Result<Vec<_>, _>>()
             .map_err(Into::into)
+    }
+
+    #[test]
+    fn rwkv_history_reset_sql_ignores_large_unrelated_config_values() -> Result<()> {
+        let (col, _tempdir, _col_path) = temp_collection("rwkv-reset-config")?;
+        for card_id in [1_000_i64, 1_001, 1_002] {
+            col.storage.db.execute(
+                "insert into cards (id, nid, did, ord, mod, usn, type, queue, due, ivl,
+                 factor, reps, lapses, left, odue, odid, flags, data)
+                 values (?, 1, 1, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, '')",
+                params![card_id],
+            )?;
+        }
+        let large = format!(r#"{{"blob":"{}"}}"#, "x".repeat(200_000));
+        for (key, value) in [
+            ("addonLargeValue", large.as_str()),
+            ("rwkvHistoryReset_1000", r#"{"after":777}"#),
+            ("rwkvHistoryReset_1002", "not json"),
+            ("rwkvHistoryResetZ", r#"{"after":999}"#),
+        ] {
+            col.storage.db.execute(
+                "insert into config (key, val, usn, mtime_secs) values (?, ?, 0, 0)",
+                params![key, value.as_bytes()],
+            )?;
+        }
+        let sql =
+            format!("select c.id, ({RWKV_HISTORY_RESET_AFTER_SQL}) from cards c order by c.id");
+        let rows = col
+            .storage
+            .db
+            .prepare(&sql)?
+            .query_map([], |row| Ok((row.get::<_, i64>(0)?, row.get::<_, i64>(1)?)))?
+            .collect::<std::result::Result<Vec<_>, _>>()?;
+        assert_eq!(rows, vec![(1_000, 777), (1_001, 0), (1_002, 0)]);
+        Ok(())
     }
 
     #[test]

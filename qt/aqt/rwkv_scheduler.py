@@ -322,10 +322,17 @@ def _rwkv_historical_answer_sql_condition(alias: str | None = None) -> str:
 def _rwkv_history_reset_after_sql(card_alias: str = "c") -> str:
     data = f"{card_alias}.data"
     return (
-        "coalesce((select case when json_valid(cast(val as text)) then "
-        "case when json_type(cast(val as text), '$.after') = 'integer' "
-        "then max(json_extract(cast(val as text), '$.after'), 0) end end "
-        f"from config where key = 'rwkvHistoryReset_' || {card_alias}.id), "
+        # Read the reset keys once in a non-flattenable subquery (`limit -1`): a
+        # per-card lookup in `config` reads the overflow pages of large add-on
+        # values next to the missing key. The backtick follows `_`, so the range
+        # is exactly the key prefix.
+        "coalesce((select case when json_valid(cast(rwkv_resets.val as text)) then "
+        "case when json_type(cast(rwkv_resets.val as text), '$.after') = 'integer' "
+        "then max(json_extract(cast(rwkv_resets.val as text), '$.after'), 0) end end "
+        "from (select key, val from config "
+        "where key >= 'rwkvHistoryReset_' and key < 'rwkvHistoryReset`' limit -1) "
+        "rwkv_resets "
+        f"where rwkv_resets.key = 'rwkvHistoryReset_' || {card_alias}.id), "
         f"case when json_valid({data}) then "
         f"case when json_type({data}, '$.rwkv_reset_after') = 'integer' "
         f"then max(json_extract({data}, '$.rwkv_reset_after'), 0) "
@@ -13754,6 +13761,8 @@ def refresh_rwkv_state_after_sync(
     """Reconcile resident RWKV state with the merged review history."""
 
     col = getattr(mw, "col", None)
+    if col is not None:
+        col._rwkv_sync_changes_pending = False
     reviewer = SimpleNamespace(mw=mw)
     if not _rwkv_collection_config_state(reviewer).review_enabled:
         on_done()
