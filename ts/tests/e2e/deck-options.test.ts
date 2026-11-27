@@ -462,19 +462,19 @@ test(
             /51\.4 KB.*per card \+ note.*41\.1 MB.*Curve Baseline.*Instant Baseline/,
         );
         await expect(small).toHaveAccessibleDescription(
-            /9\.1 KB.*per card \+ note.*7\.6 MB.*Curve \+0\.31%.*Instant \+0\.11%/,
+            /9\.1 KB.*per card \+ note.*7\.6 MB.*Curve \+0\.20%.*Instant \+0\.01%/,
         );
         await expect(tiny).toHaveAccessibleDescription(
-            /6\.3 KB.*per card \+ note.*4\.7 MB.*Curve \+0\.42%.*Instant \+0\.30%/,
+            /6\.3 KB.*per card \+ note.*4\.7 MB.*Curve \+0\.67%.*Instant \+0\.53%/,
         );
         await expect(group.getByText(/answer-time estimate/)).toHaveCount(0);
         await singleModel.check();
         await expect(group).toContainText("Both schedulers · one shared model");
         await expect(small).toHaveAccessibleDescription(
-            /4\.6 KB.*per card \+ note.*3\.8 MB.*Curve \+0\.31%.*Instant \+0\.25%/,
+            /4\.6 KB.*per card \+ note.*3\.8 MB.*Curve \+0\.20%.*Instant \+0\.15%/,
         );
         await expect(tiny).toHaveAccessibleDescription(
-            /3\.1 KB.*per card \+ note.*2\.4 MB.*Curve \+0\.42%.*Instant \+0\.43%/,
+            /3\.1 KB.*per card \+ note.*2\.4 MB.*Curve \+0\.67%.*Instant \+0\.68%/,
         );
         await singleModel.uncheck();
         await expect(group).toContainText("Applies to all decks in this profile on this computer");
