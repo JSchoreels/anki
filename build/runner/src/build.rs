@@ -18,6 +18,8 @@ use termcolor::ColorSpec;
 use termcolor::StandardStream;
 use termcolor::WriteColor;
 
+use crate::prune::maybe_prune_stale_build_caches;
+
 #[derive(Args)]
 pub struct BuildArgs {
     #[arg(trailing_var_arg = true)]
@@ -26,6 +28,8 @@ pub struct BuildArgs {
 
 pub fn run_build(args: BuildArgs) {
     let build_root = &setup_build_root();
+    // Held until the runner exits, so builds in one checkout don't share out/.
+    let _build_lock = lock_build_root(build_root);
 
     let path = if cfg!(windows) {
         format!(
@@ -99,6 +103,7 @@ pub fn run_build(args: BuildArgs) {
         )
         .unwrap();
         stdout.reset().unwrap();
+        maybe_prune_stale_build_caches(build_root);
     } else {
         stdout
             .set_color(ColorSpec::new().set_fg(Some(Color::Red)).set_bold(true))
@@ -145,6 +150,41 @@ fn setup_build_root() -> Utf8PathBuf {
     } else {
         build_root.canonicalize_utf8().unwrap()
     }
+}
+
+/// Concurrent builds in one checkout overwrite each other's outputs and test
+/// stamps, so a second build waits for the first. The OS releases the lock when
+/// the process exits, even after a crash or kill.
+fn lock_build_root(build_root: &Utf8Path) -> fs::File {
+    let path = build_root.join("build.lock");
+    let mut file = fs::OpenOptions::new()
+        .read(true)
+        .write(true)
+        .create(true)
+        .truncate(false)
+        .open(&path)
+        .unwrap_or_else(|err| panic!("opening {path}: {err}"));
+    match file.try_lock() {
+        Ok(()) => {}
+        Err(fs::TryLockError::WouldBlock) => {
+            let holder = fs::read_to_string(&path).unwrap_or_default();
+            println!(
+                "Another build is running in this checkout (pid {}); waiting for it to finish...",
+                holder.trim()
+            );
+            let wait_start = Instant::now();
+            file.lock()
+                .unwrap_or_else(|err| panic!("locking {path}: {err}"));
+            println!(
+                "Previous build finished; continuing after {:.0}s.",
+                wait_start.elapsed().as_secs_f32()
+            );
+        }
+        Err(fs::TryLockError::Error(err)) => panic!("locking {path}: {err}"),
+    }
+    file.set_len(0).unwrap();
+    write!(file, "{}", std::process::id()).unwrap();
+    file
 }
 
 fn bootstrap_build() {

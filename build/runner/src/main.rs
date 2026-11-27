@@ -8,6 +8,7 @@
 mod archive;
 mod build;
 mod paths;
+mod prune;
 mod pyenv;
 mod rsync;
 mod run;
