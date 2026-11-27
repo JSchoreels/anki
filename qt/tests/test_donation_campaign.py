@@ -17,6 +17,34 @@ from aqt.qt import QApplication, QDateTime, QTimer, QWidget
 REQUEST_URL = "https://www.dropbox.com/request/Test123"
 
 
+@pytest.mark.parametrize("profile_ready_first", [True, False])
+def test_invitation_waits_for_both_campaign_and_profile(
+    profile_ready_first, monkeypatch
+):
+    mw = Mock()
+    mw.pm.profile = {}
+    mw.state = "deckBrowser"
+    mw._unload_profile_and_exit_pending = False
+    mw.progress.single_shot.side_effect = lambda _, callback: callback()
+    invite = Mock()
+    monkeypatch.setattr(campaign, "_invite", invite)
+    profile_ready = Future()
+    result = Future()
+    result.set_result(campaign.Campaign(REQUEST_URL, None))
+
+    campaign.check_campaign(mw, profile_ready=profile_ready)
+    loaded = mw.taskman.run_in_background.call_args.args[1]
+    if profile_ready_first:
+        profile_ready.set_result(None)
+        invite.assert_not_called()
+        loaded(result)
+    else:
+        loaded(result)
+        invite.assert_not_called()
+        profile_ready.set_result(None)
+    invite.assert_called_once_with(mw, result.result())
+
+
 def test_campaign_requires_a_dropbox_request_but_totals_are_optional(monkeypatch):
     page = Mock()
     client = Mock()

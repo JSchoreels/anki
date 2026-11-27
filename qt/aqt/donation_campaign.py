@@ -97,7 +97,7 @@ def _load_campaign() -> Campaign | None:
         return Campaign(parser.url, totals)
 
 
-def check_campaign(mw: AnkiQt) -> None:
+def check_campaign(mw: AnkiQt, *, profile_ready: Future[None] | None = None) -> None:
     profile = mw.pm.profile
     due = profile.get(REMINDER, 0)
     if due is None or due > int_time():
@@ -122,7 +122,13 @@ def check_campaign(mw: AnkiQt) -> None:
                 else:
                     _invite(mw, campaign)
 
-        mw.progress.single_shot(0, prompt)
+        if profile_ready is None:
+            mw.progress.single_shot(0, prompt)
+        else:
+            # Both completions run on the UI thread.
+            profile_ready.add_done_callback(
+                lambda _: mw.progress.single_shot(0, prompt)
+            )
 
     # A network check must not block the reviewer or collection operations.
     mw.taskman.run_in_background(_load_campaign, loaded, uses_collection=False)

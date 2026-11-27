@@ -533,6 +533,7 @@ def test_profile_load_marks_rwkv_startup_before_loading_collection(
     calls: list[str] = []
     mw = AnkiQt.__new__(AnkiQt)
     mw.loadCollection = lambda: calls.append("load collection") or False  # type: ignore[method-assign]
+    mw.safeMode = True
     monkeypatch.setattr(
         aqt.rwkv_scheduler,
         "begin_rwkv_state_cache_startup",

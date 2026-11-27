@@ -598,7 +598,11 @@ class AnkiQt(QMainWindow):
 
     def loadProfile(self, onsuccess: Callable | None = None) -> None:
         from aqt import rwkv_scheduler
+        from aqt.donation_campaign import check_campaign
 
+        profile_ready: Future[None] = Future()
+        if not self.safeMode and not self.restoring_backup:
+            check_campaign(self, profile_ready=profile_ready)
         rwkv_scheduler.begin_rwkv_state_cache_startup(self)
         if not self.loadCollection():
             rwkv_scheduler.finish_rwkv_state_cache_startup(self)
@@ -632,15 +636,12 @@ class AnkiQt(QMainWindow):
                 self._refresh_after_sync()
             if onsuccess:
                 onsuccess()
+            profile_ready.set_result(None)
             if self.safeMode:
                 # Disable all experiments in safe mode
                 self.col._experiments = {}
             else:
                 self.maybe_check_for_addon_updates(self.setup_auto_update)
-                if not self.restoring_backup:
-                    from aqt.donation_campaign import check_campaign
-
-                    check_campaign(self)
 
             # if self.col.experiment_enabled(ExperimentFlag.TEST_FLAG):
             #     showInfo('You have the "ping" experiment enabled')
