@@ -1,4 +1,4 @@
-// Copyright: Ankitects Pty Ltd and contributors
+// Copyright: Anki Software, LLC and contributors
 // License: GNU AGPL, version 3 or later; http://www.gnu.org/licenses/agpl.html
 
 const VALID_FSRS_PARAM_COUNTS = new Set([0, 17, 19, 21, 34]);

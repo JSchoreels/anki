@@ -1,4 +1,4 @@
-# Copyright: Ankitects Pty Ltd and contributors
+# Copyright: Anki Software, LLC and contributors
 # License: GNU AGPL, version 3 or later; http://www.gnu.org/licenses/agpl.html
 
 from __future__ import annotations
@@ -11,7 +11,7 @@ from collections.abc import Iterable
 from io import StringIO, TextIOWrapper
 from logging.handlers import RotatingFileHandler, TimedRotatingFileHandler
 from pathlib import Path
-from threading import get_ident
+from threading import RLock, get_ident
 from typing import Any, Optional, TextIO, cast
 
 from aqt.log_redaction import redact_log_text
@@ -38,6 +38,7 @@ class _RedactingFormatter(logging.Formatter):
 class ExecutionLog(RotatingFileHandler):
     """Retain the desktop application's Python console output across restarts."""
 
+    lock: RLock
     terminator = ""
 
     def __init__(self, path: Path) -> None:

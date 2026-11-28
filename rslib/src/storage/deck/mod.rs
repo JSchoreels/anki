@@ -1,4 +1,4 @@
-// Copyright: Ankitects Pty Ltd and contributors
+// Copyright: Anki Software, LLC and contributors
 // License: GNU AGPL, version 3 or later; http://www.gnu.org/licenses/agpl.html
 
 use std::collections::HashMap;
@@ -477,7 +477,7 @@ impl SqliteStorage {
 #[cfg(test)]
 pub(crate) mod test {
     use rand::rngs::StdRng;
-    use rand::Rng;
+    use rand::RngExt;
     use rand::SeedableRng;
     use rusqlite::named_params;
 

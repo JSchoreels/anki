@@ -1,7 +1,8 @@
-// Copyright: Ankitects Pty Ltd and contributors
+// Copyright: Anki Software, LLC and contributors
 // License: GNU AGPL, version 3 or later; http://www.gnu.org/licenses/agpl.html
 
-import { expect, type Locator, type Page, type Request, type Response } from "@playwright/test";
+import { expect } from "@playwright/test";
+import type { Locator, Page, Request, Response } from "@playwright/test";
 
 // ---------------------------------------------------------------------------
 // RPC URL helpers

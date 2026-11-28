@@ -1,4 +1,4 @@
-# Copyright: Ankitects Pty Ltd and contributors
+# Copyright: Anki Software, LLC and contributors
 # License: GNU AGPL, version 3 or later; http://www.gnu.org/licenses/agpl.html
 
 """The RWKV-Instant "(≤N)" label shown beside review counts."""

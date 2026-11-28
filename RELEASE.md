@@ -33,7 +33,14 @@ repeated here unless they materially affect a fork feature.
 
 ## Unreleased
 
-Changes since [build 115](https://github.com/JSchoreels/anki/releases/tag/26.09.4%2Bfsrs7.build.115). The application version remains `26.09.4+fsrs7`.
+Changes since [build 115](https://github.com/JSchoreels/anki/releases/tag/26.09.4%2Bfsrs7.build.115). The application version is now `26.11b1+fsrs7`.
+
+**Based on [Anki 26.11b1](https://github.com/ankitects/anki/releases/tag/26.11b1)**, plus its later security fixes: editor fields can no longer contain `<base>` tags, and ammonia 4.1.9, url 2.5.9 ([RUSTSEC-2026-0592](https://rustsec.org/advisories/RUSTSEC-2026-0592)) and urllib3 2.8.0 are used. Notable upstream changes:
+
+- Numerical field searches and ranges, such as `frequency>500`.
+- `{{type:ci:Field}}` checks typed answers without regard to case.
+- The Browser no longer freezes after selecting or restoring a large selection.
+- A full sync downloads to disk instead of holding the collection in memory.
 
 ### User facing changes
 

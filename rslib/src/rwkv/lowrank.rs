@@ -1,4 +1,4 @@
-// Copyright: Ankitects Pty Ltd and contributors
+// Copyright: Anki Software, LLC and contributors
 // License: GNU AGPL, version 3 or later; http://www.gnu.org/licenses/agpl.html
 
 //! Low-rank card / note WKV state (precision bytes 0x28 and 0x26): every

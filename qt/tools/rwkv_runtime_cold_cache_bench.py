@@ -1,4 +1,4 @@
-# Copyright: Ankitects Pty Ltd and contributors
+# Copyright: Anki Software, LLC and contributors
 # License: GNU AGPL, version 3 or later; http://www.gnu.org/licenses/agpl.html
 
 """Restore scratch RWKV checkpoints in fresh processes to measure steady RAM."""

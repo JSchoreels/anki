@@ -1,4 +1,4 @@
-// Copyright: Ankitects Pty Ltd and contributors
+// Copyright: Anki Software, LLC and contributors
 // License: GNU AGPL, version 3 or later; http://www.gnu.org/licenses/agpl.html
 
 use std::collections::HashMap;
@@ -2864,7 +2864,30 @@ mod tests {
     }
 
     mod update_memory_state {
+        use anki_proto::scheduler::bury_or_suspend_cards_request::Mode;
+
         use super::*;
+
+        fn update_memory_state_for_card(
+            col: &mut Collection,
+            card_id: CardId,
+            req: Option<UpdateMemoryStateRequest>,
+        ) -> Result<()> {
+            let entry = UpdateMemoryStateEntry {
+                req,
+                search: Node::Search(SearchNode::CardIds(card_id.to_string())),
+                ignore_before: TimestampMillis(0),
+                preset_name: "Default".to_string(),
+                current_preset: 1,
+                total_presets: 1,
+            };
+            col.transact(Op::UpdateDeckConfig, |col| {
+                col.update_memory_state(vec![entry]).unwrap();
+                Ok(())
+            })
+            .unwrap();
+            Ok(())
+        }
 
         #[test]
         fn parallel_batches_preserve_states_callbacks_and_undo() -> Result<()> {
@@ -3032,24 +3055,82 @@ mod tests {
             rev.cid = card_id;
             col.storage.add_revlog_entry(&rev, false)?;
 
-            let entry = UpdateMemoryStateEntry {
-                req: None,
-                search: Node::Search(SearchNode::WholeCollection),
-                ignore_before: TimestampMillis(0),
-                preset_name: "Default".to_string(),
-                current_preset: 1,
-                total_presets: 1,
-            };
-            col.transact(Op::UpdateDeckConfig, |col| {
-                col.update_memory_state(vec![entry]).unwrap();
-                Ok(())
-            })
-            .unwrap();
+            update_memory_state_for_card(&mut col, card_id, None)?;
 
             let card = col.storage.get_card(card_id)?.unwrap();
             assert_eq!(card.memory_state, None);
             assert_eq!(card.desired_retention, None);
             assert_eq!(card.decay, None);
+
+            Ok(())
+        }
+
+        #[test]
+        fn suspended_card_not_rescheduled() -> Result<()> {
+            let mut col = Collection::new();
+            let nt = col.get_notetype_by_name("Basic")?.unwrap();
+            let mut note1 = nt.new_note();
+            col.add_note(&mut note1, DeckId(1))?;
+            let card = col
+                .storage
+                .all_cards_of_note(note1.id)?
+                .into_iter()
+                .next()
+                .unwrap();
+
+            let card_id = card.id;
+            col.grade_now(anki_proto::scheduler::GradeNowRequest {
+                card_ids: vec![card_id.into()],
+                rating: anki_proto::scheduler::card_answer::Rating::Easy as i32,
+                card_options: vec![],
+            })?;
+
+            let req = Some(UpdateMemoryStateRequest {
+                params: vec![],
+                preset_desired_retention: 0.9,
+                historical_retention: 0.9,
+                max_interval: 365,
+                review_fuzz_config: ReviewFuzzConfig::default(),
+                reschedule: true,
+                deck_desired_retention: HashMap::new(),
+            });
+
+            update_memory_state_for_card(&mut col, card_id, req.clone())?;
+
+            let mut card = col.storage.get_card(card_id)?.unwrap();
+            card.interval = 910;
+            card.due = 910;
+            col.storage.update_card(&card)?;
+
+            assert_eq!(card.queue, CardQueue::Review);
+            assert_eq!(card.ctype, CardType::Review);
+            assert!(card.memory_state.is_some());
+
+            update_memory_state_for_card(&mut col, card_id, req.clone())?;
+            let mut before_card = col.storage.get_card(card_id)?.unwrap();
+
+            assert_ne!(before_card.interval, 910);
+            assert_ne!(before_card.due, 910);
+
+            before_card.interval = 909;
+            before_card.due = 909;
+            before_card.clear_fsrs_data();
+            col.storage.update_card(&before_card)?;
+            // One revlog entry for the initial grade, and one for the two reschedules
+            assert_eq!(col.get_review_logs(card_id)?.entries.len(), 3);
+
+            col.bury_or_suspend_cards(&[card_id], Mode::Suspend)?;
+
+            update_memory_state_for_card(&mut col, card_id, req)?;
+
+            let suspend_updated_card = col.storage.get_card(card_id)?.unwrap();
+            assert_eq!(suspend_updated_card.queue, CardQueue::Suspended);
+            assert_eq!(suspend_updated_card.interval, before_card.interval);
+            assert_eq!(suspend_updated_card.due, before_card.due);
+            assert!(suspend_updated_card.memory_state.is_some());
+
+            // Suspended card does not get an extra review log
+            assert_eq!(col.get_review_logs(card_id)?.entries.len(), 3);
 
             Ok(())
         }

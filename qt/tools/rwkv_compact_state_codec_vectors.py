@@ -1,4 +1,4 @@
-# Copyright: Ankitects Pty Ltd and contributors
+# Copyright: Anki Software, LLC and contributors
 # License: GNU AGPL, version 3 or later; http://www.gnu.org/licenses/agpl.html
 
 """Codec vectors for the compact card / note state (precision bytes 0x18 / 0x14).

@@ -1,4 +1,4 @@
-# Copyright: Ankitects Pty Ltd and contributors
+# Copyright: Anki Software, LLC and contributors
 # License: GNU AGPL, version 3 or later; http://www.gnu.org/licenses/agpl.html
 from __future__ import annotations
 
@@ -1203,6 +1203,8 @@ class MenuItem:
 def qtMenuShortcutWorkaround(qmenu: QMenu) -> None:
     for act in qmenu.actions():
         act.setShortcutVisibleInContextMenu(True)
+        if submenu := act.menu():
+            qtMenuShortcutWorkaround(submenu)
 
 
 ######################################################################

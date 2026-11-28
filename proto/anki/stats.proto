@@ -1,4 +1,4 @@
-// Copyright: Ankitects Pty Ltd and contributors
+// Copyright: Anki Software, LLC and contributors
 // License: GNU AGPL, version 3 or later; http://www.gnu.org/licenses/agpl.html
 
 syntax = "proto3";
@@ -146,6 +146,8 @@ message CardStatsResponse {
   bool rwkv_retry_pending = 26;
   // Desktop RWKV answer-time estimates, absent when the head is unavailable.
   repeated AnswerTimeRecallPoint rwkv_answer_time_recall = 27;
+  // Upstream uses field 25; the fork already used 25-27 above.
+  bool fsrs_enabled = 28;
 }
 
 message GraphsRequest {
@@ -314,6 +316,8 @@ message CardEntry {
   int64 id = 1;
   int64 note_id = 2;
   int64 deck_id = 3;
+  uint32 template_idx = 4;
+  int64 notetype_id = 5;
 }
 
 message DeckEntry {

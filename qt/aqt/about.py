@@ -1,4 +1,4 @@
-# Copyright: Ankitects Pty Ltd and contributors
+# Copyright: Anki Software, LLC and contributors
 # License: GNU AGPL, version 3 or later; http://www.gnu.org/licenses/agpl.html
 
 import platform
@@ -228,6 +228,7 @@ def show(mw: aqt.AnkiQt) -> QDialog:
             "Sagiv Marzini",
             "Zhanibek Rassululy",
             "Harvey Randall (hnvy)",
+            "Tuncay Kaptan",
         )
     )
 
@@ -237,6 +238,7 @@ def show(mw: aqt.AnkiQt) -> QDialog:
     )
     abouttext += f"<p>{tr.about_if_you_have_contributed_and_are()}"
     abouttext += f"<p>{tr.about_a_big_thanks_to_all_the()}"
+    abouttext += f"<p>{tr.about_copyright()}"
     abt.label.setMinimumWidth(800)
     abt.label.setMinimumHeight(600)
     dialog.show()
