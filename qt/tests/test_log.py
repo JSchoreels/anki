@@ -271,7 +271,8 @@ def test_help_menu_exports_and_opens_a_reviewed_issue(tmp_path, monkeypatch):
             lambda *args: (str(destination), ""),
         )
         export.trigger()
-        assert destination.read_bytes() == f"review complete{os.linesep}".encode()
+        original_log = f"review complete{os.linesep}".encode()
+        assert destination.read_bytes() == original_log
 
         opened = []
 
@@ -290,7 +291,7 @@ def test_help_menu_exports_and_opens_a_reviewed_issue(tmp_path, monkeypatch):
         assert opened == ["https://github.com/JSchoreels/anki/issues/new"]
         attachment = (folders[0] / "anki-execution.log").read_bytes()
         assert attachment == b"edited review by <redacted>"
-        assert log.snapshot() == b"review complete\n"
+        assert log.snapshot() == original_log
     finally:
         log.close()
         window.deleteLater()
