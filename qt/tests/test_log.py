@@ -4,6 +4,7 @@
 from __future__ import annotations
 
 import errno
+import os
 import subprocess
 import sys
 from pathlib import Path
@@ -138,7 +139,7 @@ def test_execution_log_exports_rotated_parts_oldest_first(tmp_path: Path) -> Non
         log.maxBytes = 6
         for line in ("oldest", "one", "two", "three"):
             log.handle(logging.makeLogRecord({"msg": line + "\n"}))
-        assert log.snapshot() == b"one\ntwo\nthree\n"
+        assert log.snapshot() == os.linesep.join(("one", "two", "three", "")).encode()
     finally:
         log.close()
 
@@ -270,7 +271,7 @@ def test_help_menu_exports_and_opens_a_reviewed_issue(tmp_path, monkeypatch):
             lambda *args: (str(destination), ""),
         )
         export.trigger()
-        assert destination.read_bytes() == b"review complete\n"
+        assert destination.read_bytes() == f"review complete{os.linesep}".encode()
 
         opened = []
 

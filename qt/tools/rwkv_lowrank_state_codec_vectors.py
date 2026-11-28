@@ -55,7 +55,7 @@ def main() -> None:
     int6 = sys.argv[3:] == ["q6"]
     sys.path.insert(0, str(repo))
     import torch  # type: ignore[import-not-found]
-    from scripts import state_lowrank as sl  # type: ignore[import-not-found]
+    from scripts import state_lowrank as sl
 
     torch.set_num_threads(1)
     g = torch.Generator().manual_seed(20261124 if int6 else 20261123)
@@ -188,7 +188,7 @@ def pack(codes, bits):
 
 def int6_quant_vectors(torch, sl, g, b64):
     """Synthetic vectors and the scorer's int6 rounding of each."""
-    from scripts.small_model_wkv import (  # type: ignore[import-not-found]
+    from scripts.small_model_wkv import (
         round_scale_f16,
     )
 

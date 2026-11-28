@@ -37,7 +37,7 @@ os.environ.setdefault("RWKV_NO_JIT", "1")
 os.environ.setdefault("CUDA_VISIBLE_DEVICES", "")
 sys.path.insert(0, os.getcwd())
 
-from scripts import compress_quant as cq  # type: ignore[import-not-found]  # noqa: E402
+from scripts import compress_quant as cq  # noqa: E402
 
 # The scorer's patched model rounds every row's shift input, including the
 # first row of a stream, whose shift is its own input: the fork reads no
@@ -97,7 +97,7 @@ from rwkv.data_processing import (  # type: ignore[import-not-found]  # noqa: E4
 from rwkv.prepare_batch import prepare  # type: ignore[import-not-found]  # noqa: E402
 from scripts import compress_common as cc  # noqa: E402
 from scripts import sm31_inputs  # noqa: E402
-from scripts.small_model_wkv import (  # type: ignore[import-not-found]  # noqa: E402
+from scripts.small_model_wkv import (  # noqa: E402
     F16_SCALE,
 )
 
