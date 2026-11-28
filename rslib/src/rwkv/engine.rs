@@ -3735,6 +3735,9 @@ fn creation_elapsed_is_query_only(input: &ReviewInput) -> bool {
     !input.is_query && input.ease.is_some() && input.card_type == Some(0)
 }
 
+/// A negative revlog time (a past clock jump) counts as 0 ms, as Anki's
+/// database check does; `ln(10 + x)` is NaN below -10 ms and would poison
+/// the state.
 fn scaled_duration(input: &ReviewInput) -> f32 {
     input
         .duration_millis

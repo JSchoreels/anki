@@ -2063,6 +2063,77 @@ order by e.id, e.cid"
         );
         Ok(())
     }
+
+    #[test]
+    fn rwkv_history_reset_sql_matches_unguarded_lookup() -> Result<()> {
+        // The lookup as it was before the "any reset key exists" guard.
+        let unguarded = "coalesce(
+    (select case when json_valid(cast(val as text)) then
+       case when json_type(cast(val as text), '$.after') = 'integer'
+       then max(json_extract(cast(val as text), '$.after'), 0) end end
+     from config where key = 'rwkvHistoryReset_' || c.id),
+    case when json_valid(c.data) then
+      case when json_type(c.data, '$.rwkv_reset_after') = 'integer'
+      then max(json_extract(c.data, '$.rwkv_reset_after'), 0) else 0 end else 0 end)";
+        let (col, _tempdir, _col_path) = temp_collection("rwkv-reset-sql")?;
+        let datas = [
+            "",
+            "{}",
+            r#"{"rwkv_reset_after":13000}"#,
+            r#"{"rwkv_reset_after":-5}"#,
+            r#"{"rwkv_reset_after":"x"}"#,
+            "not json",
+        ];
+        for (i, data) in datas.iter().enumerate() {
+            col.storage.db.execute(
+                "insert into cards (id, nid, did, ord, mod, usn, type, queue, due, ivl,
+                 factor, reps, lapses, left, odue, odid, flags, data)
+                 values (?, 1, 1, 0, 0, 0, 2, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, ?)",
+                params![1_000 + i as i64, data],
+            )?;
+        }
+        let values = |storage: &SqliteStorage, expr: &str| -> Result<Vec<(i64, i64)>> {
+            storage
+                .db
+                .prepare(&format!("select c.id, ({expr}) from cards c order by c.id"))?
+                .query_map([], |row| Ok((row.get(0)?, row.get(1)?)))?
+                .collect::<std::result::Result<Vec<_>, _>>()
+                .map_err(Into::into)
+        };
+        // Neighbouring keys and a large value must not affect the range check.
+        col.storage.db.execute(
+            "insert into config (key, usn, mtime_secs, val) values
+             ('rwkvHistoryReset', 0, 0, x'7b226166746572223a39397d'),
+             ('rwkvHistoryReset`x', 0, 0, x'7b226166746572223a39397d'),
+             ('sm20_state', 0, 0, zeroblob(200000))",
+            [],
+        )?;
+        let without = values(&col.storage, RWKV_HISTORY_RESET_AFTER_SQL)?;
+        assert_eq!(without, values(&col.storage, unguarded)?);
+        assert_eq!(
+            without.iter().map(|v| v.1).collect::<Vec<_>>(),
+            [0, 0, 13000, 0, 0, 0]
+        );
+
+        // Keys that override card data, including malformed and negative ones.
+        let reset = |id: i64, json: &str| {
+            col.storage.db.execute(
+                "insert into config (key, usn, mtime_secs, val) values (?, 0, 0, ?)",
+                params![format!("rwkvHistoryReset_{id}"), json.as_bytes()],
+            )
+        };
+        reset(1_000, r#"{"after":7000}"#)?;
+        reset(1_002, r#"{"after":-1}"#)?;
+        reset(1_003, "garbage")?;
+        reset(1_004, r#"{"after":"x"}"#)?;
+        let with = values(&col.storage, RWKV_HISTORY_RESET_AFTER_SQL)?;
+        assert_eq!(with, values(&col.storage, unguarded)?);
+        assert_eq!(
+            with.iter().map(|v| v.1).collect::<Vec<_>>(),
+            [7000, 0, 0, 0, 0, 0]
+        );
+        Ok(())
+    }
 }
 
 #[cfg(test)]
